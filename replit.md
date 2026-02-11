@@ -4,16 +4,17 @@
 Comprehensive stablecoin risk analysis platform that calculates SII scores by collecting data from multiple sources (CoinGecko, DeFiLlama, Curve, Etherscan), crawls DeFi governance forums for intelligence, and provides a REST API for accessing risk scores and generating content opportunities.
 
 ## Architecture
-- **Runtime**: Python 3.11
-- **Framework**: FastAPI with Uvicorn
+- **Runtime**: Python 3.11 + Node.js 20
+- **Backend**: FastAPI with Uvicorn
+- **Frontend**: React 18 + Vite (built to frontend/dist, served by FastAPI)
 - **Database**: PostgreSQL (Replit built-in)
-- **Port**: 5000 (API server)
+- **Port**: 5000 (serves both dashboard and API)
 
 ## Project Structure
 ```
 main.py                     - Entry point (API + background worker)
 app/
-  server.py                 - FastAPI routes
+  server.py                 - FastAPI routes + static file serving
   database.py               - PostgreSQL connection pool (contextmanager-based)
   config.py                 - Stablecoin registry and environment config
   scoring.py                - SII formula, weights, normalization
@@ -24,13 +25,28 @@ app/
     coingecko.py            - CoinGecko API collector
     defillama.py            - DeFiLlama collector
     curve.py                - Curve Finance collector
+    etherscan.py            - Etherscan holder distribution collector
     offline.py              - Static/config-based components
+frontend/
+  src/App.jsx               - React dashboard (rankings, detail, methodology)
+  src/main.jsx              - React entry point
+  index.html                - HTML template
+  vite.config.js            - Vite build config
+  package.json              - Frontend dependencies
+  dist/                     - Built output (served by FastAPI at root)
 migrations/
   001_initial_schema.sql    - Core database schema (8 tables + governance)
 exports/
   governance_export.sql     - Pre-imported governance data (113 docs, 24k+ mentions)
 import_governance.py        - Governance data import utility
 ```
+
+## Frontend Build
+```bash
+cd frontend && npx vite build
+```
+The built output in `frontend/dist/` is served by FastAPI at the root URL.
+API endpoints remain at `/api/*`. No CORS issues since same domain.
 
 ## Database Tables
 - `stablecoins` - Registry of 9 tracked stablecoins
@@ -71,6 +87,14 @@ import_governance.py        - Governance data import utility
 Command: `python main.py`
 
 ## Recent Changes
+- 2026-02-11: Added React frontend dashboard
+  - Vite + React 18 SPA served from root URL by FastAPI
+  - Rankings table, detail view with score history chart, methodology page
+  - API URL set to relative (same domain, no CORS)
+  - Static assets mounted at /assets/, SPA catch-all for client routing
+- 2026-02-11: Etherscan holder distribution collector
+  - Queries 37 labeled known addresses (exchanges, DeFi, bridges, treasuries)
+  - Distribution scores populated for all 9 stablecoins
 - 2026-02-10: Initial deployment to Replit
   - Fixed governance.py get_conn() context manager bugs
   - Updated port from 8000 to 5000

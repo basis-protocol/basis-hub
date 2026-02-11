@@ -5,11 +5,14 @@ Clean FastAPI server. Reads from database only. No data collection.
 """
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.config import STABLECOIN_REGISTRY, CORS_ORIGINS
 from app.database import (
@@ -74,27 +77,13 @@ async def shutdown():
 
 
 # =============================================================================
-# Root — landing page for browsers
+# Frontend — Serve built React app from root
 # =============================================================================
 
-@app.get("/")
-async def root():
-    """API info page."""
-    return {
-        "name": "Basis Protocol API",
-        "product": "Stablecoin Integrity Index (SII)",
-        "version": FORMULA_VERSION,
-        "endpoints": {
-            "health": "/api/health",
-            "scores": "/api/scores",
-            "detail": "/api/scores/{coin}",
-            "history": "/api/scores/{coin}/history?days=90",
-            "compare": "/api/compare?coins=usdc,usdt,dai",
-            "methodology": "/api/methodology",
-            "events": "/api/events",
-        },
-        "docs": "/docs",
-    }
+FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+
+if os.path.isdir(FRONTEND_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")), name="static-assets")
 
 
 # =============================================================================
@@ -488,3 +477,17 @@ async def get_deviations(
         ],
         "count": len(rows),
     }
+
+
+# =============================================================================
+# SPA Catch-All — serves index.html for all non-API routes
+# =============================================================================
+
+@app.get("/{full_path:path}")
+async def serve_spa(request: Request, full_path: str):
+    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi"):
+        raise HTTPException(status_code=404, detail="Not found")
+    index_path = os.path.join(FRONTEND_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"name": "Basis Protocol API", "version": FORMULA_VERSION, "docs": "/docs"}
