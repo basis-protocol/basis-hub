@@ -1,0 +1,103 @@
+Got it. So the governance endpoints from the crawler aren't exposed on this Replit — they were on the old prototype. The health endpoint exists but is minimal.
+The admin panel needs backend routes added first. Here's the prompt for your Replit agent:
+
+Add admin API endpoints and an admin frontend panel. Two parts: backend routes, then a React admin page.
+Part 1: Backend — Add these endpoints to app/server.py
+1a. Governance stats (reads from the gov_* tables that already exist in the database):
+GET /api/admin/governance/stats
+Returns:
+json{
+  "total_documents": 113,
+  "total_stablecoin_mentions": 2363,
+  "total_metric_mentions": 24591,
+  "sources": [
+    {"source": "aave_governance", "count": 45},
+    {"source": "maker_governance", "count": 32}
+  ],
+  "top_stablecoin_mentions": [
+    {"stablecoin": "usdt", "count": 450, "sentiment_breakdown": {"negative": 120, "neutral": 280, "positive": 50}},
+    {"stablecoin": "usdc", "count": 380}
+  ],
+  "recent_documents": [
+    {"title": "...", "source": "...", "published_at": "...", "stablecoins_mentioned": ["usdt", "usdc"]}
+  ]
+}
+```
+
+Query the existing tables:
+- `gov_documents` for document list and counts
+- `gov_stablecoin_mentions` for stablecoin mention counts and sentiment
+- `gov_metric_mentions` for metric discussion frequency
+- `gov_crawl_logs` for last crawl times
+
+**1b. Data freshness endpoint:**
+```
+GET /api/admin/freshness
+Returns per-stablecoin data freshness:
+json{
+  "stablecoins": [
+    {
+      "id": "usdc",
+      "last_scored": "2026-02-11T03:01:16Z",
+      "component_count": 50,
+      "categories": {
+        "peg": {"count": 10, "avg_score": 98.4},
+        "liquidity": {"count": 12, "avg_score": 81.9},
+        "flows": {"count": 9, "avg_score": 84.7},
+        "distribution": {"count": 3, "avg_score": 81.9},
+        "structural": {"count": 16, "avg_score": 89.0}
+      },
+      "null_categories": [],
+      "sources": ["coingecko", "defillama", "curve", "etherscan", "offline"]
+    }
+  ],
+  "last_worker_run": "2026-02-11T03:01:16Z",
+  "next_expected": "2026-02-11T04:01:16Z"
+}
+```
+
+Query from `component_scores` table — group by stablecoin and category, check for nulls, find latest timestamps.
+
+**1c. System health (enhanced):**
+```
+GET /api/admin/health
+```
+Same as existing `/api/health` but add:
+- Last governance crawl time (from `gov_crawl_logs`)
+- Component coverage per source
+- Any scoring errors from the last cycle
+- Database table row counts for `legacy_*` tables
+
+**1d. Content signals** (hot governance debates matched to SII data):
+```
+GET /api/admin/content/signals
+Returns top content opportunities:
+json{
+  "signals": [
+    {
+      "governance_topic": "USDT Reserve Composition Concerns",
+      "source": "aave_governance",
+      "mention_count": 8,
+      "sentiment": "negative",
+      "relevant_sii_data": {
+        "usdt_score": 85.2,
+        "usdc_score": 88.7,
+        "gap": 3.5,
+        "weakest_category": "structural"
+      },
+      "suggested_angle": "Reserve transparency gap between USDT and USDC"
+    }
+  ]
+}
+Logic: Find governance documents from the last 14 days with the most stablecoin mentions. For each hot topic, fetch the current SII scores for the mentioned stablecoins. Identify the biggest score gaps and weakest categories. Return as content opportunities.
+Part 2: Frontend — Admin panel at /admin
+Add a simple admin page served at the /admin route. It should be a basic HTML page (no React build needed — just inline JS) with these sections:
+
+System Health — green/red status, last scored time, next expected, database stats
+Data Freshness — table showing each stablecoin's component count per category, highlighting any nulls or stale data in red
+Governance Intel — latest documents, top mentioned stablecoins, sentiment breakdown
+Content Signals — hot topics with suggested angles and supporting SII data
+
+Style it with the same dark theme as the public dashboard (background #06080d, text #c8cdd8, accent #22d3a7). No need for a full React app — a single HTML file with fetch calls to the admin endpoints is fine.
+Security: Add a simple query parameter gate: /admin?key=YOUR_SECRET. Check os.environ.get("ADMIN_KEY") and return 401 if it doesn't match. Set ADMIN_KEY in Replit Secrets.
+IMPORTANT: Do not modify any existing endpoints or the public dashboard. Only add new /api/admin/* routes and the /admin HTML page.

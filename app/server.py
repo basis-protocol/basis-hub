@@ -6,13 +6,13 @@ Clean FastAPI server. Reads from database only. No data collection.
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from app.config import STABLECOIN_REGISTRY, CORS_ORIGINS
 from app.database import (
@@ -480,12 +480,556 @@ async def get_deviations(
 
 
 # =============================================================================
+# Admin — Authentication helper
+# =============================================================================
+
+def _check_admin_key(request: Request):
+    admin_key = os.environ.get("ADMIN_KEY", "")
+    provided = request.query_params.get("key", "")
+    if not admin_key or provided != admin_key:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# =============================================================================
+# 10. GET /api/admin/governance/stats
+# =============================================================================
+
+@app.get("/api/admin/governance/stats")
+async def admin_governance_stats(request: Request):
+    _check_admin_key(request)
+
+    total_docs = fetch_one("SELECT COUNT(*) as count FROM gov_documents")
+    total_coin_mentions = fetch_one("SELECT COUNT(*) as count FROM gov_stablecoin_mentions")
+    total_metric_mentions = fetch_one("SELECT COUNT(*) as count FROM gov_metric_mentions")
+
+    sources = fetch_all("""
+        SELECT source, COUNT(*) as count
+        FROM gov_documents
+        GROUP BY source
+        ORDER BY count DESC
+    """)
+
+    top_coins = fetch_all("""
+        SELECT
+            sm.stablecoin,
+            COUNT(*) as count,
+            COUNT(*) FILTER (WHERE sm.sentiment = 'negative') as negative,
+            COUNT(*) FILTER (WHERE sm.sentiment = 'neutral') as neutral,
+            COUNT(*) FILTER (WHERE sm.sentiment = 'positive') as positive,
+            COUNT(*) FILTER (WHERE sm.sentiment = 'concerned') as concerned
+        FROM gov_stablecoin_mentions sm
+        GROUP BY sm.stablecoin
+        ORDER BY count DESC
+        LIMIT 15
+    """)
+
+    recent_docs = fetch_all("""
+        SELECT
+            d.title, d.source, d.published_at,
+            array_agg(DISTINCT sm.stablecoin) FILTER (WHERE sm.stablecoin IS NOT NULL) as stablecoins_mentioned
+        FROM gov_documents d
+        LEFT JOIN gov_stablecoin_mentions sm ON d.id = sm.document_id
+        GROUP BY d.id, d.title, d.source, d.published_at
+        ORDER BY d.published_at DESC NULLS LAST
+        LIMIT 20
+    """)
+
+    return {
+        "total_documents": total_docs["count"] if total_docs else 0,
+        "total_stablecoin_mentions": total_coin_mentions["count"] if total_coin_mentions else 0,
+        "total_metric_mentions": total_metric_mentions["count"] if total_metric_mentions else 0,
+        "sources": [{"source": r["source"], "count": r["count"]} for r in sources],
+        "top_stablecoin_mentions": [
+            {
+                "stablecoin": r["stablecoin"],
+                "count": r["count"],
+                "sentiment_breakdown": {
+                    "negative": r["negative"],
+                    "neutral": r["neutral"],
+                    "positive": r["positive"],
+                    "concerned": r["concerned"],
+                },
+            }
+            for r in top_coins
+        ],
+        "recent_documents": [
+            {
+                "title": r["title"],
+                "source": r["source"],
+                "published_at": r["published_at"].isoformat() if r.get("published_at") else None,
+                "stablecoins_mentioned": r["stablecoins_mentioned"] or [],
+            }
+            for r in recent_docs
+        ],
+    }
+
+
+# =============================================================================
+# 11. GET /api/admin/freshness
+# =============================================================================
+
+@app.get("/api/admin/freshness")
+async def admin_freshness(request: Request):
+    _check_admin_key(request)
+
+    stablecoins_data = []
+    for sid in STABLECOIN_REGISTRY:
+        score_row = fetch_one(
+            "SELECT computed_at FROM scores WHERE stablecoin_id = %s", (sid,)
+        )
+
+        components = fetch_all("""
+            SELECT
+                category,
+                COUNT(*) as count,
+                ROUND(AVG(normalized_score)::numeric, 1) as avg_score
+            FROM component_readings
+            WHERE stablecoin_id = %s
+              AND collected_at > NOW() - INTERVAL '48 hours'
+            GROUP BY category
+        """, (sid,))
+
+        sources_rows = fetch_all("""
+            SELECT DISTINCT data_source
+            FROM component_readings
+            WHERE stablecoin_id = %s
+              AND collected_at > NOW() - INTERVAL '48 hours'
+        """, (sid,))
+
+        categories = {}
+        total_count = 0
+        null_cats = []
+        for c in components:
+            cat_key = c["category"]
+            cat_map = {
+                "peg_stability": "peg",
+                "liquidity_depth": "liquidity",
+                "mint_burn_dynamics": "flows",
+                "holder_distribution": "distribution",
+                "structural_risk_composite": "structural",
+            }
+            short = cat_map.get(cat_key, cat_key)
+            categories[short] = {
+                "count": c["count"],
+                "avg_score": float(c["avg_score"]) if c["avg_score"] else None,
+            }
+            total_count += c["count"]
+            if c["avg_score"] is None:
+                null_cats.append(short)
+
+        for expected in ["peg", "liquidity", "flows", "distribution", "structural"]:
+            if expected not in categories:
+                null_cats.append(expected)
+
+        stablecoins_data.append({
+            "id": sid,
+            "last_scored": score_row["computed_at"].isoformat() if score_row and score_row.get("computed_at") else None,
+            "component_count": total_count,
+            "categories": categories,
+            "null_categories": null_cats,
+            "sources": [r["data_source"] for r in sources_rows],
+        })
+
+    latest_score = fetch_one("SELECT MAX(computed_at) as latest FROM scores")
+    last_run = latest_score["latest"] if latest_score else None
+    interval_min = int(os.environ.get("COLLECTION_INTERVAL", "60"))
+
+    return {
+        "stablecoins": stablecoins_data,
+        "last_worker_run": last_run.isoformat() if last_run else None,
+        "next_expected": (last_run + timedelta(minutes=interval_min)).isoformat() if last_run else None,
+    }
+
+
+# =============================================================================
+# 12. GET /api/admin/health
+# =============================================================================
+
+@app.get("/api/admin/health")
+async def admin_health(request: Request):
+    _check_admin_key(request)
+
+    db_status = db_health_check()
+
+    scores_result = fetch_one("SELECT COUNT(*) as count FROM scores")
+    scored_count = scores_result["count"] if scores_result else 0
+
+    latest_result = fetch_one("SELECT MAX(computed_at) as latest FROM scores")
+    latest_score = latest_result["latest"] if latest_result else None
+
+    last_crawl = fetch_one("""
+        SELECT source, completed_at, documents_found, documents_new, errors, status
+        FROM gov_crawl_logs
+        ORDER BY started_at DESC
+        LIMIT 1
+    """)
+
+    source_coverage = fetch_all("""
+        SELECT data_source, COUNT(DISTINCT stablecoin_id) as stablecoin_count, COUNT(*) as reading_count
+        FROM component_readings
+        WHERE collected_at > NOW() - INTERVAL '48 hours'
+        GROUP BY data_source
+        ORDER BY reading_count DESC
+    """)
+
+    table_counts = fetch_all("""
+        SELECT relname as table_name, n_live_tup as row_count
+        FROM pg_stat_user_tables
+        WHERE schemaname = 'public'
+        ORDER BY n_live_tup DESC
+    """)
+
+    stale_count = fetch_one("""
+        SELECT COUNT(*) as count FROM component_readings
+        WHERE is_stale = TRUE AND collected_at > NOW() - INTERVAL '48 hours'
+    """)
+
+    error_count = fetch_one("""
+        SELECT COUNT(*) as count FROM component_readings
+        WHERE error_message IS NOT NULL AND collected_at > NOW() - INTERVAL '48 hours'
+    """)
+
+    return {
+        "status": "healthy" if db_status["status"] == "healthy" else "degraded",
+        "database": db_status,
+        "scores": {
+            "stablecoins_scored": scored_count,
+            "stablecoins_registered": len(STABLECOIN_REGISTRY),
+            "last_computed": latest_score.isoformat() if latest_score else None,
+        },
+        "formula_version": FORMULA_VERSION,
+        "last_governance_crawl": {
+            "source": last_crawl["source"] if last_crawl else None,
+            "completed_at": last_crawl["completed_at"].isoformat() if last_crawl and last_crawl.get("completed_at") else None,
+            "documents_found": last_crawl["documents_found"] if last_crawl else 0,
+            "documents_new": last_crawl["documents_new"] if last_crawl else 0,
+            "errors": last_crawl["errors"] if last_crawl else 0,
+            "status": last_crawl["status"] if last_crawl else None,
+        } if last_crawl else None,
+        "component_coverage": [
+            {
+                "source": r["data_source"],
+                "stablecoin_count": r["stablecoin_count"],
+                "reading_count": r["reading_count"],
+            }
+            for r in source_coverage
+        ],
+        "scoring_issues": {
+            "stale_readings": stale_count["count"] if stale_count else 0,
+            "error_readings": error_count["count"] if error_count else 0,
+        },
+        "table_row_counts": {r["table_name"]: r["row_count"] for r in table_counts},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# =============================================================================
+# 13. GET /api/admin/content/signals
+# =============================================================================
+
+@app.get("/api/admin/content/signals")
+async def admin_content_signals(request: Request):
+    _check_admin_key(request)
+
+    hot_docs = fetch_all("""
+        SELECT
+            d.id, d.title, d.source, d.published_at,
+            COUNT(sm.id) as mention_count,
+            array_agg(DISTINCT sm.stablecoin) FILTER (WHERE sm.stablecoin IS NOT NULL) as stablecoins,
+            MODE() WITHIN GROUP (ORDER BY sm.sentiment) as dominant_sentiment
+        FROM gov_documents d
+        JOIN gov_stablecoin_mentions sm ON d.id = sm.document_id
+        WHERE d.published_at > NOW() - INTERVAL '14 days'
+        GROUP BY d.id, d.title, d.source, d.published_at
+        ORDER BY COUNT(sm.id) DESC
+        LIMIT 10
+    """)
+
+    if not hot_docs:
+        hot_docs = fetch_all("""
+            SELECT
+                d.id, d.title, d.source, d.published_at,
+                COUNT(sm.id) as mention_count,
+                array_agg(DISTINCT sm.stablecoin) FILTER (WHERE sm.stablecoin IS NOT NULL) as stablecoins,
+                MODE() WITHIN GROUP (ORDER BY sm.sentiment) as dominant_sentiment
+            FROM gov_documents d
+            JOIN gov_stablecoin_mentions sm ON d.id = sm.document_id
+            GROUP BY d.id, d.title, d.source, d.published_at
+            ORDER BY COUNT(sm.id) DESC
+            LIMIT 10
+        """)
+
+    signals = []
+    for doc in hot_docs:
+        coins = doc.get("stablecoins") or []
+        sii_data = {}
+        scores_list = []
+        for coin_name in coins:
+            coin_id = coin_name.lower()
+            score_row = fetch_one("""
+                SELECT overall_score, peg_score, liquidity_score, mint_burn_score,
+                       distribution_score, structural_score
+                FROM scores WHERE stablecoin_id = %s
+            """, (coin_id,))
+            if score_row:
+                sii_data[coin_id + "_score"] = float(score_row["overall_score"])
+                scores_list.append(float(score_row["overall_score"]))
+                cats = {
+                    "peg": float(score_row["peg_score"]) if score_row.get("peg_score") else 100,
+                    "liquidity": float(score_row["liquidity_score"]) if score_row.get("liquidity_score") else 100,
+                    "flows": float(score_row["mint_burn_score"]) if score_row.get("mint_burn_score") else 100,
+                    "distribution": float(score_row["distribution_score"]) if score_row.get("distribution_score") else 100,
+                    "structural": float(score_row["structural_score"]) if score_row.get("structural_score") else 100,
+                }
+                weakest = min(cats, key=cats.get)
+                sii_data["weakest_category"] = weakest
+
+        if len(scores_list) >= 2:
+            sii_data["gap"] = round(max(scores_list) - min(scores_list), 1)
+
+        topic = doc["title"] or "Untitled"
+        coins_str = ", ".join(c.upper() for c in coins[:3]) if coins else "stablecoins"
+        suggested = f"{topic} — comparing {coins_str}"
+        if sii_data.get("weakest_category"):
+            suggested += f" (weakest: {sii_data['weakest_category']})"
+
+        signals.append({
+            "governance_topic": topic,
+            "source": doc["source"],
+            "published_at": doc["published_at"].isoformat() if doc.get("published_at") else None,
+            "mention_count": doc["mention_count"],
+            "sentiment": doc.get("dominant_sentiment", "neutral"),
+            "relevant_sii_data": sii_data,
+            "suggested_angle": suggested,
+        })
+
+    return {"signals": signals}
+
+
+# =============================================================================
+# 14. GET /admin — Admin Panel HTML
+# =============================================================================
+
+ADMIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Basis Protocol — Admin Panel</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#06080d;color:#c8cdd8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:20px;line-height:1.5}
+h1{color:#22d3a7;font-size:1.6rem;margin-bottom:8px}
+h2{color:#22d3a7;font-size:1.2rem;margin:24px 0 12px;border-bottom:1px solid #1a1f2e;padding-bottom:6px}
+h3{color:#a0a8b8;font-size:0.95rem;margin:14px 0 8px}
+.header{display:flex;align-items:center;gap:12px;margin-bottom:20px;border-bottom:1px solid #1a1f2e;padding-bottom:12px}
+.header .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.dot.green{background:#22d3a7}.dot.red{background:#ef4444}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:#0d1117;border:1px solid #1a1f2e;border-radius:8px;padding:16px}
+table{width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:8px}
+th{text-align:left;color:#8b95a5;font-weight:500;padding:6px 8px;border-bottom:1px solid #1a1f2e}
+td{padding:6px 8px;border-bottom:1px solid #111520}
+.tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.75rem;margin:1px 2px}
+.tag-neg{background:#3b1420;color:#f87171}.tag-pos{background:#0d2818;color:#4ade80}
+.tag-neu{background:#1a1f2e;color:#8b95a5}.tag-con{background:#2d1b00;color:#f59e0b}
+.stale{color:#ef4444;font-weight:600}
+.fresh{color:#22d3a7}
+.stat{font-size:1.8rem;font-weight:700;color:#22d3a7}
+.stat-label{font-size:0.8rem;color:#8b95a5}
+.stats-row{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0}
+.signal{background:#0d1117;border:1px solid #1a1f2e;border-radius:8px;padding:14px;margin-bottom:10px}
+.signal-title{color:#e2e8f0;font-weight:600;margin-bottom:4px}
+.signal-meta{font-size:0.8rem;color:#8b95a5;margin-bottom:6px}
+.signal-angle{color:#3b82f6;font-size:0.9rem;font-style:italic}
+.sii-chip{display:inline-block;background:#1a1f2e;padding:2px 8px;border-radius:4px;font-size:0.8rem;margin:2px}
+.loading{color:#8b95a5;padding:20px;text-align:center}
+.error{color:#ef4444;padding:10px}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>BASIS Admin Panel</h1>
+  <span id="statusDot" class="dot"></span>
+  <span id="statusText" style="font-size:0.85rem;color:#8b95a5"></span>
+</div>
+
+<div class="grid">
+  <div class="card" id="healthCard"><div class="loading">Loading health...</div></div>
+  <div class="card" id="statsCard"><div class="loading">Loading stats...</div></div>
+</div>
+
+<h2>Data Freshness</h2>
+<div class="card" id="freshnessCard"><div class="loading">Loading freshness...</div></div>
+
+<h2>Governance Intelligence</h2>
+<div class="grid">
+  <div class="card" id="govStatsCard"><div class="loading">Loading governance...</div></div>
+  <div class="card" id="govDocsCard"><div class="loading">Loading documents...</div></div>
+</div>
+
+<h2>Content Signals</h2>
+<div id="signalsCard"><div class="loading">Loading signals...</div></div>
+
+<script>
+const KEY = new URLSearchParams(window.location.search).get('key') || '';
+const api = (path) => fetch('/api/admin/' + path + '?key=' + encodeURIComponent(KEY)).then(r => {
+  if (!r.ok) throw new Error(r.status === 401 ? 'Unauthorized' : 'API error ' + r.status);
+  return r.json();
+});
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+}
+
+function sentTag(s, count) {
+  const cls = {negative:'tag-neg',positive:'tag-pos',neutral:'tag-neu',concerned:'tag-con'}[s] || 'tag-neu';
+  return '<span class="tag '+cls+'">'+s+' ('+count+')</span>';
+}
+
+async function loadHealth() {
+  try {
+    const d = await api('health');
+    document.getElementById('statusDot').className = 'dot ' + (d.status === 'healthy' ? 'green' : 'red');
+    document.getElementById('statusText').textContent = d.status;
+    let h = '<h3>System Health</h3><div class="stats-row">';
+    h += '<div><div class="stat">'+d.scores.stablecoins_scored+'</div><div class="stat-label">Scored</div></div>';
+    h += '<div><div class="stat">'+d.scores.stablecoins_registered+'</div><div class="stat-label">Registered</div></div>';
+    h += '</div>';
+    h += '<table><tr><th>Metric</th><th>Value</th></tr>';
+    h += '<tr><td>Last Scored</td><td>'+fmtDate(d.scores.last_computed)+'</td></tr>';
+    h += '<tr><td>Formula</td><td>'+d.formula_version+'</td></tr>';
+    h += '<tr><td>Stale Readings</td><td>'+(d.scoring_issues.stale_readings||0)+'</td></tr>';
+    h += '<tr><td>Error Readings</td><td>'+(d.scoring_issues.error_readings||0)+'</td></tr>';
+    if (d.last_governance_crawl) {
+      h += '<tr><td>Last Crawl</td><td>'+fmtDate(d.last_governance_crawl.completed_at)+' ('+d.last_governance_crawl.source+')</td></tr>';
+    }
+    h += '</table>';
+    document.getElementById('healthCard').innerHTML = h;
+
+    let s = '<h3>Component Coverage</h3><table><tr><th>Source</th><th>Coins</th><th>Readings</th></tr>';
+    (d.component_coverage||[]).forEach(c => {
+      s += '<tr><td>'+c.source+'</td><td>'+c.stablecoin_count+'</td><td>'+c.reading_count+'</td></tr>';
+    });
+    s += '</table><h3>Table Sizes</h3><table><tr><th>Table</th><th>Rows</th></tr>';
+    Object.entries(d.table_row_counts||{}).forEach(([t,n]) => {
+      s += '<tr><td>'+t+'</td><td>'+n.toLocaleString()+'</td></tr>';
+    });
+    s += '</table>';
+    document.getElementById('statsCard').innerHTML = s;
+  } catch(e) { document.getElementById('healthCard').innerHTML = '<div class="error">'+e.message+'</div>'; }
+}
+
+async function loadFreshness() {
+  try {
+    const d = await api('freshness');
+    let h = '<p style="font-size:0.85rem;color:#8b95a5;margin-bottom:8px">Last worker: '+fmtDate(d.last_worker_run)+' &bull; Next: '+fmtDate(d.next_expected)+'</p>';
+    h += '<table><tr><th>Coin</th><th>Last Scored</th><th>Components</th><th>Peg</th><th>Liquidity</th><th>Flows</th><th>Distribution</th><th>Structural</th><th>Sources</th></tr>';
+    (d.stablecoins||[]).forEach(s => {
+      h += '<tr><td><b>'+s.id.toUpperCase()+'</b></td>';
+      h += '<td>'+fmtDate(s.last_scored)+'</td>';
+      h += '<td>'+s.component_count+'</td>';
+      ['peg','liquidity','flows','distribution','structural'].forEach(cat => {
+        const c = s.categories[cat];
+        if (!c) { h += '<td class="stale">MISSING</td>'; return; }
+        const cls = c.avg_score === null ? 'stale' : 'fresh';
+        h += '<td class="'+cls+'">'+(c.avg_score !== null ? c.avg_score.toFixed(1) : 'NULL')+' <span style="color:#8b95a5;font-size:0.75rem">('+c.count+')</span></td>';
+      });
+      h += '<td style="font-size:0.8rem">'+s.sources.join(', ')+'</td></tr>';
+    });
+    h += '</table>';
+    if (d.stablecoins.some(s => s.null_categories.length > 0)) {
+      h += '<p class="stale" style="margin-top:8px;font-size:0.85rem">&#9888; Some categories have null or missing data</p>';
+    }
+    document.getElementById('freshnessCard').innerHTML = h;
+  } catch(e) { document.getElementById('freshnessCard').innerHTML = '<div class="error">'+e.message+'</div>'; }
+}
+
+async function loadGovernance() {
+  try {
+    const d = await api('governance/stats');
+    let h = '<h3>Overview</h3><div class="stats-row">';
+    h += '<div><div class="stat">'+d.total_documents+'</div><div class="stat-label">Documents</div></div>';
+    h += '<div><div class="stat">'+d.total_stablecoin_mentions.toLocaleString()+'</div><div class="stat-label">Coin Mentions</div></div>';
+    h += '<div><div class="stat">'+d.total_metric_mentions.toLocaleString()+'</div><div class="stat-label">Metric Mentions</div></div>';
+    h += '</div>';
+    h += '<h3>Sources</h3><table><tr><th>Forum</th><th>Docs</th></tr>';
+    (d.sources||[]).forEach(s => { h += '<tr><td>'+s.source+'</td><td>'+s.count+'</td></tr>'; });
+    h += '</table>';
+    h += '<h3>Top Mentioned Stablecoins</h3>';
+    (d.top_stablecoin_mentions||[]).forEach(m => {
+      h += '<div style="margin:4px 0"><b>'+m.stablecoin.toUpperCase()+'</b> ('+m.count+') ';
+      const sb = m.sentiment_breakdown;
+      if (sb.negative) h += sentTag('negative', sb.negative);
+      if (sb.concerned) h += sentTag('concerned', sb.concerned);
+      if (sb.neutral) h += sentTag('neutral', sb.neutral);
+      if (sb.positive) h += sentTag('positive', sb.positive);
+      h += '</div>';
+    });
+    document.getElementById('govStatsCard').innerHTML = h;
+
+    let rd = '<h3>Recent Documents</h3><table><tr><th>Title</th><th>Source</th><th>Date</th><th>Coins</th></tr>';
+    (d.recent_documents||[]).slice(0,15).forEach(doc => {
+      rd += '<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+((doc.title||'').substring(0,60))+'</td>';
+      rd += '<td>'+doc.source+'</td>';
+      rd += '<td>'+fmtDate(doc.published_at)+'</td>';
+      rd += '<td>'+(doc.stablecoins_mentioned||[]).join(', ')+'</td></tr>';
+    });
+    rd += '</table>';
+    document.getElementById('govDocsCard').innerHTML = rd;
+  } catch(e) { document.getElementById('govStatsCard').innerHTML = '<div class="error">'+e.message+'</div>'; }
+}
+
+async function loadSignals() {
+  try {
+    const d = await api('content/signals');
+    if (!d.signals || d.signals.length === 0) {
+      document.getElementById('signalsCard').innerHTML = '<div class="card"><p style="color:#8b95a5">No content signals available</p></div>';
+      return;
+    }
+    let h = '';
+    d.signals.forEach(s => {
+      h += '<div class="signal">';
+      h += '<div class="signal-title">'+s.governance_topic+'</div>';
+      h += '<div class="signal-meta">'+s.source+' &bull; '+fmtDate(s.published_at)+' &bull; '+s.mention_count+' mentions &bull; ';
+      h += sentTag(s.sentiment, '')+' </div>';
+      const sii = s.relevant_sii_data || {};
+      Object.entries(sii).forEach(([k,v]) => {
+        if (typeof v === 'number') h += '<span class="sii-chip">'+k+': '+v+'</span> ';
+        else if (typeof v === 'string') h += '<span class="sii-chip">'+k+': '+v+'</span> ';
+      });
+      h += '<div class="signal-angle" style="margin-top:6px">'+s.suggested_angle+'</div>';
+      h += '</div>';
+    });
+    document.getElementById('signalsCard').innerHTML = h;
+  } catch(e) { document.getElementById('signalsCard').innerHTML = '<div class="error">'+e.message+'</div>'; }
+}
+
+loadHealth(); loadFreshness(); loadGovernance(); loadSignals();
+</script>
+</body>
+</html>"""
+
+
+@app.get("/admin")
+async def admin_panel(request: Request):
+    admin_key = os.environ.get("ADMIN_KEY", "")
+    provided = request.query_params.get("key", "")
+    if not admin_key or provided != admin_key:
+        raise HTTPException(status_code=401, detail="Unauthorized — provide ?key=YOUR_ADMIN_KEY")
+    return HTMLResponse(content=ADMIN_HTML)
+
+
+# =============================================================================
 # SPA Catch-All — serves index.html for all non-API routes
 # =============================================================================
 
 @app.get("/{full_path:path}")
 async def serve_spa(request: Request, full_path: str):
-    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi"):
+    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi") or full_path.startswith("admin"):
         raise HTTPException(status_code=404, detail="Not found")
     index_path = os.path.join(FRONTEND_DIR, "index.html")
     if os.path.exists(index_path):

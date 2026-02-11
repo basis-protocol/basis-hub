@@ -75,11 +75,19 @@ API endpoints remain at `/api/*`. No CORS issues since same domain.
 - `GET /api/governance/sentiment` - Sentiment trends
 - `GET /api/content/opportunities` - Content opportunities
 
+## Admin Endpoints (require ?key=ADMIN_KEY)
+- `GET /admin` - Admin panel HTML page
+- `GET /api/admin/health` - Enhanced system health with coverage, table sizes, crawl info
+- `GET /api/admin/freshness` - Per-stablecoin data freshness by category
+- `GET /api/admin/governance/stats` - Governance doc counts, mention breakdowns, sentiment
+- `GET /api/admin/content/signals` - Hot governance topics matched to SII scores
+
 ## Environment Variables
 - `DATABASE_URL` - PostgreSQL connection (auto-configured)
 - `COINGECKO_API_KEY` - Required for live scoring
 - `ETHERSCAN_API_KEY` - Required for on-chain data
 - `ANTHROPIC_API_KEY` - Optional, for content generation
+- `ADMIN_KEY` - Required for admin panel access (/admin?key=...)
 - `WORKER_ENABLED` - Set to "true" to enable background scoring
 - `COLLECTION_INTERVAL` - Minutes between scoring cycles (default: 60)
 
@@ -87,6 +95,10 @@ API endpoints remain at `/api/*`. No CORS issues since same domain.
 Command: `python main.py`
 
 ## Recent Changes
+- 2026-02-11: Added admin panel and admin API endpoints
+  - /api/admin/health, /api/admin/freshness, /api/admin/governance/stats, /api/admin/content/signals
+  - /admin HTML page with dark theme: health, freshness, governance, content signals
+  - ADMIN_KEY query parameter authentication on all admin routes
 - 2026-02-11: Added React frontend dashboard
   - Vite + React 18 SPA served from root URL by FastAPI
   - Rankings table, detail view with score history chart, methodology page
