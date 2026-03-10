@@ -74,23 +74,42 @@ def run_migrations():
         result = fetch_one("SELECT 1 FROM migrations WHERE name = '002_import_governance'")
         if result:
             logger.info("Migration 002_import_governance already applied ✓")
+    except Exception:
+        result = None
+
+    if not result:
+        logger.info("Applying migration 002: import governance data...")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "migration_002",
+            os.path.join(os.path.dirname(__file__), "migrations", "002_import_governance.py")
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        success = mod.run(get_conn)
+        if success:
+            logger.info("Migration 002_import_governance applied ✓")
+        else:
+            logger.warning("Migration 002_import_governance had issues")
+
+    try:
+        result = fetch_one("SELECT 1 FROM migrations WHERE name = '006_add_usd1'")
+        if result:
+            logger.info("Migration 006_add_usd1 already applied ✓")
             return
     except Exception:
         pass
 
-    logger.info("Applying migration 002: import governance data...")
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "migration_002",
-        os.path.join(os.path.dirname(__file__), "migrations", "002_import_governance.py")
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    success = mod.run(get_conn)
-    if success:
-        logger.info("Migration 002_import_governance applied ✓")
+    logger.info("Applying migration 006: add USD1 stablecoin...")
+    migration_path = os.path.join(os.path.dirname(__file__), "migrations", "006_add_usd1.sql")
+    if os.path.exists(migration_path):
+        success = run_migration(migration_path)
+        if success:
+            logger.info("Migration 006_add_usd1 applied ✓")
+        else:
+            logger.error("Failed to apply migration 006_add_usd1")
     else:
-        logger.warning("Migration 002_import_governance had issues")
+        logger.warning(f"Migration file not found: {migration_path}")
 
 
 def main():
