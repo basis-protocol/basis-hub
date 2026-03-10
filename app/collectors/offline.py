@@ -30,6 +30,7 @@ AUDITOR_TIERS = {
     "state street": 2, "ankura": 2,
     "n/a": 4, "n/a (on-chain)": 3, "n/a (algorithmic)": 3,
     "various custodians": 3,
+    "bitgo trust company": 2,
 }
 
 TIER_SCORES = {1: 100, 2: 80, 3: 60, 4: 30}
@@ -152,7 +153,7 @@ def collect_regulatory_components(stablecoin_id: str) -> list[dict]:
     
     # Regulatory score: regulated issuers get higher scores
     issuer = cfg.get("issuer", "")
-    regulated_issuers = {"Circle": 90, "Paxos": 85, "Gemini": 80, "Archblock": 60}
+    regulated_issuers = {"Circle": 90, "Paxos": 85, "Gemini": 80, "Archblock": 60, "World Liberty Financial": 55}
     defi_issuers = {"MakerDAO": 55, "Frax Finance": 50, "TRON DAO": 40, "Ethena Labs": 45}
     
     reg_score = regulated_issuers.get(issuer, defi_issuers.get(issuer, 50))
@@ -191,7 +192,7 @@ def collect_governance_components(stablecoin_id: str) -> list[dict]:
     issuer = cfg.get("issuer", "")
     
     # Governance model score
-    centralized_issuers = {"Circle": 70, "Tether": 55, "Paxos": 70, "First Digital": 60, "Archblock": 55}
+    centralized_issuers = {"Circle": 70, "Tether": 55, "Paxos": 70, "First Digital": 60, "Archblock": 55, "World Liberty Financial": 55}
     dao_issuers = {"MakerDAO": 80, "Frax Finance": 75, "TRON DAO": 50, "Ethena Labs": 60}
     
     gov_score = centralized_issuers.get(issuer, dao_issuers.get(issuer, 50))
@@ -232,6 +233,7 @@ RESERVE_PROFILES = {
     "tusd": {"reserve_ratio": 1.00, "cash_pct": 85, "tbill_pct": 70},
     "usdd": {"reserve_ratio": 3.00, "cash_pct": 10, "tbill_pct": 0},
     "usde": {"reserve_ratio": 1.01, "cash_pct": 0, "tbill_pct": 0},
+    "usd1": {"reserve_ratio": 1.00, "cash_pct": 90, "tbill_pct": 85},
 }
 
 

@@ -158,6 +158,20 @@ STABLECOIN_REGISTRY: Dict[str, Dict[str, Any]] = {
             "transparency_url": "https://docs.ethena.fi/resources/custodian-attestations",
         },
     },
+    "usd1": {
+        "name": "World Liberty Financial USD",
+        "symbol": "USD1",
+        "issuer": "World Liberty Financial",
+        "coingecko_id": "usd1-wlfi",
+        "contract": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+        "decimals": 18,
+        "attestation": {
+            "auditor": "BitGo Trust Company",
+            "frequency": "monthly",
+            "frequency_days": 35,
+            "transparency_url": "https://worldlibertyfinancial.com/usd1",
+        },
+    },
 }
 
 

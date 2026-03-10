@@ -105,6 +105,7 @@ ESTIMATED_HOLDER_COUNTS = {
     "tusd": 52_000,
     "usdd": 28_000,
     "usde": 120_000,
+    "usd1": 15_000,
 }
 
 
@@ -335,5 +336,6 @@ def _estimate_total_supply(stablecoin_id: str, holder_balances: list[dict]) -> f
         "tusd": 500_000_000,
         "usdd": 750_000_000,
         "usde": 6_000_000_000,
+        "usd1": 3_400_000_000,
     }
     return SUPPLY_ESTIMATES.get(stablecoin_id, 1_000_000_000)

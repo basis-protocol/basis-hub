@@ -49,7 +49,7 @@ The built output in `frontend/dist/` is served by FastAPI at the root URL.
 API endpoints remain at `/api/*`. No CORS issues since same domain.
 
 ## Database Tables
-- `stablecoins` - Registry of 9 tracked stablecoins
+- `stablecoins` - Registry of 10 tracked stablecoins
 - `component_readings` - Raw data points from collectors
 - `scores` - Current computed SII scores
 - `score_history` - Daily snapshots
@@ -95,6 +95,12 @@ API endpoints remain at `/api/*`. No CORS issues since same domain.
 Command: `python main.py`
 
 ## Recent Changes
+- 2026-03-10: Added USD1 (World Liberty Financial) as 10th stablecoin
+  - CoinGecko ID: usd1-wlfi, contract: 0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d
+  - BitGo Trust Company attestation (tier 2), monthly frequency
+  - Reserve profile: 100% backed, 90% cash, 85% T-bills
+  - First score: 83.36 (A-) with 42 components
+  - Updated config.py, etherscan.py, offline.py, migrations
 - 2026-02-11: Added admin panel and admin API endpoints
   - /api/admin/health, /api/admin/freshness, /api/admin/governance/stats, /api/admin/content/signals
   - /admin HTML page with dark theme: health, freshness, governance, content signals

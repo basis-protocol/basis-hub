@@ -252,6 +252,10 @@ VALUES
     
     ('usde', 'Ethena USDe', 'USDe', 'Ethena Labs', 'ethena-usde', '0x4c9EDD5852cd905f086C759E8383e09bff1E68B3', 18, TRUE,
      '{"auditor": "Various Custodians", "frequency": "weekly", "frequency_days": 7, "transparency_url": "https://docs.ethena.fi/resources/custodian-attestations"}'::jsonb,
+     ARRAY[]::TEXT[]),
+    
+    ('usd1', 'World Liberty Financial USD', 'USD1', 'World Liberty Financial', 'usd1-wlfi', '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d', 18, TRUE,
+     '{"auditor": "BitGo Trust Company", "frequency": "monthly", "frequency_days": 35, "transparency_url": "https://worldlibertyfinancial.com/usd1"}'::jsonb,
      ARRAY[]::TEXT[])
 ON CONFLICT (id) DO NOTHING;
 
