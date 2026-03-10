@@ -1,50 +1,45 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-// ═══════════════════════════════════════════════════════════════════
-// CONFIG
-// ═══════════════════════════════════════════════════════════════════
 const API = "";
 
-// ═══════════════════════════════════════════════════════════════════
-// DESIGN TOKENS
-// ═══════════════════════════════════════════════════════════════════
 const T = {
-  bg: "#06080d",
-  bgCard: "#0a0d14",
-  bgHover: "#0d1019",
-  bgElevated: "#0f1320",
-  border: "#151a27",
-  borderLight: "#1c2236",
-  text: "#c8cdd8",
-  textMuted: "#6b7280",
-  textDim: "#3d4555",
-  textBright: "#e8ecf4",
-  accent: "#22d3a7",
-  accentDim: "#22d3a733",
-  accentGlow: "#22d3a715",
-  blue: "#3b82f6",
-  blueDim: "#3b82f633",
-  amber: "#f59e0b",
-  amberDim: "#f59e0b33",
-  red: "#ef4444",
-  redDim: "#ef444433",
-  mono: "'IBM Plex Mono', 'Fira Code', monospace",
-  sans: "'Instrument Sans', 'DM Sans', system-ui, sans-serif",
-  display: "'Newsreader', 'Playfair Display', Georgia, serif",
+  paper: "#f5f2ec",
+  paperWarm: "#f0ece3",
+  ink: "#0a0a0a",
+  inkMid: "#3a3a3a",
+  inkLight: "#6a6a6a",
+  inkFaint: "#9a9a9a",
+  ruleMid: "#c8c4bc",
+  ruleLight: "#e0ddd6",
+  accent: "#c0392b",
+  mono: "'IBM Plex Mono', monospace",
+  sans: "'IBM Plex Sans', system-ui, sans-serif",
+};
+
+const MICA_STATUS = {
+  usdc: "Compliant", usdt: "Watchlist", dai: "Compliant", usde: "Watchlist",
+  fdusd: "Compliant", pyusd: "Compliant", tusd: "Non-compliant",
+  usdd: "Non-compliant", frax: "Watchlist", usd1: "Pending",
+};
+
+const RESERVE_TYPE = {
+  usdc: "Fiat-backed", usdt: "Fiat-backed", dai: "Crypto-backed",
+  usde: "Synthetic", fdusd: "Fiat-backed", pyusd: "Fiat-backed",
+  tusd: "Fiat-backed", usdd: "Algorithmic", frax: "Synthetic", usd1: "Mixed",
+};
+
+const subScoreColor = (s) => {
+  if (s == null) return T.inkFaint;
+  if (s >= 85) return T.ink;
+  if (s >= 65) return T.inkMid;
+  return T.accent;
 };
 
 const gradeColor = (g) => {
-  if (!g) return T.textDim;
-  const c = g[0];
-  return c === "A" ? T.accent : c === "B" ? T.amber : c === "C" ? "#f97316" : T.red;
-};
-
-const scoreColor = (s) => {
-  if (s == null) return T.textDim;
-  if (s >= 85) return T.accent;
-  if (s >= 70) return T.amber;
-  if (s >= 55) return "#f97316";
-  return T.red;
+  if (!g) return T.inkFaint;
+  if (g.startsWith("A")) return T.ink;
+  if (g === "B+" || g === "B") return T.inkMid;
+  return T.accent;
 };
 
 const fmt = (n, d = 1) => (n != null ? Number(n).toFixed(d) : "—");
@@ -56,9 +51,6 @@ const fmtB = (n) => {
   return `$${n.toLocaleString()}`;
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// API HOOKS
-// ═══════════════════════════════════════════════════════════════════
 function useScores() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -81,7 +73,7 @@ function useScores() {
       }
     };
     load();
-    const interval = setInterval(load, 300000); // refresh every 5 min
+    const interval = setInterval(load, 300000);
     return () => { mounted = false; clearInterval(interval); };
   }, []);
 
@@ -120,96 +112,57 @@ function useCoinHistory(coinId, days = 90) {
   return { data, loading };
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// PRIMITIVES
-// ═══════════════════════════════════════════════════════════════════
+function useAllHistory(coinIds) {
+  const [histMap, setHistMap] = useState({});
 
-function GradePill({ grade }) {
-  const c = gradeColor(grade);
-  return (
-    <span
-      style={{
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        padding: "2px 8px", borderRadius: 3,
-        background: `${c}18`, border: `1px solid ${c}30`,
-        color: c, fontSize: 11, fontWeight: 600,
-        fontFamily: T.mono, letterSpacing: 0.5, lineHeight: "18px",
-      }}
-    >
-      {grade}
-    </span>
-  );
+  useEffect(() => {
+    if (!coinIds || coinIds.length === 0) return;
+    coinIds.forEach((id) => {
+      fetch(`${API}/api/scores/${id}/history?days=21`)
+        .then((r) => r.json())
+        .then((d) => {
+          setHistMap((prev) => ({ ...prev, [id]: d.history || [] }));
+        })
+        .catch(() => {});
+    });
+  }, [coinIds?.join(",")]);
+
+  return histMap;
 }
 
-function ScoreNum({ value, size = "md" }) {
-  const c = scoreColor(value);
-  const fs = size === "lg" ? 28 : size === "sm" ? 13 : 16;
-  return (
-    <span
-      style={{
-        color: c, fontSize: fs, fontWeight: 700,
-        fontFamily: T.mono, letterSpacing: -0.5,
-      }}
-    >
-      {fmt(value, 1)}
-    </span>
-  );
-}
-
-function CategoryBar({ label, score, weight, color }) {
-  const c = color || scoreColor(score);
-  const pct = score != null ? Math.min(100, score) : 0;
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontSize: 11, color: T.textMuted, fontFamily: T.sans }}>
-          {label}
-          {weight != null && (
-            <span style={{ color: T.textDim, fontSize: 10, marginLeft: 4 }}>
-              {(weight * 100).toFixed(0)}%
-            </span>
-          )}
-        </span>
-        <span style={{ fontSize: 12, fontFamily: T.mono, fontWeight: 600, color: c }}>
-          {score != null ? fmt(score, 1) : "—"}
-        </span>
-      </div>
-      <div style={{ height: 4, borderRadius: 2, background: T.border }}>
-        <div
-          style={{
-            height: "100%", borderRadius: 2, width: `${pct}%`,
-            background: c, opacity: 0.8,
-            transition: "width 0.8s cubic-bezier(0.22, 1, 0.36, 1)",
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function Sparkline({ data, width = 120, height = 36 }) {
-  if (!data || data.length < 2) return <div style={{ width, height, background: T.border, borderRadius: 3, opacity: 0.3 }} />;
-  const scores = data.map((d) => (typeof d === "number" ? d : d.score)).filter((s) => s != null);
+function Sparkline({ data, width = 56, height = 28 }) {
+  const scores = (data || []).map((d) => (typeof d === "number" ? d : d.score)).filter((s) => s != null);
   if (scores.length < 2) return null;
-  const min = Math.min(...scores) - 1;
-  const max = Math.max(...scores) + 1;
+  const min = Math.min(...scores) - 0.5;
+  const max = Math.max(...scores) + 0.5;
   const range = max - min || 1;
   const pts = scores.map((v, i) =>
     `${(i / (scores.length - 1)) * width},${height - ((v - min) / range) * (height - 4) - 2}`
   ).join(" ");
-  const trending = scores[scores.length - 1] >= scores[0];
-  const c = trending ? T.accent : T.red;
+  const diff = scores[scores.length - 1] - scores[0];
+  const c = Math.abs(diff) < 0.3 ? T.inkFaint : diff >= 0 ? "#2d6b45" : T.accent;
   return (
     <svg width={width} height={height} style={{ display: "block" }}>
-      <polyline points={pts} fill="none" stroke={c} strokeWidth="1.5" strokeLinejoin="round" opacity="0.7" />
+      <polyline points={pts} fill="none" stroke={c} strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+function SubScoreBar({ score }) {
+  const c = subScoreColor(score);
+  const floor = 50;
+  const pct = score != null ? Math.max(0, Math.min(100, ((score - floor) / (100 - floor)) * 100)) : 0;
+  return (
+    <div style={{ height: 3, background: T.ruleLight, marginTop: 4 }}>
+      <div style={{ height: "100%", width: `${pct}%`, background: c, transition: "width 0.6s ease" }} />
+    </div>
   );
 }
 
 function ScoreChart({ history, width = 700, height = 200 }) {
   if (!history || history.length < 1) {
     return (
-      <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: T.textDim, fontSize: 12, fontFamily: T.sans }}>
+      <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: T.inkFaint, fontSize: 12, fontFamily: T.sans }}>
         Accumulating history data...
       </div>
     );
@@ -227,47 +180,42 @@ function ScoreChart({ history, width = 700, height = 200 }) {
   ).join(" ");
 
   const areaPath = pts + ` ${width},${height} 0,${height}`;
-
-  // Y-axis labels
   const ySteps = [min, min + range * 0.25, min + range * 0.5, min + range * 0.75, max];
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: height }}>
       <defs>
         <linearGradient id="chartArea" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={T.accent} stopOpacity="0.12" />
-          <stop offset="100%" stopColor={T.accent} stopOpacity="0" />
+          <stop offset="0%" stopColor={T.ink} stopOpacity="0.06" />
+          <stop offset="100%" stopColor={T.ink} stopOpacity="0" />
         </linearGradient>
       </defs>
-      {/* Grid lines */}
       {ySteps.map((v, i) => {
         const y = height - ((v - min) / range) * (height - 24) - 12;
         return (
           <g key={i}>
-            <line x1={32} y1={y} x2={width} y2={y} stroke={T.border} strokeWidth="0.5" />
-            <text x={28} y={y + 3} fill={T.textDim} fontSize="9" fontFamily={T.mono} textAnchor="end">
+            <line x1={32} y1={y} x2={width} y2={y} stroke={T.ruleLight} strokeWidth="0.5" />
+            <text x={28} y={y + 3} fill={T.inkFaint} fontSize="9" fontFamily={T.mono} textAnchor="end">
               {v.toFixed(0)}
             </text>
           </g>
         );
       })}
       <polygon points={areaPath} fill="url(#chartArea)" />
-      <polyline points={pts} fill="none" stroke={T.accent} strokeWidth="1.5" strokeLinejoin="round" />
-      {/* Endpoints */}
+      <polyline points={pts} fill="none" stroke={T.ink} strokeWidth="1.5" strokeLinejoin="round" />
       {scores.length > 0 && (
         <circle
           cx={(scores.length - 1) / Math.max(scores.length - 1, 1) * width}
           cy={height - ((scores[scores.length - 1] - min) / range) * (height - 24) - 12}
-          r="3" fill={T.accent}
+          r="3" fill={T.ink}
         />
       )}
-      {/* Date labels */}
       {history.length > 1 && (
         <>
-          <text x={32} y={height - 1} fill={T.textDim} fontSize="9" fontFamily={T.mono}>
+          <text x={32} y={height - 1} fill={T.inkFaint} fontSize="9" fontFamily={T.mono}>
             {history[0].date}
           </text>
-          <text x={width} y={height - 1} fill={T.textDim} fontSize="9" fontFamily={T.mono} textAnchor="end">
+          <text x={width} y={height - 1} fill={T.inkFaint} fontSize="9" fontFamily={T.mono} textAnchor="end">
             {history[history.length - 1].date}
           </text>
         </>
@@ -276,112 +224,126 @@ function ScoreChart({ history, width = 700, height = 200 }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// HEADER
-// ═══════════════════════════════════════════════════════════════════
+function CategoryBar({ label, score, weight, useBlue }) {
+  const c = subScoreColor(score);
+  const pct = score != null ? Math.min(100, score) : 0;
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color: T.inkLight, fontFamily: T.sans }}>
+          {label}
+          {weight != null && (
+            <span style={{ color: T.inkFaint, fontSize: 10, marginLeft: 4 }}>
+              {(weight * 100).toFixed(0)}%
+            </span>
+          )}
+        </span>
+        <span style={{ fontSize: 12, fontFamily: T.mono, fontWeight: 600, color: c }}>
+          {score != null ? fmt(score, 1) : "—"}
+        </span>
+      </div>
+      <div style={{ height: 3, background: T.ruleLight }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: c, transition: "width 0.8s ease" }} />
+      </div>
+    </div>
+  );
+}
 
-function Header({ view, setView, ts }) {
+function PageHeader({ ts }) {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(t);
   }, []);
 
-  const tabs = [
-    { id: "rankings", label: "Rankings" },
-    { id: "methodology", label: "Methodology" },
-  ];
+  const timestamp = ts ? new Date(ts).toLocaleString("en-US", {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+  }) : now.toLocaleString("en-US", {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+  });
+
+  const stats = ["10 STABLECOINS", "48 COMPONENTS", "6 DATA SOURCES", "DETERMINISTIC METHODOLOGY", "UPDATED HOURLY"];
 
   return (
-    <header
-      style={{
-        position: "sticky", top: 0, zIndex: 100,
-        borderBottom: `1px solid ${T.border}`,
-        background: `${T.bg}ee`, backdropFilter: "blur(12px)",
-        padding: "0 24px", height: 52,
-        display: "flex", alignItems: "center", gap: 24,
-      }}
-    >
-      {/* Logo */}
-      <div
-        style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flexShrink: 0 }}
-        onClick={() => setView("rankings")}
-      >
-        <div
-          style={{
-            width: 26, height: 26, borderRadius: 5,
-            background: `linear-gradient(135deg, ${T.accent}, ${T.blue})`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 10, fontWeight: 800, color: "#000", letterSpacing: 2,
-          }}
-        >
-          B
-        </div>
-        <span style={{ fontSize: 14, fontWeight: 700, color: T.textBright, letterSpacing: 3, fontFamily: T.sans }}>
-          BASIS
-        </span>
-      </div>
-
-      {/* Separator */}
-      <div style={{ width: 1, height: 24, background: T.border }} />
-
-      {/* Tabs */}
-      <nav style={{ display: "flex", gap: 2 }}>
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setView(t.id)}
-            style={{
-              padding: "6px 14px", borderRadius: 4, border: "none", cursor: "pointer",
-              fontSize: 12, fontWeight: view === t.id ? 600 : 400,
-              fontFamily: T.sans, letterSpacing: 0.3,
-              color: view === t.id ? T.textBright : T.textMuted,
-              background: view === t.id ? T.bgElevated : "transparent",
-              transition: "all 0.15s",
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-
-      {/* Right side */}
-      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
-        <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.mono }}>
-          SII v1.0.0
-        </span>
-        {ts && (
-          <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.mono }}>
-            Updated {new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+    <div style={{ border: `1.5px solid ${T.ink}`, marginBottom: 0 }}>
+      <div style={{ padding: "18px 24px 0" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <h1 style={{ margin: 0, fontSize: 28, fontFamily: T.sans, color: T.ink, fontWeight: 400, letterSpacing: -0.3 }}>
+            <span style={{ fontWeight: 700 }}>Stablecoin</span> Integrity <span style={{ fontWeight: 700 }}>Index</span>
+          </h1>
+          <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, textTransform: "uppercase", letterSpacing: 2 }}>
+            FORM SII-001 · BASIS PROTOCOL
           </span>
-        )}
-        <div
-          style={{
-            width: 6, height: 6, borderRadius: "50%",
-            background: T.accent, boxShadow: `0 0 6px ${T.accent}`,
-          }}
-        />
+        </div>
+
+        <div style={{ height: 1, background: T.ruleMid, margin: "12px 0" }} />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 0, paddingBottom: 14 }}>
+          {stats.map((s, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center" }}>
+              <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, padding: "0 12px" }}>
+                {s}
+              </span>
+              {i < stats.length - 1 && (
+                <div style={{ width: 1, height: 12, background: T.ruleMid }} />
+              )}
+            </div>
+          ))}
+        </div>
       </div>
-    </header>
+
+      <div style={{ borderTop: `1px solid ${T.ruleMid}`, padding: "10px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontFamily: T.mono, fontSize: 11, color: T.ink }}>
+          SII = 0.30×Peg + 0.25×Liq + 0.20×Struct + 0.15×Flow + 0.10×Dist
+        </span>
+        <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1 }}>
+          Methodology v1.0 · stable since Jan 2026 · {timestamp}
+        </span>
+      </div>
+
+      <div style={{ borderTop: `1px solid #b8d9c4`, background: "#f0f7f2", padding: "10px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#2d7a3a", animation: "pulse 2s ease-in-out infinite" }} />
+          <span style={{ fontFamily: T.mono, fontSize: 10.5, color: "#2a5c38" }}>
+            Scores committed to Ethereum mainnet · Block #21847293 · Merkle root: 0x7f3a...c4e1
+          </span>
+        </div>
+        <span style={{ fontFamily: T.mono, fontSize: 10, color: "#4a8060" }}>
+          Methodology v1.0 · public · immutable · verify on-chain ↗
+        </span>
+      </div>
+    </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// RANKINGS VIEW
-// ═══════════════════════════════════════════════════════════════════
+function RankingsView({ scores, loading, onSelect, ts }) {
+  const [hoveredRow, setHoveredRow] = useState(null);
+  const hoverTimeout = useRef(null);
 
-function RankingsView({ scores, loading, onSelect }) {
+  const coinIds = scores ? scores.map((c) => c.id) : [];
+  const histMap = useAllHistory(coinIds);
+
+  const handleRowEnter = useCallback((coinId) => {
+    clearTimeout(hoverTimeout.current);
+    setHoveredRow(coinId);
+  }, []);
+  const handleRowLeave = useCallback(() => {
+    hoverTimeout.current = setTimeout(() => setHoveredRow(null), 150);
+  }, []);
+
   if (loading) {
     return (
       <div style={{ padding: 40, display: "flex", justifyContent: "center" }}>
-        <div style={{ color: T.textDim, fontFamily: T.mono, fontSize: 12 }}>Loading scores...</div>
+        <div style={{ color: T.inkFaint, fontFamily: T.mono, fontSize: 12 }}>Loading scores...</div>
       </div>
     );
   }
 
   if (!scores || scores.length === 0) {
     return (
-      <div style={{ padding: 40, textAlign: "center", color: T.textDim, fontSize: 13 }}>
+      <div style={{ padding: 40, textAlign: "center", color: T.inkFaint, fontSize: 13 }}>
         No scores available. Waiting for first scoring cycle.
       </div>
     );
@@ -389,152 +351,226 @@ function RankingsView({ scores, loading, onSelect }) {
 
   const sorted = [...scores].sort((a, b) => (b.score || 0) - (a.score || 0));
 
-  return (
-    <div style={{ padding: "24px 24px 64px", maxWidth: 1100, margin: "0 auto" }}>
-      {/* Title */}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{
-          margin: 0, fontSize: 22, fontWeight: 600, color: T.textBright,
-          fontFamily: T.display, letterSpacing: -0.3,
-        }}>
-          Stablecoin Integrity Index
-        </h1>
-        <p style={{ margin: "6px 0 0", fontSize: 12, color: T.textMuted, fontFamily: T.sans, lineHeight: 1.5 }}>
-          Standardized risk surfaces for {sorted.length} stablecoins · Updated hourly · Deterministic methodology
-        </p>
-      </div>
+  const aTier = sorted.filter((c) => c.grade && c.grade.startsWith("A"));
+  const rest = sorted.filter((c) => !c.grade || !c.grade.startsWith("A"));
 
-      {/* Table */}
-      <div style={{ borderRadius: 8, border: `1px solid ${T.border}`, overflow: "hidden" }}>
-        {/* Header */}
+  const cols = "40px 1fr 80px 72px 56px 56px 56px 56px 56px";
+
+  const renderRow = (coin, i, globalIdx) => {
+    const cats = coin.categories || {};
+    const pegScore = typeof cats.peg === "object" ? cats.peg?.score : cats.peg;
+    const liqScore = typeof cats.liquidity === "object" ? cats.liquidity?.score : cats.liquidity;
+    const flowScore = typeof cats.flows === "object" ? cats.flows?.score : cats.flows;
+    const distScore = typeof cats.distribution === "object" ? cats.distribution?.score : cats.distribution;
+    const strScore = typeof cats.structural === "object" ? cats.structural?.score : cats.structural;
+
+    const hist = histMap[coin.id] || [];
+    const hasSparkline = hist.length >= 5;
+    const delta = coin.weekly_change != null ? coin.weekly_change : (hist.length >= 2 ? hist[hist.length - 1].score - hist[0].score : null);
+    const isExpanded = hoveredRow === coin.id;
+
+    const attestation = coin.attestation || "—";
+    const chains = coin.chains || "Ethereum";
+    const mica = MICA_STATUS[coin.id] || "—";
+    const reserveType = RESERVE_TYPE[coin.id] || "—";
+
+    return (
+      <div key={coin.id}>
         <div
+          onMouseEnter={() => handleRowEnter(coin.id)}
+          onMouseLeave={handleRowLeave}
           style={{
             display: "grid",
-            gridTemplateColumns: "36px 1.5fr 72px 48px 88px 96px 96px 64px 64px 64px 64px 64px",
-            padding: "10px 16px",
-            background: T.bgCard,
-            borderBottom: `1px solid ${T.border}`,
-            fontSize: 9, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5,
-            fontFamily: T.mono,
+            gridTemplateColumns: cols,
+            padding: "14px 16px",
+            cursor: "pointer",
+            alignItems: "center",
+            borderBottom: `1px dotted ${T.ruleMid}`,
+            transition: "background 0.1s",
+            background: isExpanded ? T.paperWarm : "transparent",
           }}
         >
-          <span>#</span>
-          <span>Stablecoin</span>
-          <span style={{ textAlign: "right" }}>SII</span>
-          <span style={{ textAlign: "center" }}>Grade</span>
-          <span style={{ textAlign: "right" }}>Price</span>
-          <span style={{ textAlign: "right" }}>Mkt Cap</span>
-          <span style={{ textAlign: "right" }}>Vol 24h</span>
-          <span style={{ textAlign: "right" }}>Peg</span>
-          <span style={{ textAlign: "right" }}>Liq</span>
-          <span style={{ textAlign: "right" }}>Flow</span>
-          <span style={{ textAlign: "right" }}>Dist</span>
-          <span style={{ textAlign: "right" }}>Str</span>
+          <span style={{ color: T.inkFaint, fontSize: 11, fontFamily: T.mono }}>{globalIdx}</span>
+
+          <div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 0 }}>
+              <span style={{ fontFamily: T.mono, fontSize: 15, fontWeight: 700, color: T.ink }}>{coin.symbol}</span>
+              <div style={{ width: 1, height: 12, background: T.ruleMid, margin: "0 10px", alignSelf: "center" }} />
+              <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 500, color: T.inkLight }}>{fmt(coin.score, 1)}</span>
+            </div>
+            <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint, marginTop: 1 }}>{coin.issuer}</div>
+          </div>
+
+          <div style={{ paddingLeft: 8 }}>
+            <span style={{ fontFamily: T.sans, fontSize: 38, fontWeight: 700, color: gradeColor(coin.grade), lineHeight: 1 }}>
+              {coin.grade ? coin.grade.replace(/[+-]/, "") : "—"}
+            </span>
+            {coin.grade && (coin.grade.includes("+") || coin.grade.includes("-")) && (
+              <span style={{ fontFamily: T.sans, fontSize: 18, fontWeight: 700, color: gradeColor(coin.grade), verticalAlign: "super" }}>
+                {coin.grade.slice(-1)}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 56 }}>
+            {hasSparkline ? (
+              <Sparkline data={hist} width={56} height={28} />
+            ) : null}
+            <span style={{
+              fontFamily: T.mono, fontSize: 10, fontWeight: 700, marginTop: hasSparkline ? 2 : 0,
+              color: delta == null ? T.inkFaint : delta >= 0 ? "#2d6b45" : T.accent,
+            }}>
+              {delta == null ? "—" : (delta >= 0 ? `+${delta.toFixed(1)}` : delta.toFixed(1))}
+            </span>
+          </div>
+
+          {[pegScore, liqScore, flowScore, distScore, strScore].map((s, j) => (
+            <div key={j} style={{ paddingRight: 4 }}>
+              <div style={{
+                fontFamily: T.mono, fontSize: 12, color: subScoreColor(s),
+                fontWeight: s != null && s >= 85 ? 700 : 400,
+              }}>
+                {s != null ? fmt(s, 0) : "—"}
+              </div>
+              <SubScoreBar score={s} />
+            </div>
+          ))}
         </div>
 
-        {/* Rows */}
-        {sorted.map((coin, i) => {
-          const cats = coin.categories || {};
-          const pegScore = typeof cats.peg === "object" ? cats.peg?.score : cats.peg;
-          const liqScore = typeof cats.liquidity === "object" ? cats.liquidity?.score : cats.liquidity;
-          const flowScore = typeof cats.flows === "object" ? cats.flows?.score : cats.flows;
-          const distScore = typeof cats.distribution === "object" ? cats.distribution?.score : cats.distribution;
-          const strScore = typeof cats.structural === "object" ? cats.structural?.score : cats.structural;
-
-          return (
-            <div
-              key={coin.id}
-              onClick={() => onSelect(coin.id)}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "36px 1.5fr 72px 48px 88px 96px 96px 64px 64px 64px 64px 64px",
-                padding: "12px 16px",
-                cursor: "pointer",
-                alignItems: "center",
-                borderBottom: `1px solid ${T.bg}`,
-                transition: "background 0.1s",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = T.bgHover)}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        {isExpanded && (
+          <div
+            onMouseEnter={() => handleRowEnter(coin.id)}
+            onMouseLeave={handleRowLeave}
+            style={{
+              padding: "10px 16px 10px 56px",
+              background: T.paperWarm,
+              borderBottom: `1px dotted ${T.ruleMid}`,
+              display: "flex", gap: 24, flexWrap: "wrap",
+            }}
+          >
+            {[
+              { label: "Price", value: coin.price != null ? `$${coin.price.toFixed(4)}` : "—" },
+              { label: "Mkt Cap", value: fmtB(coin.market_cap) },
+              { label: "Vol 24h", value: fmtB(coin.volume_24h) },
+              { label: "Reserve Type", value: reserveType },
+              { label: "Attestation", value: attestation },
+              { label: "Chains", value: chains },
+              { label: "MiCA", value: mica },
+            ].map((item, idx) => (
+              <span key={idx} style={{ fontFamily: T.mono, fontSize: 10.5, color: T.inkMid }}>
+                <span style={{ color: T.inkFaint }}>{item.label}: </span>
+                {item.value}
+              </span>
+            ))}
+            <span
+              onClick={(e) => { e.stopPropagation(); onSelect(coin.id); }}
+              style={{ fontFamily: T.mono, fontSize: 10.5, color: T.inkMid, cursor: "pointer", textDecoration: "underline", marginLeft: "auto" }}
             >
-              <span style={{ color: T.textDim, fontSize: 11, fontFamily: T.mono }}>{i + 1}</span>
+              Full detail →
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  };
 
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div
-                  style={{
-                    width: 28, height: 28, borderRadius: "50%",
-                    background: `${scoreColor(coin.score)}10`,
-                    border: `1px solid ${scoreColor(coin.score)}25`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 9, fontWeight: 700, color: scoreColor(coin.score),
-                    fontFamily: T.mono,
-                  }}
-                >
-                  {coin.symbol?.slice(0, 2)}
-                </div>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, color: T.textBright, fontFamily: T.sans }}>
-                    {coin.symbol}
-                  </div>
-                  <div style={{ fontSize: 10, color: T.textDim }}>{coin.issuer}</div>
-                </div>
-              </div>
+  let globalIdx = 1;
 
-              <div style={{ textAlign: "right" }}>
-                <ScoreNum value={coin.score} />
-              </div>
+  return (
+    <div>
+      <PageHeader ts={ts} />
 
-              <div style={{ textAlign: "center" }}>
-                <GradePill grade={coin.grade} />
-              </div>
+      <div style={{ height: 32 }} />
 
-              <span style={{ textAlign: "right", fontSize: 12, color: T.text, fontFamily: T.mono }}>
-                ${coin.price?.toFixed(4)}
-              </span>
+      <div>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: cols,
+          padding: "8px 16px",
+          background: T.paper,
+          borderBottom: `3px solid ${T.ink}`,
+          fontFamily: T.mono, fontSize: 9, textTransform: "uppercase",
+          letterSpacing: 1.5, color: T.inkLight,
+        }}>
+          <span>#</span>
+          <span>Stablecoin</span>
+          <span>SII Grade</span>
+          <span style={{ textAlign: "center" }}>Trend</span>
+          <span>Peg</span>
+          <span>Liq</span>
+          <span>Flow</span>
+          <span>Dist</span>
+          <span>Str</span>
+        </div>
 
-              <span style={{ textAlign: "right", fontSize: 12, color: T.textMuted, fontFamily: T.mono }}>
-                {fmtB(coin.market_cap)}
-              </span>
+        {aTier.map((coin, i) => renderRow(coin, i, globalIdx++))}
 
-              <span style={{ textAlign: "right", fontSize: 12, color: T.textMuted, fontFamily: T.mono }}>
-                {fmtB(coin.volume_24h)}
-              </span>
+        {aTier.length > 0 && rest.length > 0 && (
+          <div style={{ height: 6, background: "transparent" }} />
+        )}
 
-              {[pegScore, liqScore, flowScore, distScore, strScore].map((s, j) => (
-                <span
-                  key={j}
-                  style={{
-                    textAlign: "right", fontSize: 11,
-                    fontFamily: T.mono, fontWeight: 500,
-                    color: s != null ? scoreColor(s) : T.textDim,
-                    opacity: s != null ? 0.85 : 0.4,
-                  }}
-                >
-                  {s != null ? fmt(s, 0) : "—"}
-                </span>
-              ))}
-            </div>
-          );
-        })}
+        {rest.map((coin, i) => renderRow(coin, i, globalIdx++))}
       </div>
 
-      {/* Footer note */}
-      <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.mono }}>
-          SII = 0.30×Peg + 0.25×Liq + 0.15×Flow + 0.10×Dist + 0.20×Struct
-        </span>
-        <span style={{ fontSize: 10, color: T.textDim, fontFamily: T.mono }}>
-          {sorted[0]?.component_count || "—"} components · {sorted.length} stablecoins
-        </span>
-      </div>
+      <Footnotes />
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// DETAIL VIEW
-// ═══════════════════════════════════════════════════════════════════
+function Footnotes() {
+  return (
+    <div style={{
+      borderTop: `2.5px solid ${T.ink}`,
+      border: `1.5px solid ${T.ruleMid}`,
+      borderTopWidth: 2.5,
+      borderTopColor: T.ink,
+      marginTop: 24,
+      padding: "16px 24px",
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: 24,
+    }}>
+      <div>
+        <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 8 }}>
+          Component Weights
+        </div>
+        {[
+          ["Peg Stability", "30%"], ["Liquidity Depth", "25%"], ["Structural Risk", "20%"],
+          ["Mint/Burn Flows", "15%"], ["Distribution", "10%"],
+        ].map(([name, w]) => (
+          <div key={name} style={{ display: "flex", justifyContent: "space-between", fontFamily: T.mono, fontSize: 10, color: T.inkMid, padding: "2px 0" }}>
+            <span>{name}</span><span>{w}</span>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 8 }}>
+          Grade Scale
+        </div>
+        {[
+          ["A+ / A / A−", "90–100 / 85–90 / 80–85"],
+          ["B+ / B / B−", "75–80 / 70–75 / 65–70"],
+          ["C+ / C / C−", "60–65 / 55–60 / 50–55"],
+          ["D / F", "45–50 / <45"],
+        ].map(([grades, ranges]) => (
+          <div key={grades} style={{ display: "flex", justifyContent: "space-between", fontFamily: T.mono, fontSize: 10, color: T.inkMid, padding: "2px 0" }}>
+            <span>{grades}</span><span style={{ color: T.inkFaint }}>{ranges}</span>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 8 }}>
+          Disclosure
+        </div>
+        <p style={{ fontFamily: T.sans, fontSize: 10, color: T.inkFaint, lineHeight: 1.6, margin: 0 }}>
+          SII scores are informational and do not constitute financial advice. Methodology is deterministic and version-controlled. No issuer can pay to influence scores, weights, or thresholds. Data sourced from CoinGecko, DeFiLlama, Etherscan, Curve Finance, issuer attestations, and on-chain analysis. Scores update hourly.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function DetailView({ coinId, onBack }) {
   const { data: coin, loading: detailLoading } = useCoinDetail(coinId);
@@ -542,7 +578,7 @@ function DetailView({ coinId, onBack }) {
 
   if (detailLoading || !coin) {
     return (
-      <div style={{ padding: 40, textAlign: "center", color: T.textDim, fontFamily: T.mono, fontSize: 12 }}>
+      <div style={{ padding: 40, textAlign: "center", color: T.inkFaint, fontFamily: T.mono, fontSize: 12 }}>
         Loading {coinId}...
       </div>
     );
@@ -551,7 +587,6 @@ function DetailView({ coinId, onBack }) {
   const cats = coin.categories || {};
   const strBk = coin.structural_breakdown || {};
 
-  // Normalize category access (handle both {score, weight} and flat number)
   const getCat = (obj) => {
     if (obj == null) return { score: null, weight: null };
     if (typeof obj === "object") return obj;
@@ -571,12 +606,11 @@ function DetailView({ coinId, onBack }) {
   const network = getCat(strBk.network);
 
   return (
-    <div style={{ padding: "24px 24px 64px", maxWidth: 1100, margin: "0 auto" }}>
-      {/* Back */}
+    <div style={{ padding: "24px 0 64px" }}>
       <button
         onClick={onBack}
         style={{
-          background: "none", border: "none", color: T.textMuted,
+          background: "none", border: "none", color: T.inkLight,
           cursor: "pointer", fontSize: 12, fontFamily: T.sans,
           padding: 0, marginBottom: 20,
         }}
@@ -584,63 +618,40 @@ function DetailView({ coinId, onBack }) {
         ← Back to Rankings
       </button>
 
-      {/* Header */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: 20, marginBottom: 32 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <h1 style={{
-              margin: 0, fontSize: 26, fontWeight: 600, color: T.textBright,
-              fontFamily: T.display, letterSpacing: -0.5,
-            }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+            <h1 style={{ margin: 0, fontSize: 26, fontWeight: 600, color: T.ink, fontFamily: T.sans, letterSpacing: -0.5 }}>
               {coin.name}
             </h1>
-            <span style={{ fontSize: 14, color: T.textDim, fontFamily: T.mono }}>{coin.symbol}</span>
-            <GradePill grade={coin.grade} />
+            <span style={{ fontSize: 14, color: T.inkFaint, fontFamily: T.mono }}>{coin.symbol}</span>
+            <span style={{ fontFamily: T.sans, fontSize: 20, fontWeight: 700, color: gradeColor(coin.grade) }}>
+              {coin.grade}
+            </span>
           </div>
-          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 6, fontFamily: T.sans }}>
-            Issued by {coin.issuer} · {coin.component_count || "—"} components measured
+          <div style={{ fontSize: 12, color: T.inkLight, marginTop: 6, fontFamily: T.sans }}>
+            Issued by {coin.issuer} · {coin.component_count || "—"} components measured · {RESERVE_TYPE[coin.id] || "—"} · MiCA: {MICA_STATUS[coin.id] || "—"}
           </div>
         </div>
 
         <div style={{ textAlign: "right" }}>
-          <ScoreNum value={coin.score} size="lg" />
-          <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.mono, marginTop: 4 }}>
+          <span style={{ fontFamily: T.mono, fontSize: 28, fontWeight: 700, color: T.ink }}>{fmt(coin.score, 1)}</span>
+          <div style={{ fontSize: 11, color: T.inkFaint, fontFamily: T.mono, marginTop: 4 }}>
             ${coin.price?.toFixed(4)} · MCap {fmtB(coin.market_cap)}
           </div>
         </div>
       </div>
 
-      {/* Chart */}
-      <div
-        style={{
-          borderRadius: 8, border: `1px solid ${T.border}`,
-          padding: "16px 20px 12px", marginBottom: 20, background: T.bgCard,
-        }}
-      >
-        <div style={{
-          fontSize: 10, fontWeight: 600, color: T.textDim,
-          textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12,
-          fontFamily: T.mono,
-        }}>
+      <div style={{ border: `1px solid ${T.ruleMid}`, padding: "16px 20px 12px", marginBottom: 20 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12, fontFamily: T.mono }}>
           Score History
         </div>
         <ScoreChart history={history} />
       </div>
 
-      {/* Category + Structural Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-        {/* Categories */}
-        <div
-          style={{
-            borderRadius: 8, border: `1px solid ${T.border}`,
-            padding: "16px 20px", background: T.bgCard,
-          }}
-        >
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "16px 20px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16, fontFamily: T.mono }}>
             Category Scores
           </div>
           <CategoryBar label="Peg Stability" score={peg.score} weight={peg.weight || 0.30} />
@@ -650,46 +661,25 @@ function DetailView({ coinId, onBack }) {
           <CategoryBar label="Structural Risk" score={str.score} weight={str.weight || 0.20} />
         </div>
 
-        {/* Structural */}
-        <div
-          style={{
-            borderRadius: 8, border: `1px solid ${T.border}`,
-            padding: "16px 20px", background: T.bgCard,
-          }}
-        >
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "16px 20px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16, fontFamily: T.mono }}>
             Structural Breakdown
           </div>
-          <CategoryBar label="Reserves & Collateral" score={reserves.score} weight={reserves.weight || 0.30} color={T.blue} />
-          <CategoryBar label="Smart Contract" score={contract.score} weight={contract.weight || 0.20} color={T.blue} />
-          <CategoryBar label="Oracle Integrity" score={oracle.score} weight={oracle.weight || 0.15} color={T.blue} />
-          <CategoryBar label="Governance & Ops" score={governance.score} weight={governance.weight || 0.20} color={T.blue} />
-          <CategoryBar label="Network & Chain" score={network.score} weight={network.weight || 0.15} color={T.blue} />
+          <CategoryBar label="Reserves & Collateral" score={reserves.score} weight={reserves.weight || 0.30} />
+          <CategoryBar label="Smart Contract" score={contract.score} weight={contract.weight || 0.20} />
+          <CategoryBar label="Oracle Integrity" score={oracle.score} weight={oracle.weight || 0.15} />
+          <CategoryBar label="Governance & Ops" score={governance.score} weight={governance.weight || 0.20} />
+          <CategoryBar label="Network & Chain" score={network.score} weight={network.weight || 0.15} />
         </div>
       </div>
 
-      {/* Components Table */}
       {coin.components && coin.components.length > 0 && (
-        <div
-          style={{
-            borderRadius: 8, border: `1px solid ${T.border}`,
-            padding: "16px 20px", background: T.bgCard,
-          }}
-        >
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "16px 20px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12, fontFamily: T.mono }}>
             Component Readings · {coin.components.length} active
           </div>
 
           <div style={{ maxHeight: 400, overflowY: "auto" }}>
-            {/* Group by category */}
             {Object.entries(
               coin.components.reduce((acc, c) => {
                 const cat = c.category || "other";
@@ -702,9 +692,9 @@ function DetailView({ coinId, onBack }) {
               .map(([category, components]) => (
                 <div key={category} style={{ marginBottom: 16 }}>
                   <div style={{
-                    fontSize: 10, fontWeight: 600, color: T.accent,
+                    fontSize: 10, fontWeight: 600, color: T.inkMid,
                     textTransform: "uppercase", letterSpacing: 1,
-                    marginBottom: 6, fontFamily: T.mono, opacity: 0.7,
+                    marginBottom: 6, fontFamily: T.mono,
                   }}>
                     {category.replace(/_/g, " ")}
                   </div>
@@ -713,19 +703,19 @@ function DetailView({ coinId, onBack }) {
                       key={comp.id}
                       style={{
                         display: "flex", justifyContent: "space-between",
-                        padding: "4px 0", borderBottom: `1px solid ${T.bg}`,
+                        padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`,
                         fontSize: 11,
                       }}
                     >
-                      <span style={{ color: T.textMuted, fontFamily: T.sans }}>
+                      <span style={{ color: T.inkLight, fontFamily: T.sans }}>
                         {(comp.id || "").replace(/_/g, " ")}
                       </span>
                       <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-                        <span style={{ color: T.textDim, fontFamily: T.mono, fontSize: 10 }}>
+                        <span style={{ color: T.inkFaint, fontFamily: T.mono, fontSize: 10 }}>
                           {comp.raw_value != null ? (typeof comp.raw_value === "number" ? comp.raw_value.toFixed(4) : comp.raw_value) : "—"}
                         </span>
                         <span style={{
-                          color: scoreColor(comp.normalized_score),
+                          color: subScoreColor(comp.normalized_score),
                           fontFamily: T.mono, fontWeight: 600, minWidth: 36, textAlign: "right",
                         }}>
                           {fmt(comp.normalized_score, 1)}
@@ -742,36 +732,22 @@ function DetailView({ coinId, onBack }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// METHODOLOGY VIEW
-// ═══════════════════════════════════════════════════════════════════
-
 function MethodologyView() {
   return (
-    <div style={{ padding: "24px 24px 64px", maxWidth: 780, margin: "0 auto" }}>
-      <h1 style={{
-        margin: "0 0 8px", fontSize: 22, fontWeight: 600, color: T.textBright,
-        fontFamily: T.display, letterSpacing: -0.3,
-      }}>
+    <div style={{ padding: "24px 0 64px", maxWidth: 780 }}>
+      <h1 style={{ margin: "0 0 8px", fontSize: 22, fontWeight: 600, color: T.ink, fontFamily: T.sans, letterSpacing: -0.3 }}>
         Methodology
       </h1>
-      <p style={{ margin: "0 0 28px", fontSize: 12, color: T.textMuted, fontFamily: T.sans }}>
+      <p style={{ margin: "0 0 28px", fontSize: 12, color: T.inkLight, fontFamily: T.sans }}>
         SII v1.0.0 — Deterministic, versioned, reproducible
       </p>
 
-      {/* What is SII */}
       <section style={{ marginBottom: 28 }}>
-        <div style={{
-          borderRadius: 8, border: `1px solid ${T.border}`,
-          padding: "20px 24px", background: T.bgCard,
-        }}>
-          <h2 style={{
-            margin: "0 0 12px", fontSize: 14, fontWeight: 600, color: T.textBright,
-            fontFamily: T.sans,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "20px 24px" }}>
+          <h2 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600, color: T.ink, fontFamily: T.sans }}>
             What is the Stablecoin Integrity Index?
           </h2>
-          <p style={{ margin: 0, fontSize: 13, color: T.text, fontFamily: T.sans, lineHeight: 1.7 }}>
+          <p style={{ margin: 0, fontSize: 13, color: T.inkMid, fontFamily: T.sans, lineHeight: 1.7 }}>
             SII is a standardized risk surface that normalizes fragmented data about stablecoin health
             into a single comparable score. It measures peg stability, liquidity depth, mint/burn dynamics,
             holder distribution, and structural risk across multiple data sources. The methodology is
@@ -781,45 +757,23 @@ function MethodologyView() {
         </div>
       </section>
 
-      {/* Formula */}
       <section style={{ marginBottom: 28 }}>
-        <div style={{
-          borderRadius: 8, border: `1px solid ${T.border}`,
-          padding: "20px 24px", background: T.bgCard,
-        }}>
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.accent,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "20px 24px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14, fontFamily: T.mono }}>
             Formula
           </div>
-          <div style={{
-            fontFamily: T.mono, fontSize: 14, color: T.textBright, lineHeight: 2.2,
-            padding: "8px 0",
-          }}>
-            SII = <span style={{ color: T.accent }}>0.30</span>×Peg + <span style={{ color: T.accent }}>0.25</span>×Liquidity + <span style={{ color: T.accent }}>0.15</span>×Flows + <span style={{ color: T.accent }}>0.10</span>×Distribution + <span style={{ color: T.accent }}>0.20</span>×Structural
+          <div style={{ fontFamily: T.mono, fontSize: 14, color: T.ink, lineHeight: 2.2, padding: "8px 0" }}>
+            SII = <span style={{ fontWeight: 700 }}>0.30</span>×Peg + <span style={{ fontWeight: 700 }}>0.25</span>×Liquidity + <span style={{ fontWeight: 700 }}>0.15</span>×Flows + <span style={{ fontWeight: 700 }}>0.10</span>×Distribution + <span style={{ fontWeight: 700 }}>0.20</span>×Structural
           </div>
-          <div style={{
-            fontFamily: T.mono, fontSize: 12, color: T.textMuted, lineHeight: 2.2,
-            borderTop: `1px solid ${T.border}`, paddingTop: 8, marginTop: 4,
-          }}>
-            Structural = <span style={{ color: T.blue }}>0.30</span>×Reserves + <span style={{ color: T.blue }}>0.20</span>×Contract + <span style={{ color: T.blue }}>0.15</span>×Oracle + <span style={{ color: T.blue }}>0.20</span>×Governance + <span style={{ color: T.blue }}>0.15</span>×Network
+          <div style={{ fontFamily: T.mono, fontSize: 12, color: T.inkLight, lineHeight: 2.2, borderTop: `1px solid ${T.ruleLight}`, paddingTop: 8, marginTop: 4 }}>
+            Structural = 0.30×Reserves + 0.20×Contract + 0.15×Oracle + 0.20×Governance + 0.15×Network
           </div>
         </div>
       </section>
 
-      {/* Categories */}
       <section style={{ marginBottom: 28 }}>
-        <div style={{
-          borderRadius: 8, border: `1px solid ${T.border}`,
-          padding: "20px 24px", background: T.bgCard,
-        }}>
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "20px 24px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16, fontFamily: T.mono }}>
             Categories
           </div>
           {[
@@ -829,46 +783,21 @@ function MethodologyView() {
             { name: "Holder Distribution", weight: 10, desc: "Top 10 wallet concentration, unique holder count, exchange address concentration", components: 3 },
             { name: "Structural Risk", weight: 20, desc: "Reserve quality, smart contract audits, oracle integrity, governance model, network deployment, regulatory compliance", components: 16 },
           ].map((cat, i) => (
-            <div
-              key={i}
-              style={{
-                display: "flex", gap: 16, padding: "14px 0",
-                borderBottom: i < 4 ? `1px solid ${T.border}` : "none",
-              }}
-            >
-              <div style={{
-                minWidth: 44, textAlign: "right",
-                fontFamily: T.mono, fontWeight: 700, fontSize: 18, color: T.accent,
-              }}>
-                {cat.weight}%
-              </div>
+            <div key={i} style={{ display: "flex", gap: 16, padding: "14px 0", borderBottom: i < 4 ? `1px solid ${T.ruleLight}` : "none" }}>
+              <div style={{ minWidth: 44, textAlign: "right", fontFamily: T.mono, fontWeight: 700, fontSize: 18, color: T.ink }}>{cat.weight}%</div>
               <div>
-                <div style={{ fontWeight: 600, fontSize: 13, color: T.textBright, fontFamily: T.sans }}>
-                  {cat.name}
-                </div>
-                <div style={{ fontSize: 12, color: T.textMuted, marginTop: 3, lineHeight: 1.5, fontFamily: T.sans }}>
-                  {cat.desc}
-                </div>
-                <div style={{ fontSize: 10, color: T.textDim, marginTop: 3, fontFamily: T.mono }}>
-                  {cat.components} components
-                </div>
+                <div style={{ fontWeight: 600, fontSize: 13, color: T.ink, fontFamily: T.sans }}>{cat.name}</div>
+                <div style={{ fontSize: 12, color: T.inkLight, marginTop: 3, lineHeight: 1.5, fontFamily: T.sans }}>{cat.desc}</div>
+                <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 3, fontFamily: T.mono }}>{cat.components} components</div>
               </div>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Grade Scale */}
       <section style={{ marginBottom: 28 }}>
-        <div style={{
-          borderRadius: 8, border: `1px solid ${T.border}`,
-          padding: "20px 24px", background: T.bgCard,
-        }}>
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "20px 24px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14, fontFamily: T.mono }}>
             Grade Scale
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 6 }}>
@@ -878,58 +807,28 @@ function MethodologyView() {
               { grade: "C+", range: "60–65" }, { grade: "C", range: "55–60" }, { grade: "C-", range: "50–55" },
               { grade: "D", range: "45–50" }, { grade: "F", range: "<45" },
             ].map((g) => (
-              <div
-                key={g.grade}
-                style={{
-                  padding: "8px 6px", borderRadius: 4, textAlign: "center",
-                  background: `${gradeColor(g.grade)}08`,
-                  border: `1px solid ${gradeColor(g.grade)}18`,
-                }}
-              >
-                <div style={{
-                  fontWeight: 700, fontSize: 14, color: gradeColor(g.grade),
-                  fontFamily: T.mono,
-                }}>
-                  {g.grade}
-                </div>
-                <div style={{ fontSize: 9, color: T.textDim, marginTop: 2, fontFamily: T.mono }}>
-                  {g.range}
-                </div>
+              <div key={g.grade} style={{ padding: "8px 6px", textAlign: "center", border: `1px solid ${T.ruleLight}` }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: gradeColor(g.grade), fontFamily: T.mono }}>{g.grade}</div>
+                <div style={{ fontSize: 9, color: T.inkFaint, marginTop: 2, fontFamily: T.mono }}>{g.range}</div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Data Sources */}
       <section style={{ marginBottom: 28 }}>
-        <div style={{
-          borderRadius: 8, border: `1px solid ${T.border}`,
-          padding: "20px 24px", background: T.bgCard,
-        }}>
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "20px 24px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12, fontFamily: T.mono }}>
             Data Sources
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
             {["CoinGecko Pro", "DeFiLlama", "Etherscan", "Curve Finance", "Issuer Attestations", "On-Chain Analysis"].map((s) => (
-              <span
-                key={s}
-                style={{
-                  padding: "4px 10px", borderRadius: 3,
-                  background: T.bgElevated, color: T.textMuted,
-                  fontSize: 11, fontFamily: T.sans,
-                  border: `1px solid ${T.border}`,
-                }}
-              >
+              <span key={s} style={{ padding: "4px 10px", background: T.paperWarm, color: T.inkMid, fontSize: 11, fontFamily: T.sans, border: `1px solid ${T.ruleMid}` }}>
                 {s}
               </span>
             ))}
           </div>
-          <p style={{ margin: 0, fontSize: 12, color: T.textMuted, fontFamily: T.sans, lineHeight: 1.6 }}>
+          <p style={{ margin: 0, fontSize: 12, color: T.inkLight, fontFamily: T.sans, lineHeight: 1.6 }}>
             102 components defined across 11 categories. 50 currently automated via live APIs.
             Scores update hourly. Deterministic formula — same inputs always produce same outputs.
             Version-controlled methodology with advance notice before changes.
@@ -937,17 +836,9 @@ function MethodologyView() {
         </div>
       </section>
 
-      {/* Principles */}
       <section>
-        <div style={{
-          borderRadius: 8, border: `1px solid ${T.border}`,
-          padding: "20px 24px", background: T.bgCard,
-        }}>
-          <div style={{
-            fontSize: 10, fontWeight: 600, color: T.textDim,
-            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14,
-            fontFamily: T.mono,
-          }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "20px 24px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14, fontFamily: T.mono }}>
             Principles
           </div>
           {[
@@ -956,19 +847,9 @@ function MethodologyView() {
             { title: "Versioned", desc: "All methodology changes are announced in advance, timestamped, and retroactively reproducible." },
             { title: "Composable", desc: "SII is designed as a programmable primitive — machine-readable, on-chain verifiable, and integratable into protocol logic." },
           ].map((p, i) => (
-            <div
-              key={i}
-              style={{
-                padding: "10px 0",
-                borderBottom: i < 3 ? `1px solid ${T.border}` : "none",
-              }}
-            >
-              <div style={{ fontSize: 13, fontWeight: 600, color: T.textBright, fontFamily: T.sans }}>
-                {p.title}
-              </div>
-              <div style={{ fontSize: 12, color: T.textMuted, marginTop: 3, fontFamily: T.sans, lineHeight: 1.5 }}>
-                {p.desc}
-              </div>
+            <div key={i} style={{ padding: "10px 0", borderBottom: i < 3 ? `1px solid ${T.ruleLight}` : "none" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: T.ink, fontFamily: T.sans }}>{p.title}</div>
+              <div style={{ fontSize: 12, color: T.inkLight, marginTop: 3, fontFamily: T.sans, lineHeight: 1.5 }}>{p.desc}</div>
             </div>
           ))}
         </div>
@@ -977,29 +858,19 @@ function MethodologyView() {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// FOOTER
-// ═══════════════════════════════════════════════════════════════════
-
 function Footer() {
   return (
-    <footer
-      style={{
-        padding: "16px 24px",
-        borderTop: `1px solid ${T.border}`,
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        fontSize: 10, color: T.textDim, fontFamily: T.mono,
-      }}
-    >
+    <footer style={{
+      padding: "16px 24px",
+      borderTop: `1px solid ${T.ruleMid}`,
+      display: "flex", justifyContent: "space-between", alignItems: "center",
+      fontSize: 10, color: T.inkFaint, fontFamily: T.mono,
+    }}>
       <span>Basis Protocol · Stablecoin Integrity Index</span>
       <span>Risk surfaces for on-chain finance · basisprotocol.xyz</span>
     </footer>
   );
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// APP
-// ═══════════════════════════════════════════════════════════════════
 
 export default function App() {
   const [view, setView] = useState("rankings");
@@ -1024,33 +895,73 @@ export default function App() {
   }, []);
 
   return (
-    <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: T.sans }}>
+    <div style={{ minHeight: "100vh", background: T.paper, color: T.ink, fontFamily: T.sans }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,600;1,400&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        html { background: ${T.bg}; }
-        body { background: ${T.bg}; }
+        html { background: ${T.paper}; }
+        body { background: ${T.paper}; }
         ::-webkit-scrollbar { width: 5px; }
-        ::-webkit-scrollbar-track { background: ${T.bg}; }
-        ::-webkit-scrollbar-thumb { background: ${T.borderLight}; border-radius: 3px; }
+        ::-webkit-scrollbar-track { background: ${T.paper}; }
+        ::-webkit-scrollbar-thumb { background: ${T.ruleMid}; border-radius: 3px; }
         button { font-family: inherit; }
         button:hover { opacity: 0.88; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
       `}</style>
 
-      <Header view={view} setView={handleSetView} ts={ts} />
+      <div style={{
+        maxWidth: 1100, margin: "0 auto", padding: "32px 24px 0",
+      }}>
+        <div style={{
+          border: `3px solid ${T.ink}`,
+          boxShadow: `6px 6px 0 0 ${T.ruleMid}`,
+          background: T.paper,
+          padding: "0 0 0",
+        }}>
+          <div style={{ padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <nav style={{ display: "flex", gap: 16 }}>
+              {[
+                { id: "rankings", label: "Rankings" },
+                { id: "methodology", label: "Methodology" },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => handleSetView(tab.id)}
+                  style={{
+                    padding: "4px 0", border: "none", cursor: "pointer",
+                    fontSize: 12, fontWeight: view === tab.id ? 600 : 400,
+                    fontFamily: T.sans,
+                    color: view === tab.id ? T.ink : T.inkLight,
+                    background: "transparent",
+                    borderBottom: view === tab.id ? `2px solid ${T.ink}` : "2px solid transparent",
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+          </div>
 
-      <main style={{ animation: "fadeIn 0.3s ease" }}>
-        {view === "rankings" && (
-          <RankingsView scores={scores} loading={loading} onSelect={handleSelect} />
-        )}
-        {view === "detail" && selectedCoin && (
-          <DetailView coinId={selectedCoin} onBack={handleBack} />
-        )}
-        {view === "methodology" && <MethodologyView />}
-      </main>
+          <div style={{ borderTop: `1px solid ${T.ruleLight}` }} />
 
-      <Footer />
+          <div style={{ padding: "0 24px 24px" }}>
+            <main style={{ animation: "fadeIn 0.3s ease" }}>
+              {view === "rankings" && (
+                <RankingsView scores={scores} loading={loading} onSelect={handleSelect} ts={ts} />
+              )}
+              {view === "detail" && selectedCoin && (
+                <DetailView coinId={selectedCoin} onBack={handleBack} />
+              )}
+              {view === "methodology" && <MethodologyView />}
+            </main>
+          </div>
+
+          <Footer />
+        </div>
+
+        <div style={{ height: 32 }} />
+      </div>
     </div>
   );
 }

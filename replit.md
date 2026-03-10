@@ -95,6 +95,19 @@ API endpoints remain at `/api/*`. No CORS issues since same domain.
 Command: `python main.py`
 
 ## Recent Changes
+- 2026-03-10: Complete frontend redesign — "regulatory disclosure document" aesthetic
+  - Replaced dark theme with warm off-white (#f5f2ec) paper background
+  - Typography: IBM Plex Mono (numbers/scores) + IBM Plex Sans (prose/headers)
+  - Document block with 3px solid border and offset shadow
+  - Three-section page header: title bar, formula bar, on-chain commit banner (decorative)
+  - Redesigned table: columns are #, Stablecoin, SII Grade, Trend, Peg, Liq, Flow, Dist, Str
+  - Score number inline with symbol name, large grade letters, sub-score bars (floor=50)
+  - Hover-reveal detail strip: Price, Mkt Cap, Vol 24h, Reserve Type, Attestation, Chains, MiCA
+  - Sparklines from 21-day history (skip if <5 points), gray for flat trends
+  - Tier separator between A-tier and B-tier rows
+  - Footnotes section: Component Weights, Grade Scale, Disclosure
+  - Hardcoded MiCA status and Reserve Type per coin
+  - Backup at frontend/src/App.jsx.backup
 - 2026-03-10: Added USD1 (World Liberty Financial) as 10th stablecoin
   - CoinGecko ID: usd1-wlfi, contract: 0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d
   - BitGo Trust Company attestation (tier 2), monthly frequency
