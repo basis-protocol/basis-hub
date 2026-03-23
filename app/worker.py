@@ -25,7 +25,7 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import STABLECOIN_REGISTRY, COLLECTION_INTERVAL_MINUTES
-from app.database import init_pool, close_pool, get_cursor, fetch_one
+from app.database import init_pool, close_pool, get_cursor, fetch_one, fetch_all
 from app.scoring import (
     calculate_sii, calculate_structural_composite, score_to_grade,
     aggregate_legacy_to_v1, FORMULA_VERSION, SII_V1_WEIGHTS,
@@ -51,6 +51,67 @@ logger = logging.getLogger("worker")
 
 
 # =============================================================================
+# DB-driven registry helpers
+# =============================================================================
+
+def get_scoring_ids_from_db() -> list:
+    """
+    Read scoring-enabled stablecoin IDs from the database.
+    Falls back to STABLECOIN_REGISTRY keys if DB query fails.
+    """
+    try:
+        rows = fetch_all("SELECT id FROM stablecoins WHERE scoring_enabled = TRUE ORDER BY id")
+        if rows:
+            return [r["id"] for r in rows]
+    except Exception as e:
+        logger.warning(f"Could not read stablecoins from DB, using registry fallback: {e}")
+    return list(STABLECOIN_REGISTRY.keys())
+
+
+def get_stablecoin_config(stablecoin_id: str) -> dict:
+    """
+    Get config for a stablecoin: tries STABLECOIN_REGISTRY first,
+    then falls back to the stablecoins DB table for promoted coins.
+    Returns None if not found anywhere.
+    """
+    cfg = STABLECOIN_REGISTRY.get(stablecoin_id)
+    if cfg:
+        return cfg
+    try:
+        row = fetch_one(
+            "SELECT name, symbol, coingecko_id, contract, decimals FROM stablecoins WHERE id = %s",
+            (stablecoin_id,)
+        )
+        if row:
+            return {
+                "name": row["name"],
+                "symbol": row["symbol"],
+                "coingecko_id": row["coingecko_id"],
+                "contract": row.get("contract"),
+                "decimals": row.get("decimals", 18),
+            }
+    except Exception as e:
+        logger.warning(f"Could not load config for {stablecoin_id} from DB: {e}")
+    return None
+
+
+def _mark_scoring_status(coingecko_id: str, status: str) -> None:
+    """Update scoring_status in unscored_assets for a promoted coin."""
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                UPDATE wallet_graph.unscored_assets
+                SET scoring_status = %s, updated_at = NOW()
+                WHERE coingecko_id = %s
+                """,
+                (status, coingecko_id),
+            )
+    except Exception as e:
+        logger.warning(f"Could not update scoring_status for {coingecko_id}: {e}")
+
+
+# =============================================================================
 # Core: Collect all components for one stablecoin
 # =============================================================================
 
@@ -61,7 +122,7 @@ async def collect_all_components(
     Collect all components from all sources for one stablecoin.
     Returns flat list of component dicts ready for DB insert.
     """
-    cfg = STABLECOIN_REGISTRY.get(stablecoin_id)
+    cfg = get_stablecoin_config(stablecoin_id)
     if not cfg:
         logger.error(f"Unknown stablecoin: {stablecoin_id}")
         return []
@@ -356,7 +417,7 @@ def store_provenance(components: list[dict]):
 
 async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dict:
     """Full pipeline: collect → compute → store for one stablecoin."""
-    cfg = STABLECOIN_REGISTRY.get(stablecoin_id)
+    cfg = get_stablecoin_config(stablecoin_id)
     if not cfg:
         return {"error": f"Unknown stablecoin: {stablecoin_id}"}
     
@@ -402,18 +463,29 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
 # =============================================================================
 
 async def run_scoring_cycle():
-    """Score all stablecoins in the registry."""
+    """Score all stablecoins enabled in the database (falls back to registry)."""
     start = time.time()
-    stablecoins = list(STABLECOIN_REGISTRY.keys())
+    stablecoins = get_scoring_ids_from_db()
     
     logger.info(f"Starting scoring cycle for {len(stablecoins)} stablecoins")
     
     results = []
     async with httpx.AsyncClient() as client:
         for sid in stablecoins:
+            # For promoted coins (not in hardcoded registry), mark in_progress
+            is_promoted = sid not in STABLECOIN_REGISTRY
+            if is_promoted:
+                cfg = get_stablecoin_config(sid)
+                if cfg:
+                    _mark_scoring_status(cfg["coingecko_id"], "in_progress")
             try:
                 result = await score_stablecoin(client, sid)
                 results.append(result)
+                # After success, mark scored for promoted coins
+                if is_promoted and "score" in result:
+                    cfg = get_stablecoin_config(sid)
+                    if cfg:
+                        _mark_scoring_status(cfg["coingecko_id"], "scored")
                 # Rate limit: pause between coins
                 await asyncio.sleep(2.0)
             except Exception as e:

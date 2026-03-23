@@ -30,6 +30,7 @@ from app.indexer.backlog import (
     upsert_unscored_asset,
     update_demand_signals,
     seed_known_unscored,
+    promote_eligible_assets,
 )
 
 logger = logging.getLogger(__name__)
@@ -374,6 +375,9 @@ async def run_pipeline(holders_per_coin: int = 100) -> dict:
     # Step 5: Update backlog demand signals
     backlog_count = update_demand_signals()
 
+    # Step 6: Promote eligible backlog assets to scoring queue
+    promoted_count = promote_eligible_assets()
+
     elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
     scored_count = sum(1 for r in results if r.get("scored"))
 
@@ -383,6 +387,7 @@ async def run_pipeline(holders_per_coin: int = 100) -> dict:
         "wallets_scored": scored_count,
         "errors": errors,
         "unscored_assets_tracked": backlog_count,
+        "assets_promoted_to_scoring": promoted_count,
         "sii_scores_loaded": len(sii_scores),
         "elapsed_seconds": round(elapsed, 1),
         "started_at": started_at.isoformat(),
@@ -391,6 +396,7 @@ async def run_pipeline(holders_per_coin: int = 100) -> dict:
     logger.info(
         f"=== Pipeline Complete: {indexed} wallets indexed, "
         f"{scored_count} scored, {backlog_count} unscored assets tracked, "
+        f"{promoted_count} promoted to scoring, "
         f"{elapsed:.0f}s elapsed ==="
     )
 

@@ -7,6 +7,8 @@ scoring priority so we know what to score next.
 """
 
 import logging
+import os
+import re
 from typing import Optional
 
 from app.database import fetch_all, fetch_one, execute, get_cursor
@@ -155,3 +157,75 @@ def seed_known_unscored() -> int:
         count += 1
     logger.info(f"Seeded {count} known unscored assets into backlog")
     return count
+
+
+def _make_coin_id(symbol: str) -> str:
+    """Derive a safe stablecoin ID from a symbol (e.g. 'crvUSD' → 'crvusd')."""
+    return re.sub(r"[^a-z0-9_]", "_", symbol.lower())[:20]
+
+
+def promote_eligible_assets() -> int:
+    """
+    Promote unscored assets above the value threshold into the stablecoins
+    scoring table with scoring_enabled=TRUE.
+
+    Threshold is controlled by BACKLOG_PROMOTE_THRESHOLD env var (default $1M).
+    Sets scoring_status to 'queued' in unscored_assets after promotion.
+    Returns number of assets newly promoted.
+    """
+    threshold = float(os.environ.get("BACKLOG_PROMOTE_THRESHOLD", "1000000"))
+
+    eligible = fetch_all(
+        """
+        SELECT token_address, symbol, name, decimals, coingecko_id, total_value_held
+        FROM wallet_graph.unscored_assets
+        WHERE total_value_held >= %s
+          AND scoring_status = 'unscored'
+          AND coingecko_id IS NOT NULL
+        ORDER BY total_value_held DESC
+        """,
+        (threshold,),
+    )
+
+    if not eligible:
+        return 0
+
+    promoted = 0
+    for asset in eligible:
+        coin_id = _make_coin_id(asset["symbol"])
+        try:
+            execute(
+                """
+                INSERT INTO stablecoins
+                    (id, name, symbol, issuer, coingecko_id, contract, decimals, scoring_enabled)
+                VALUES (%s, %s, %s, 'Unknown', %s, %s, %s, TRUE)
+                ON CONFLICT (id) DO UPDATE SET scoring_enabled = TRUE
+                """,
+                (
+                    coin_id,
+                    asset["name"] or asset["symbol"],
+                    asset["symbol"],
+                    asset["coingecko_id"],
+                    asset["token_address"],
+                    asset["decimals"],
+                ),
+            )
+            execute(
+                """
+                UPDATE wallet_graph.unscored_assets
+                SET scoring_status = 'queued', updated_at = NOW()
+                WHERE token_address = %s
+                """,
+                (asset["token_address"],),
+            )
+            promoted += 1
+            logger.info(
+                f"Promoted {asset['symbol']} ({asset['coingecko_id']}) "
+                f"to scoring queue — ${asset['total_value_held']:,.0f} held"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to promote {asset['symbol']}: {e}")
+
+    if promoted:
+        logger.info(f"Promoted {promoted} backlog asset(s) to scoring (threshold: ${threshold:,.0f})")
+    return promoted
