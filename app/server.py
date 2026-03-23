@@ -74,6 +74,8 @@ async def startup():
         logger.info("Wallet indexer routes registered")
     except Exception as e:
         logger.warning(f"Wallet indexer not available: {e}")
+    # SPA catch-all must be registered LAST so it doesn't shadow dynamic routes
+    _register_spa_catch_all(app)
     logger.info("Basis Protocol API started")
 
 
@@ -1031,14 +1033,16 @@ async def admin_panel(request: Request):
 
 
 # =============================================================================
-# SPA Catch-All — serves index.html for all non-API routes
+# SPA Catch-All — registered at end of startup so dynamic routes take priority
 # =============================================================================
 
-@app.get("/{full_path:path}")
-async def serve_spa(request: Request, full_path: str):
-    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi") or full_path.startswith("admin"):
-        raise HTTPException(status_code=404, detail="Not found")
-    index_path = os.path.join(FRONTEND_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"name": "Basis Protocol API", "version": FORMULA_VERSION, "docs": "/docs"}
+def _register_spa_catch_all(app_instance):
+    """Register the SPA catch-all AFTER all other routes so it doesn't shadow them."""
+    @app_instance.get("/{full_path:path}")
+    async def serve_spa(request: Request, full_path: str):
+        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi") or full_path.startswith("admin"):
+            raise HTTPException(status_code=404, detail="Not found")
+        index_path = os.path.join(FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"name": "Basis Protocol API", "version": FORMULA_VERSION, "docs": "/docs"}
