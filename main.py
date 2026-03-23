@@ -34,6 +34,21 @@ def run_worker_loop():
     time.sleep(10)
     logger.info(f"Worker thread started (interval: {WORKER_INTERVAL} min)")
 
+    # One-time wallet seeding: populate on fresh deployments where tables are empty
+    try:
+        from app.database import fetch_one
+        result = fetch_one("SELECT COUNT(*) AS c FROM wallet_graph.wallets")
+        count = result["c"] if result else 0
+        if count == 0:
+            logger.info("Wallet tables empty — running initial seeding...")
+            from app.indexer.pipeline import run_pipeline
+            asyncio.run(run_pipeline(holders_per_coin=100))
+            logger.info("Initial wallet seeding complete")
+        else:
+            logger.info(f"Wallets already seeded ({count} wallets) — skipping")
+    except Exception as e:
+        logger.warning(f"Wallet seeding skipped: {e}")
+
     from app.worker import run_scoring_cycle
 
     while True:
