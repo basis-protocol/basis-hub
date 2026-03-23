@@ -67,6 +67,13 @@ async def startup():
         logger.info("Content engine routes registered")
     except Exception as e:
         logger.warning(f"Content engine not available: {e}")
+    # Register wallet indexer routes
+    try:
+        from app.indexer.api import register_wallet_routes
+        register_wallet_routes(app)
+        logger.info("Wallet indexer routes registered")
+    except Exception as e:
+        logger.warning(f"Wallet indexer not available: {e}")
     logger.info("Basis Protocol API started")
 
 
