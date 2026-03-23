@@ -160,6 +160,7 @@ async def fetch_top_holders(
     """
     Fetch top token holders for a contract via Etherscan tokeholderlist.
     Returns list of holder addresses. Falls back to empty list on failure.
+    Note: requires Etherscan Pro plan.
     """
     try:
         resp = await client.get(
@@ -182,3 +183,75 @@ async def fetch_top_holders(
     except Exception as e:
         logger.debug(f"Top holders fetch error for {contract_address[:10]}…: {e}")
         return []
+
+
+async def fetch_large_transfers(
+    client: httpx.AsyncClient,
+    contract_address: str,
+    api_key: str,
+    decimals: int = 18,
+    min_value_usd: float = 10_000,
+    pages: int = 5,
+    per_page: int = 100,
+) -> list[dict]:
+    """
+    Fetch recent ERC-20 transfer events for a stablecoin contract.
+    Uses tokentx (Lite-tier). Returns unique addresses that moved
+    at least min_value_usd in a single transfer.
+
+    Returns list of dicts: {address, total_transferred, transfer_count}
+    """
+    address_stats: dict[str, dict] = {}
+
+    for page in range(1, pages + 1):
+        try:
+            resp = await client.get(
+                ETHERSCAN_V2_BASE,
+                params={
+                    "chainid": 1,
+                    "module": "account",
+                    "action": "tokentx",
+                    "contractaddress": contract_address,
+                    "page": page,
+                    "offset": per_page,
+                    "sort": "desc",
+                    "apikey": api_key,
+                },
+                timeout=15.0,
+            )
+            data = resp.json()
+            await asyncio.sleep(ETHERSCAN_RATE_LIMIT_DELAY)
+
+            if data.get("status") != "1" or not isinstance(data.get("result"), list):
+                break
+
+            txs = data["result"]
+            if not txs:
+                break
+
+            for tx in txs:
+                value_raw = int(tx.get("value", "0"))
+                value = value_raw / (10 ** decimals)
+
+                if value < min_value_usd:
+                    continue
+
+                # Track both sender and receiver
+                for addr in (tx.get("from", ""), tx.get("to", "")):
+                    if not addr or addr == "0x0000000000000000000000000000000000000000":
+                        continue
+                    if addr not in address_stats:
+                        address_stats[addr] = {"total_transferred": 0, "transfer_count": 0}
+                    address_stats[addr]["total_transferred"] += value
+                    address_stats[addr]["transfer_count"] += 1
+
+        except Exception as e:
+            logger.debug(f"Transfer fetch error page {page} for {contract_address[:10]}…: {e}")
+            break
+
+    results = [
+        {"address": addr, **stats}
+        for addr, stats in address_stats.items()
+    ]
+    results.sort(key=lambda x: x["total_transferred"], reverse=True)
+    return results

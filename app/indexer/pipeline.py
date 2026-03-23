@@ -24,7 +24,7 @@ from app.indexer.config import (
     ETHERSCAN_RATE_LIMIT_DELAY,
     classify_size_tier,
 )
-from app.indexer.scanner import scan_wallet_holdings, fetch_top_holders
+from app.indexer.scanner import scan_wallet_holdings, fetch_top_holders, fetch_large_transfers
 from app.indexer.scorer import compute_wallet_risk
 from app.indexer.backlog import (
     upsert_unscored_asset,
@@ -182,23 +182,55 @@ def _seed_from_known_holders() -> set:
     return addresses
 
 
+async def _seed_from_transfers(
+    client: httpx.AsyncClient,
+    api_key: str,
+    min_value_usd: float = 10_000,
+    pages_per_coin: int = 5,
+) -> set:
+    """Seed wallets by scanning recent large stablecoin transfers (Lite-tier)."""
+    all_addresses = set()
+
+    for contract_lower, info in SCORED_CONTRACTS.items():
+        sid = info["stablecoin_id"]
+        decimals = info.get("decimals", 18)
+        logger.info(f"Scanning recent transfers for {sid}…")
+
+        movers = await fetch_large_transfers(
+            client, contract_lower, api_key,
+            decimals=decimals,
+            min_value_usd=min_value_usd,
+            pages=pages_per_coin,
+        )
+
+        for m in movers:
+            addr = m["address"]
+            if addr and addr.startswith("0x"):
+                all_addresses.add(addr)
+
+        logger.info(f"  {sid}: {len(movers)} active addresses from transfers")
+
+    return all_addresses
+
+
 async def seed_wallets(
     client: httpx.AsyncClient,
     api_key: str,
     holders_per_coin: int = 100,
 ) -> set:
     """
-    Step 1: Seed wallet addresses from top holders of each scored stablecoin.
-    Tries Etherscan tokenholderlist API first (Pro), falls back to curated
-    known holder addresses from the Etherscan collector.
-    Returns set of unique wallet addresses.
+    Step 1: Seed wallet addresses from multiple sources.
+
+    Priority order:
+      1. tokenholderlist API (Pro-only, may fail)
+      2. Recent large transfer events (Lite-tier, primary discovery)
+      3. Curated known holders (always available, baseline)
     """
     all_addresses = set()
 
+    # Try Pro API first (tokenholderlist)
     for contract_lower, info in SCORED_CONTRACTS.items():
         sid = info["stablecoin_id"]
-        logger.info(f"Fetching top {holders_per_coin} holders for {sid}…")
-
         holders = await fetch_top_holders(
             client, contract_lower, api_key,
             page=1, offset=holders_per_coin,
@@ -209,14 +241,25 @@ async def seed_wallets(
             if addr and addr.startswith("0x"):
                 all_addresses.add(addr)
 
-        logger.info(f"  {sid}: {len(holders)} holders fetched")
+        if holders:
+            logger.info(f"  {sid}: {len(holders)} holders from Pro API")
 
-    # Fallback: if Pro API unavailable, seed from curated known holders
-    if not all_addresses:
-        logger.info("tokenholderlist API unavailable (requires Pro) — using known holder list")
-        all_addresses = _seed_from_known_holders()
+        # Stop trying Pro if first coin fails (save API calls)
+        if not holders and contract_lower == list(SCORED_CONTRACTS.keys())[0]:
+            logger.info("tokenholderlist unavailable — skipping Pro API for remaining coins")
+            break
 
-    logger.info(f"Seeded {len(all_addresses)} unique wallet addresses")
+    # Always run transfer-event seeding (Lite-tier, discovers active movers)
+    transfer_addresses = await _seed_from_transfers(client, api_key)
+    before = len(all_addresses)
+    all_addresses |= transfer_addresses
+    logger.info(f"Transfer seeding added {len(all_addresses) - before} new addresses")
+
+    # Always include curated known holders as baseline
+    known = _seed_from_known_holders()
+    all_addresses |= known
+
+    logger.info(f"Seeded {len(all_addresses)} unique wallet addresses total")
     return all_addresses
 
 
@@ -295,6 +338,9 @@ async def run_pipeline(holders_per_coin: int = 100) -> dict:
     # Seed known unscored assets
     seed_known_unscored()
 
+    # Build known holder set for source tagging
+    known_addrs = _seed_from_known_holders()
+
     async with httpx.AsyncClient() as client:
         # Step 1: Seed
         wallet_addresses = await seed_wallets(client, api_key, holders_per_coin)
@@ -311,9 +357,10 @@ async def run_pipeline(holders_per_coin: int = 100) -> dict:
 
         for addr in wallet_addresses:
             try:
+                source = "known_holder" if addr in known_addrs else "transfer_scan"
                 result = await index_wallet(
                     client, addr, api_key, sii_scores,
-                    source=f"top_holder",
+                    source=source,
                 )
                 results.append(result)
                 indexed += 1
