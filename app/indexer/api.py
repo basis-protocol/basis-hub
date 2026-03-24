@@ -9,7 +9,7 @@ import os
 import asyncio
 import logging
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
 
 from app.database import fetch_all, fetch_one
 from app.indexer.backlog import get_backlog, get_backlog_detail
@@ -251,14 +251,22 @@ def register_wallet_routes(app: FastAPI) -> None:
 
     @app.post("/api/admin/index-wallets")
     async def admin_index_wallets(
+        background_tasks: BackgroundTasks,
         key: str = Query(..., description="Admin key"),
         holders_per_coin: int = Query(5000, ge=10, le=10000),
     ):
-        """Manually trigger a wallet indexing run (admin-only)."""
+        """Manually trigger a wallet indexing run (admin-only). Returns immediately; runs in background."""
         admin_key = os.environ.get("ADMIN_KEY", "")
         if not admin_key or key != admin_key:
             raise HTTPException(status_code=403, detail="Invalid admin key")
 
         from app.indexer.pipeline import run_pipeline
-        summary = await run_pipeline(holders_per_coin=holders_per_coin)
-        return summary
+
+        async def _run():
+            try:
+                await run_pipeline(holders_per_coin=holders_per_coin)
+            except Exception as e:
+                logger.error(f"Background wallet indexing failed: {e}")
+
+        background_tasks.add_task(_run)
+        return {"status": "started", "holders_per_coin": holders_per_coin, "message": "Wallet indexing running in background — check /api/wallets/stats for progress"}
