@@ -28,6 +28,56 @@ logger = logging.getLogger("main")
 WORKER_INTERVAL = int(os.environ.get("COLLECTION_INTERVAL", "60"))
 
 
+def free_port(port: int) -> None:
+    """Kill any process holding the given port by reading /proc/net/tcp."""
+    try:
+        # Find the inode(s) listening on this port
+        target_hex = f"{port:04X}"
+        inodes = set()
+        for proto_file in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(proto_file) as f:
+                    for line in f.readlines()[1:]:
+                        parts = line.split()
+                        if len(parts) < 10:
+                            continue
+                        local_addr = parts[1]
+                        state = parts[3]
+                        inode = parts[9]
+                        local_port_hex = local_addr.split(":")[1]
+                        if local_port_hex.upper() == target_hex and state == "0A":
+                            inodes.add(inode)
+            except FileNotFoundError:
+                pass
+
+        if not inodes:
+            return
+
+        # Find PIDs that own those inodes
+        own_pid = str(os.getpid())
+        for pid_dir in os.listdir("/proc"):
+            if not pid_dir.isdigit() or pid_dir == own_pid:
+                continue
+            fd_dir = f"/proc/{pid_dir}/fd"
+            try:
+                for fd in os.listdir(fd_dir):
+                    try:
+                        link = os.readlink(f"{fd_dir}/{fd}")
+                        if "socket:[" in link:
+                            inode = link.split("[")[1].rstrip("]")
+                            if inode in inodes:
+                                logger.info(f"Killing stale process {pid_dir} holding port {port}")
+                                os.kill(int(pid_dir), signal.SIGKILL)
+                                time.sleep(0.5)
+                                break
+                    except (OSError, PermissionError):
+                        pass
+            except (OSError, PermissionError):
+                pass
+    except Exception as e:
+        logger.warning(f"free_port({port}) failed: {e}")
+
+
 def run_worker_loop():
     """Background thread: runs scoring cycle on an interval."""
     # Wait for server to be up
@@ -192,8 +242,9 @@ def main():
 
     # 3. Start API server
     port = int(os.environ.get("PORT", os.environ.get("API_PORT", "5000")))
+    free_port(port)
     logger.info(f"Starting API on port {port}")
-    
+
     uvicorn.run(
         app,
         host="0.0.0.0",
