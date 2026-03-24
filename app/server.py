@@ -1023,6 +1023,215 @@ loadHealth(); loadFreshness(); loadGovernance(); loadSignals();
 </html>"""
 
 
+# =============================================================================
+# CDA Vendor Integration — Test endpoint (Phase 1)
+# =============================================================================
+
+@app.get("/api/cda/test-vendors")
+async def test_vendors():
+    """Test both vendor integrations. For development only."""
+    from app.services import parallel_client, reducto_client
+
+    results = {}
+
+    # Test Parallel Extract on Circle
+    results["parallel_extract"] = await parallel_client.extract(
+        "https://www.circle.com/transparency",
+        objective="Find reserve attestation data, PDF report links, total reserves amount"
+    )
+
+    parallel_ok = "error" not in results["parallel_extract"]
+    results["parallel_status"] = "ok" if parallel_ok else "failed"
+    results["reducto_status"] = "not_tested_yet"
+
+    return results
+
+
+@app.get("/api/cda/issuer-registry")
+async def get_issuer_registry():
+    """Return current CDA issuer registry."""
+    rows = fetch_all("SELECT * FROM cda_issuer_registry ORDER BY asset_symbol")
+    return {"issuers": rows, "count": len(rows)}
+
+
+@app.get("/api/cda/quality")
+async def cda_quality():
+    """Data quality dashboard — freshness, confidence, and status per issuer."""
+    from datetime import datetime, timezone
+
+    issuers = fetch_all(
+        "SELECT * FROM cda_issuer_registry WHERE is_active = TRUE ORDER BY asset_symbol"
+    )
+
+    # Get latest extraction per asset (prefer PDF over web)
+    latest_extractions = fetch_all("""
+        SELECT DISTINCT ON (asset_symbol)
+            asset_symbol, structured_data, confidence_score, extracted_at,
+            extraction_method, source_type
+        FROM cda_vendor_extractions
+        WHERE structured_data IS NOT NULL
+        ORDER BY asset_symbol,
+            CASE WHEN source_type = 'pdf_attestation' THEN 0 ELSE 1 END,
+            extracted_at DESC
+    """)
+    ext_map = {e["asset_symbol"]: e for e in latest_extractions}
+
+    quality = []
+    summary = {
+        "total_issuers": len(issuers),
+        "with_data": 0, "on_chain_only": 0, "no_data": 0,
+        "current": 0, "stale": 0, "overdue": 0,
+    }
+
+    now = datetime.now(timezone.utc)
+
+    for iss in issuers:
+        symbol = iss["asset_symbol"]
+        entry = {
+            "asset": symbol,
+            "issuer": iss["issuer_name"],
+            "collection_method": iss["collection_method"],
+        }
+
+        if iss["collection_method"] == "nav_oracle":
+            entry["has_data"] = False
+            entry["status"] = "on_chain_only"
+            summary["on_chain_only"] += 1
+            quality.append(entry)
+            continue
+
+        ext = ext_map.get(symbol)
+        if not ext:
+            entry["has_data"] = False
+            entry["status"] = "no_data"
+            summary["no_data"] += 1
+            quality.append(entry)
+            continue
+
+        entry["has_data"] = True
+        entry["latest_extraction"] = ext["extracted_at"].isoformat() if ext.get("extracted_at") else None
+        entry["confidence"] = float(ext["confidence_score"]) if ext.get("confidence_score") else None
+        entry["extraction_method"] = ext.get("extraction_method")
+        summary["with_data"] += 1
+
+        sd = ext.get("structured_data", {}) or {}
+        att_date_str = sd.get("attestation_date")
+        reserves = sd.get("total_reserves_usd")
+
+        entry["attestation_date"] = att_date_str
+        entry["total_reserves_usd"] = reserves
+
+        if att_date_str:
+            try:
+                att_date = datetime.fromisoformat(str(att_date_str).replace("Z", "+00:00"))
+                if att_date.tzinfo is None:
+                    att_date = att_date.replace(tzinfo=timezone.utc)
+                days = (now - att_date).days
+                entry["days_since_attestation"] = days
+                if days <= 45:
+                    entry["status"] = "current"
+                    summary["current"] += 1
+                elif days <= 90:
+                    entry["status"] = "stale"
+                    summary["stale"] += 1
+                else:
+                    entry["status"] = "overdue"
+                    summary["overdue"] += 1
+            except (ValueError, TypeError):
+                entry["status"] = "no_data"
+        else:
+            entry["status"] = "no_data"
+
+        quality.append(entry)
+
+    return {"quality": quality, "summary": summary}
+
+
+@app.get("/api/cda/attestations/{asset_symbol}")
+async def cda_attestations(asset_symbol: str):
+    """Extraction history for one asset."""
+    rows = fetch_all(
+        """
+        SELECT id, source_url, source_type, extraction_method, extraction_vendor,
+               confidence_score, structured_data, extraction_warnings, extracted_at
+        FROM cda_vendor_extractions
+        WHERE UPPER(asset_symbol) = %s
+        ORDER BY extracted_at DESC
+        LIMIT 50
+        """,
+        (asset_symbol.upper(),),
+    )
+    return {"asset": asset_symbol.upper(), "extractions": rows}
+
+
+@app.post("/api/admin/collect-cda")
+async def trigger_cda_collection(key: str = Query(default=None)):
+    """Manually trigger CDA collection pipeline. Requires admin key."""
+    admin_key = os.environ.get("ADMIN_KEY", "")
+    if not admin_key or key != admin_key:
+        raise HTTPException(status_code=401, detail="Unauthorized — provide ?key=YOUR_ADMIN_KEY")
+
+    import asyncio as _asyncio
+    from app.services.cda_collector import run_collection
+    _asyncio.create_task(run_collection())
+    return {"status": "collection_started"}
+
+
+@app.get("/api/cda/monitors")
+async def get_monitors():
+    """List active CDA monitor watches."""
+    rows = fetch_all(
+        "SELECT * FROM cda_monitors WHERE is_active = TRUE ORDER BY asset_symbol"
+    )
+    return {"monitors": rows, "count": len(rows)}
+
+
+@app.post("/api/admin/setup-monitors")
+async def setup_cda_monitors(key: str = Query(default=None)):
+    """Create Parallel Monitor watches for all web_extract issuers. Requires admin key."""
+    admin_key = os.environ.get("ADMIN_KEY", "")
+    if not admin_key or key != admin_key:
+        raise HTTPException(status_code=401, detail="Unauthorized — provide ?key=YOUR_ADMIN_KEY")
+
+    from app.services.cda_collector import setup_monitors
+    count = await setup_monitors()
+    return {"status": "ok", "monitors_created": count}
+
+
+@app.post("/api/cda/webhook/monitor")
+async def handle_monitor_alert(request: Request):
+    """
+    Webhook for Parallel Monitor alerts.
+    When an issuer updates their transparency page, trigger immediate CDA collection.
+    """
+    body = await request.json()
+
+    # Parallel may send monitor_id, id, or watch_id — check all
+    monitor_id = body.get("monitor_id") or body.get("id") or body.get("watch_id") or ""
+
+    if not monitor_id:
+        return {"status": "no_monitor_id"}
+
+    issuer = fetch_one(
+        "SELECT * FROM cda_issuer_registry WHERE parallel_monitor_id = %s",
+        (monitor_id,),
+    )
+
+    if issuer:
+        import asyncio as _asyncio
+        from app.services.cda_collector import collect_single_issuer
+        _asyncio.create_task(collect_single_issuer(issuer["asset_symbol"]))
+
+        execute(
+            "UPDATE cda_monitors SET last_alert_at = NOW() WHERE parallel_monitor_id = %s",
+            (monitor_id,),
+        )
+
+        return {"status": "collected", "asset": issuer["asset_symbol"]}
+
+    return {"status": "unknown_monitor", "monitor_id": monitor_id}
+
+
 @app.get("/admin")
 async def admin_panel(request: Request):
     admin_key = os.environ.get("ADMIN_KEY", "")

@@ -169,6 +169,15 @@ async def collect_all_components(
             all_components.extend(offline)
         except Exception as e:
             logger.error(f"Offline collector error for {stablecoin_id}: {e}")
+
+    # CDA vendor data (overlays/improves offline transparency + reserve components)
+    try:
+        from app.services.cda_scores import get_cda_components
+        cda_components = get_cda_components(stablecoin_id)
+        if cda_components:
+            all_components.extend(cda_components)
+    except Exception as e:
+        logger.debug(f"CDA collector skipped for {stablecoin_id}: {e}")
     
     # Tag all components with stablecoin_id
     for comp in all_components:

@@ -223,6 +223,13 @@ def promote_eligible_assets() -> int:
                 f"Promoted {asset['symbol']} ({asset['coingecko_id']}) "
                 f"to scoring queue — ${asset['total_value_held']:,.0f} held"
             )
+            # Register new issuer in CDA pipeline for disclosure collection
+            try:
+                import asyncio
+                from app.services.cda_collector import discover_new_issuer
+                asyncio.run(discover_new_issuer(asset["symbol"], asset["coingecko_id"]))
+            except Exception as cda_e:
+                logger.debug(f"CDA issuer discovery skipped for {asset['symbol']}: {cda_e}")
         except Exception as e:
             logger.warning(f"Failed to promote {asset['symbol']}: {e}")
 

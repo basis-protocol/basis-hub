@@ -104,7 +104,22 @@ def run_worker_loop():
     indexer_interval_hours = int(os.environ.get("INDEXER_INTERVAL_HOURS", "24"))
     last_indexed_at = time.time()  # treat startup as last index time
 
+    cda_interval_hours = int(os.environ.get("CDA_COLLECTION_INTERVAL_HOURS", "24"))
+    last_cda_at = 0  # Run CDA on first cycle
+
     while True:
+        # CDA collection before scoring so fresh off-chain data is available
+        hours_since_cda = (time.time() - last_cda_at) / 3600
+        if hours_since_cda >= cda_interval_hours:
+            try:
+                logger.info("Running CDA collection pipeline...")
+                from app.services.cda_collector import run_collection
+                asyncio.run(run_collection())
+                last_cda_at = time.time()
+                logger.info("CDA collection complete")
+            except Exception as e:
+                logger.warning(f"CDA collection failed: {e}")
+
         try:
             asyncio.run(run_scoring_cycle())
         except Exception as e:
