@@ -42,21 +42,36 @@ def run_worker_loop():
         if count == 0:
             logger.info("Wallet tables empty — running initial seeding...")
             from app.indexer.pipeline import run_pipeline
-            asyncio.run(run_pipeline(holders_per_coin=100))
+            asyncio.run(run_pipeline())  # uses INDEXER_HOLDERS_PER_COIN env var (default 5000)
             logger.info("Initial wallet seeding complete")
         else:
-            logger.info(f"Wallets already seeded ({count} wallets) — skipping")
+            logger.info(f"Wallets already seeded ({count} wallets) — skipping initial seed")
     except Exception as e:
         logger.warning(f"Wallet seeding skipped: {e}")
 
     from app.worker import run_scoring_cycle
+
+    indexer_interval_hours = int(os.environ.get("INDEXER_INTERVAL_HOURS", "24"))
+    last_indexed_at = time.time()  # treat startup as last index time
 
     while True:
         try:
             asyncio.run(run_scoring_cycle())
         except Exception as e:
             logger.error(f"Worker cycle error: {e}")
-        
+
+        # Periodic wallet re-indexing (default every 24h, tunable via INDEXER_INTERVAL_HOURS)
+        hours_since_index = (time.time() - last_indexed_at) / 3600
+        if hours_since_index >= indexer_interval_hours:
+            try:
+                logger.info(f"Scheduled wallet re-indexing ({hours_since_index:.1f}h since last run)...")
+                from app.indexer.pipeline import run_pipeline
+                asyncio.run(run_pipeline())
+                last_indexed_at = time.time()
+                logger.info("Scheduled wallet re-indexing complete")
+            except Exception as e:
+                logger.warning(f"Scheduled wallet re-indexing failed: {e}")
+
         logger.info(f"Worker sleeping {WORKER_INTERVAL} minutes...")
         time.sleep(WORKER_INTERVAL * 60)
 
