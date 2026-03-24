@@ -92,7 +92,7 @@ COVERAGE_QUALITY_THRESHOLDS = [
 
 FORMULA_VERSION = "wallet-v1.0.0"
 
-ETHERSCAN_RATE_LIMIT_DELAY = 0.22  # ~4.5 req/sec
+ETHERSCAN_RATE_LIMIT_DELAY = 0.11  # ~9 req/sec (Standard tier: 10/sec)
 
 
 def classify_size_tier(total_value: float) -> str:
