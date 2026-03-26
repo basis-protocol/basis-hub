@@ -1,0 +1,254 @@
+Here’s the updated spec with the fixes incorporated:
+
+Rate Limiting + Usage Tracking
+What & Why
+The API is public and now listed on the MCP Registry. It needs two things before real traffic arrives:
+	1.	Rate limiting — prevent abuse without blocking permissionless discovery. Two tiers: unauthenticated (10 req/min per IP) and authenticated (120 req/min per API key). No mandatory auth — public access stays open.
+	2.	Usage tracking — count every request so we can report “X API calls this week” in investor meetings. Track per-endpoint, per-key, per-day.
+Done looks like
+	∙	Unauthenticated requests are rate-limited to 10 req/min per IP. Returns 429 Too Many Requests with Retry-After header when exceeded.
+	∙	Requests with a valid ?apikey= param or X-API-Key header get 120 req/min.
+	∙	Invalid API keys are treated as unauthenticated (10 req/min), NOT rejected — don’t gate access.
+	∙	Admin endpoints (/api/admin/*) are exempt from rate limiting (they have their own ?key= auth).
+	∙	The /mcp endpoint (if it exists) gets the same rate limiting as public API.
+	∙	Every request is logged: timestamp, endpoint, method, status code, response time ms, IP, API key hash (if provided), user agent.
+	∙	Request logs are stored in a new api_request_log table with periodic aggregation.
+	∙	Remaining log buffer is flushed on process shutdown — no data loss on restarts.
+	∙	GET /api/admin/usage?key=XXX returns usage stats: total calls today/this week/this month, calls per endpoint, calls per API key, top IPs.
+	∙	POST /api/admin/apikeys?key=XXX&name=somename creates a new API key and returns it.
+	∙	GET /api/admin/apikeys?key=XXX lists all API keys with usage counts.
+Out of scope
+	∙	Mandatory authentication on any public endpoint
+	∙	OAuth or JWT — API keys are simple random strings
+	∙	Changing any existing endpoint response shapes
+	∙	Paid tiers or billing
+Tasks
+1. Create migration for usage tracking tables
+Create migrations/013_api_usage.sql:
+
+-- API keys table
+CREATE TABLE IF NOT EXISTS api_keys (
+    id SERIAL PRIMARY KEY,
+    key VARCHAR(64) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+    total_requests BIGINT DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- Request log table
+CREATE TABLE IF NOT EXISTS api_request_log (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    endpoint VARCHAR(255) NOT NULL,
+    method VARCHAR(10) NOT NULL,
+    status_code INT,
+    response_time_ms INT,
+    ip_address VARCHAR(45),
+    api_key_id INT REFERENCES api_keys(id),
+    api_key_hash VARCHAR(64),
+    user_agent VARCHAR(500)
+);
+
+-- Index for usage queries
+CREATE INDEX idx_request_log_timestamp ON api_request_log (timestamp);
+CREATE INDEX idx_request_log_endpoint ON api_request_log (endpoint, timestamp);
+CREATE INDEX idx_request_log_api_key ON api_request_log (api_key_id, timestamp);
+CREATE INDEX idx_request_log_key_hash ON api_request_log (api_key_hash) WHERE api_key_hash IS NOT NULL;
+
+
+2. Create app/rate_limiter.py
+In-memory rate limiter using a sliding window counter per IP/key. No external dependencies (no Redis).
+Note: The in-memory store resets on every Replit restart. This is acceptable — the alternative (DB-backed counters) adds latency to every request. A restart gives everyone a fresh window. If abuse becomes a problem, migrate to a lightweight DB check later.
+
+"""
+Rate Limiter — sliding window, in-memory.
+Two tiers:
+  - No API key: 10 req/min per IP
+  - Valid API key: 120 req/min per key
+"""
+
+import time
+import threading
+from collections import defaultdict
+
+PUBLIC_RATE_LIMIT = 10       # req/min per IP
+KEYED_RATE_LIMIT = 120      # req/min per API key
+WINDOW_SECONDS = 60
+
+class RateLimiter:
+    def __init__(self):
+        self._requests = defaultdict(list)  # key -> [timestamps]
+        self._lock = threading.Lock()
+
+    def is_allowed(self, identifier: str, limit: int) -> tuple[bool, int]:
+        """Returns (allowed, remaining) for the given identifier."""
+        now = time.time()
+        window_start = now - WINDOW_SECONDS
+
+        with self._lock:
+            # Clean old entries
+            self._requests[identifier] = [
+                t for t in self._requests[identifier] if t > window_start
+            ]
+            count = len(self._requests[identifier])
+
+            if count >= limit:
+                return False, 0
+
+            self._requests[identifier].append(now)
+            return True, limit - count - 1
+
+    def cleanup(self):
+        """Remove stale entries. Call periodically."""
+        now = time.time()
+        window_start = now - WINDOW_SECONDS
+        with self._lock:
+            stale = [k for k, v in self._requests.items() if all(t <= window_start for t in v)]
+            for k in stale:
+                del self._requests[k]
+
+rate_limiter = RateLimiter()
+
+
+3. Create app/usage_tracker.py
+Buffers request logs in memory and flushes to the database periodically (every 30 seconds or 100 requests, whichever comes first). This avoids a DB write on every single request.
+Key functions:
+	∙	log_request(endpoint, method, status_code, response_time_ms, ip, api_key_id, api_key_hash, user_agent) — adds to buffer
+	∙	flush() — bulk inserts buffer into api_request_log. Must be safe to call when buffer is empty.
+	∙	get_usage_stats(days=7) — queries aggregated stats from DB
+	∙	validate_api_key(key_string) — checks if key exists and is active, returns key ID or None
+	∙	create_api_key(name) — generates a random key, inserts into api_keys, returns the key string
+	∙	list_api_keys() — returns all keys with usage counts
+	∙	hash_api_key(key_string) — returns SHA-256 hex digest of the raw key string
+Critical: shutdown flush. Register a FastAPI on_event("shutdown") handler (or lifespan context manager) that calls flush(). Also register an atexit handler as a fallback. This ensures the last ~30 seconds of request logs aren’t lost on restart or deploy.
+4. Add middleware to app/server.py
+Middleware registration order matters. FastAPI middleware runs in reverse registration order (last registered = first to execute on request). Register in this order:
+	1.	CORS middleware (registered first)
+	2.	Rate limit + tracking middleware (registered second → runs first on request)
+This ensures CORS headers are applied to ALL responses including 429s. Without this, browser-based clients (Snap, web MCP consumers) will fail silently on rate-limited responses.
+Test this explicitly: curl a request that triggers a 429 and confirm Access-Control-Allow-Origin is present in the response headers.
+
+@app.middleware("http")
+async def rate_limit_and_track(request: Request, call_next):
+    start_time = time.time()
+
+    # Skip admin endpoints (they have their own auth)
+    if request.url.path.startswith("/api/admin"):
+        response = await call_next(request)
+        return response
+
+    # Skip static files and health check
+    if not request.url.path.startswith("/api") and not request.url.path.startswith("/mcp"):
+        response = await call_next(request)
+        return response
+
+    # Extract API key from query param or header
+    api_key_str = request.query_params.get("apikey") or request.headers.get("x-api-key")
+    api_key_id = None
+    api_key_hash = None
+
+    if api_key_str:
+        api_key_id = validate_api_key(api_key_str)
+        api_key_hash = hash_api_key(api_key_str)
+
+    # Determine rate limit tier
+    if api_key_id:
+        identifier = f"key:{api_key_id}"
+        limit = KEYED_RATE_LIMIT
+    else:
+        ip = request.client.host if request.client else "unknown"
+        identifier = f"ip:{ip}"
+        limit = PUBLIC_RATE_LIMIT
+
+    allowed, remaining = rate_limiter.is_allowed(identifier, limit)
+
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"error": "Rate limit exceeded", "retry_after_seconds": 60},
+            headers={"Retry-After": "60", "X-RateLimit-Remaining": "0"}
+        )
+
+    # Process request
+    response = await call_next(request)
+
+    # Track usage (non-blocking)
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    ip = request.client.host if request.client else "unknown"
+    log_request(
+        endpoint=request.url.path,
+        method=request.method,
+        status_code=response.status_code,
+        response_time_ms=elapsed_ms,
+        ip=ip,
+        api_key_id=api_key_id,
+        api_key_hash=api_key_hash,
+        user_agent=request.headers.get("user-agent", "")[:500]
+    )
+
+    # Add rate limit headers
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    response.headers["X-RateLimit-Limit"] = str(limit)
+
+    return response
+
+
+5. Add admin endpoints for usage and API keys
+
+@app.get("/api/admin/usage")
+async def admin_usage(request: Request, days: int = 7):
+    _check_admin_key(request)
+    return get_usage_stats(days=days)
+
+@app.post("/api/admin/apikeys")
+async def admin_create_key(request: Request, name: str = Query(...)):
+    _check_admin_key(request)
+    key = create_api_key(name)
+    return {"api_key": key, "name": name, "message": "Store this key — it won't be shown again."}
+
+@app.get("/api/admin/apikeys")
+async def admin_list_keys(request: Request):
+    _check_admin_key(request)
+    return {"keys": list_api_keys()}
+
+
+6. Run migration on startup
+Add migration 013_api_usage.sql to the startup migration runner in main.py, same pattern as existing migrations.
+7. Register shutdown flush
+In main.py or server.py, wherever the FastAPI app lifecycle is managed:
+
+import atexit
+from app.usage_tracker import flush
+
+@app.on_event("shutdown")
+async def shutdown_flush():
+    flush()
+
+# Fallback for non-graceful shutdowns
+atexit.register(flush)
+
+
+8. Create initial API keys for internal services
+After deploying, create keys for the spoke services:
+
+POST /api/admin/apikeys?key=YOUR_ADMIN_KEY&name=basis-mcp
+POST /api/admin/apikeys?key=YOUR_ADMIN_KEY&name=basis-snap
+POST /api/admin/apikeys?key=YOUR_ADMIN_KEY&name=basis-oracle-keeper
+POST /api/admin/apikeys?key=YOUR_ADMIN_KEY&name=basis-safe
+
+
+Store these keys in each spoke’s environment. They get 120 req/min instead of 10.
+Relevant files
+	∙	migrations/013_api_usage.sql — new
+	∙	app/rate_limiter.py — new
+	∙	app/usage_tracker.py — new
+	∙	app/server.py — add middleware + admin endpoints
+	∙	main.py — add migration to startup runner, add shutdown flush
+Do NOT
+	∙	Add mandatory authentication to any public endpoint
+	∙	Reject requests with invalid API keys — treat them as unauthenticated
+	∙	Change any existing endpoint response shapes
+	∙	Add external dependencies (no Redis, no third-party rate limiting libraries)
+	∙	Deploy automatically — let me review first​​​​​​​​​​​​​​​​
