@@ -276,6 +276,7 @@ def register_wallet_routes(app: FastAPI) -> None:
                 await run_pipeline(holders_per_coin=holders_per_coin)
             except Exception as e:
                 logger.error(f"Background wallet indexing failed: {e}")
+                logger.error(f"PIPELINE_COMPLETE status=error reason={type(e).__name__}: {e}")
 
         background_tasks.add_task(_run)
         return {"status": "started", "holders_per_coin": holders_per_coin, "message": "Wallet indexing running in background — check /api/wallets/stats for progress"}

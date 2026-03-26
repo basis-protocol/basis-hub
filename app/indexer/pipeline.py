@@ -585,6 +585,15 @@ async def run_pipeline(holders_per_coin: int = None) -> dict:
     started_at = datetime.now(timezone.utc)
     logger.info("=== Wallet Indexer Pipeline Starting ===")
 
+    # Verify DB connection before doing any work — catches stale pool connections
+    # that would otherwise surface as a cryptic error mid-pipeline.
+    try:
+        test = fetch_one("SELECT 1 AS alive")
+        logger.info(f"Pipeline DB connection verified: {test}")
+    except Exception as e:
+        logger.error(f"Pipeline DB connection DEAD at startup: {e}")
+        return {"error": "DB connection failed at pipeline startup", "wallets_indexed": 0}
+
     # Load current SII scores
     sii_scores = _get_current_sii_scores()
     logger.info(f"Loaded SII scores for {len(sii_scores)} stablecoins")
@@ -748,6 +757,10 @@ async def run_pipeline(holders_per_coin: int = None) -> dict:
         f"{new_contracts_discovered} new contracts discovered "
         f"({tiered_scan_api_calls} tiered scan calls), "
         f"{elapsed:.0f}s elapsed ==="
+    )
+    logger.info(
+        f"PIPELINE_COMPLETE status=success wallets={indexed} scored={scored_count} "
+        f"duration={elapsed:.0f}s"
     )
 
     return summary
