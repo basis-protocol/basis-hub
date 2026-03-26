@@ -263,6 +263,25 @@ def run_migrations():
         else:
             logger.warning(f"Migration file not found: {migration_path}")
 
+    try:
+        result = fetch_one("SELECT 1 FROM migrations WHERE name = '013_api_usage'")
+        if result:
+            logger.info("Migration 013_api_usage already applied ✓")
+    except Exception:
+        result = None
+
+    if not result:
+        logger.info("Applying migration 013: API usage tracking tables...")
+        migration_path = os.path.join(os.path.dirname(__file__), "migrations", "013_api_usage.sql")
+        if os.path.exists(migration_path):
+            success = run_migration(migration_path)
+            if success:
+                logger.info("Migration 013_api_usage applied ✓")
+            else:
+                logger.error("Failed to apply migration 013_api_usage")
+        else:
+            logger.warning(f"Migration file not found: {migration_path}")
+
 
 def main():
     # 1. Initialize database

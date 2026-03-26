@@ -4,15 +4,17 @@ Basis Protocol - API Server
 Clean FastAPI server. Reads from database only. No data collection.
 """
 
+import atexit
 import logging
 import os
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
 
 from app.config import STABLECOIN_REGISTRY, CORS_ORIGINS
 from app.database import (
@@ -43,6 +45,81 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =============================================================================
+# Rate limiting + usage tracking middleware
+# Registered AFTER CORSMiddleware so it runs FIRST on each incoming request
+# (FastAPI executes middleware in reverse registration order).
+# =============================================================================
+
+@app.middleware("http")
+async def rate_limit_and_track(request: Request, call_next):
+    start_time = time.time()
+    path = request.url.path
+
+    # Pass through: admin endpoints (own auth), static assets, non-API/MCP paths
+    if path.startswith("/api/admin"):
+        return await call_next(request)
+    if not path.startswith("/api") and not path.startswith("/mcp"):
+        return await call_next(request)
+
+    # Lazy imports to avoid circular issues at module load time
+    from app.rate_limiter import rate_limiter, PUBLIC_RATE_LIMIT, KEYED_RATE_LIMIT
+    from app.usage_tracker import validate_api_key, hash_api_key, log_request
+
+    api_key_str = request.query_params.get("apikey") or request.headers.get("x-api-key")
+    api_key_id: Optional[int] = None
+    api_key_hash: Optional[str] = None
+
+    if api_key_str:
+        api_key_id = validate_api_key(api_key_str)
+        api_key_hash = hash_api_key(api_key_str)
+
+    if api_key_id:
+        identifier = f"key:{api_key_id}"
+        limit = KEYED_RATE_LIMIT
+    else:
+        ip = request.client.host if request.client else "unknown"
+        identifier = f"ip:{ip}"
+        limit = PUBLIC_RATE_LIMIT
+
+    allowed, remaining = rate_limiter.is_allowed(identifier, limit)
+
+    if not allowed:
+        origin = request.headers.get("origin", "")
+        cors_header = "*" if (not origin or "*" in CORS_ORIGINS) else (origin if origin in CORS_ORIGINS else "")
+        rl_headers = {
+            "Retry-After": "60",
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Limit": str(limit),
+        }
+        if cors_header:
+            rl_headers["Access-Control-Allow-Origin"] = cors_header
+        return JSONResponse(
+            status_code=429,
+            content={"error": "Rate limit exceeded", "retry_after_seconds": 60},
+            headers=rl_headers,
+        )
+
+    response = await call_next(request)
+
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    ip = request.client.host if request.client else "unknown"
+    log_request(
+        endpoint=path,
+        method=request.method,
+        status_code=response.status_code,
+        response_time_ms=elapsed_ms,
+        ip=ip,
+        api_key_id=api_key_id,
+        api_key_hash=api_key_hash,
+        user_agent=request.headers.get("user-agent", "")[:500],
+    )
+
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    response.headers["X-RateLimit-Limit"] = str(limit)
+    return response
 
 
 # =============================================================================
@@ -180,8 +257,21 @@ async def _delegate_to_asgi(asgi_app, request: Request):
 
 @app.on_event("shutdown")
 async def shutdown():
+    try:
+        from app.usage_tracker import flush as _flush_usage
+        _flush_usage()
+    except Exception as e:
+        logger.warning(f"Usage tracker shutdown flush error: {e}")
     close_pool()
     logger.info("Basis Protocol API stopped")
+
+
+# Atexit fallback for non-graceful shutdowns (SIGKILL, Replit restarts, etc.)
+try:
+    from app.usage_tracker import flush as _flush_usage_atexit
+    atexit.register(_flush_usage_atexit)
+except Exception:
+    pass
 
 
 # =============================================================================
@@ -1341,6 +1431,36 @@ async def admin_panel(request: Request):
     if not admin_key or provided != admin_key:
         raise HTTPException(status_code=401, detail="Unauthorized — provide ?key=YOUR_ADMIN_KEY")
     return HTMLResponse(content=ADMIN_HTML)
+
+
+# =============================================================================
+# Admin: usage stats + API key management
+# =============================================================================
+
+@app.get("/api/admin/usage")
+async def admin_usage(request: Request, days: int = 7):
+    _check_admin_key(request)
+    from app.usage_tracker import get_usage_stats
+    return get_usage_stats(days=days)
+
+
+@app.post("/api/admin/apikeys")
+async def admin_create_key(request: Request, name: str = Query(...)):
+    _check_admin_key(request)
+    from app.usage_tracker import create_api_key
+    key = create_api_key(name)
+    return {
+        "api_key": key,
+        "name": name,
+        "message": "Store this key — it will not be shown again.",
+    }
+
+
+@app.get("/api/admin/apikeys")
+async def admin_list_keys(request: Request):
+    _check_admin_key(request)
+    from app.usage_tracker import list_api_keys
+    return {"keys": list_api_keys()}
 
 
 # =============================================================================
