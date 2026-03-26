@@ -1,0 +1,21 @@
+Part 4: Token discovery with tiered scanning
+The auto-promote flywheel is broken at the top — nothing new ever enters the backlog because the scanner only checks hardcoded contracts. The fetch_token_list() function in scanner.py already exists but isn’t wired in. This fix closes the discovery loop.
+Add a discovery phase to the pipeline, between seeding and batch scanning. It has two sub-phases:
+Phase 1 — Discover (runs every pipeline execution):
+	1.	Query the top 200 wallets by total_stablecoin_value from wallet_graph.wallets (whales and institutional — most likely to hold interesting tokens).
+	2.	For each, call fetch_token_list() to get their recent ERC-20 transfer history. Rate limit: 200 calls at ~9/sec = ~22 seconds.
+	3.	Extract unique contract addresses from the results. Filter out contracts already known (in the DB’s stablecoins table or wallet_graph.unscored_assets).
+	4.	For each genuinely new contract, store metadata (symbol, name, decimals — all available in the tokentx response) into wallet_graph.unscored_assets via upsert_unscored_asset().
+	5.	Classify each discovered token:
+	∙	Stablecoin: symbol contains USD, DAI, FRAX, EUR, or similar patterns, OR if ambiguous, check CoinGecko /coins/ethereum/contract/{address} for stablecoin category
+	∙	Non-stablecoin: everything else
+	6.	Add a token_type column to wallet_graph.unscored_assets (values: stablecoin, non_stablecoin, unknown). The existing promote_eligible_assets() function should only promote tokens where token_type = 'stablecoin'. The graph tracks everything but only stablecoins enter the SII scoring pipeline.
+Phase 2 — Tiered balance scan (runs in the same pipeline execution):
+	7.	For all newly discovered contracts from Phase 1, run batch_scan_all_holdings() but ONLY against the same 200 sampled wallets, not the full 44K. This is ~200 new contracts × ⌈200/20⌉ = ~2,000 additional API calls. Negligible.
+	8.	Store the resulting holdings in wallet_graph.wallet_holdings with is_scored = False.
+	9.	Run update_demand_signals() after this phase so the backlog immediately has real dollar values for the newly discovered tokens.
+What happens on subsequent runs (already handled by Part 1):
+Tokens that cross the $1M promotion threshold get inserted into the stablecoins table. Because the scanner now builds its contract list from the DB at runtime (Part 1), the next full pipeline run automatically scans all 44K wallets for those newly promoted tokens. This gives full demand signals, which drive further discovery and promotion.
+Summary of the complete flywheel:
+	∙	Discover from 200 whale wallets → populate backlog with real balances → promote at $1M → full 44K scan on next run → holders seed more wallets → repeat
+Add the token_type column via a new migration file. Do not modify the scoring engine or worker — those already work dynamically. Show me the plan before implementing.​​​​​​​​​​​​​​​​

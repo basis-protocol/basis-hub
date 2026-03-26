@@ -1,0 +1,18 @@
+You’re right. The whole V4 thesis is “wallet risk graph” — the wallet is the universal join key. If a whale has $50M in WBTC, WETH, or some random DeFi token, that’s real exposure the graph should see. Limiting discovery to stablecoins artificially caps the graph.
+The scanner should discover all ERC-20 holdings. The classification matters for scoring — stablecoins get SII scores, other assets get tracked as exposure without a Basis score. But the graph needs to see everything to compute honest concentration, coverage, and risk.
+Revise Part 4:
+
+Part 4 (revised): Token discovery — all ERC-20 assets, not just stablecoins
+The wallet risk graph should track all token exposure, not just stablecoins. A whale with $50M in WBTC has real concentration risk even though WBTC isn’t a stablecoin.
+Add a discovery phase to the pipeline:
+	1.	Sample the top 200 wallets by total_stablecoin_value from the previous run.
+	2.	For each, call fetch_token_list() to get recent ERC-20 transfer history.
+	3.	Extract unique contract addresses not already in the known list.
+	4.	For each new contract, store basic metadata (symbol, name, decimals from the tokentx response) into wallet_graph.unscored_assets via upsert_unscored_asset().
+	5.	Classify discovered tokens into two buckets:
+	∙	Stablecoin (symbol contains USD/DAI/FRAX patterns, or CoinGecko category = stablecoin) → eligible for SII scoring promotion via the existing flywheel
+	∙	Non-stablecoin → tracked as exposure in the wallet graph for concentration/coverage calculations, but not eligible for SII promotion
+	6.	Add a token_type column to unscored_assets (values: stablecoin, non_stablecoin, unknown) so the promote function only promotes stablecoins but the graph tracks everything.
+	7.	Include all discovered contracts in the current run’s batch scan so their balances get recorded in wallet_holdings.
+This means the wallet risk score reflects total portfolio composition, not just the stablecoin slice. The SII scoring flywheel stays stablecoin-only, but the risk graph sees the full picture.
+Show me the plan before implementing.​​​​​​​​​​​​​​​​
