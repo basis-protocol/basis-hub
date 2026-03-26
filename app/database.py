@@ -60,6 +60,12 @@ def get_conn():
     connection server-side — the dead connection is discarded and a fresh one is
     obtained.  This prevents "connection already closed" errors in long-running
     background tasks (e.g. the wallet indexer pipeline).
+
+    Additionally performs a SELECT 1 liveness ping to detect connections that
+    appear open (conn.closed == 0) but are actually broken at the TCP level.
+    psycopg2 does not update conn.closed when PostgreSQL drops the connection
+    server-side, so the ping catches these stale connections before they cause a
+    500 on the first real query.
     """
     if _pool is None:
         raise RuntimeError("Database pool not initialized. Call init_pool() first.")
@@ -72,10 +78,34 @@ def get_conn():
         except Exception:
             pass
         conn = _pool.getconn()
+    # Liveness ping: conn.closed may still be 0 even when the server has dropped
+    # the connection (TCP-level drop is invisible to psycopg2 until a round-trip).
+    # A cheap SELECT 1 catches these broken connections before the caller's query.
+    # Retry up to 2 times so the replacement connection is also validated.
+    _max_ping_attempts = 2
+    for _attempt in range(_max_ping_attempts):
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            break  # connection is healthy
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as ping_err:
+            logger.warning(
+                "Connection failed liveness ping (attempt %d/%d) — discarding and replacing: %s",
+                _attempt + 1, _max_ping_attempts, ping_err,
+            )
+            try:
+                _pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            # Fetch a fresh connection for the next ping attempt (or for the
+            # caller if all retries are exhausted).
+            conn = _pool.getconn()
     try:
         yield conn
         conn.commit()
-    except Exception:
+    except Exception as exc:
+        logger.error("Database error in get_conn(): %s", exc, exc_info=True)
         try:
             conn.rollback()
         except Exception:
