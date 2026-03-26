@@ -1,0 +1,148 @@
+Fix Wallet Indexer: Resume Logic + Blockscout Migration
+What & Why
+Two changes in one deploy, both touching the same files:
+
+Resume logic. The indexer currently re-scans every wallet from scratch on every run. If the process restarts (Replit redeploy, crash, Etherscan rate limit), it starts over and burns through the entire API quota again. We burned 374K Etherscan calls on a single run because of restarts. Fix: skip wallets already indexed today.
+Blockscout migration. Switch from Etherscan V2 API to Blockscout PRO API. Same endpoint patterns (module=token&action=getTokenHolders, module=account&action=tokenbalance), different base URL, better pricing ($0-49/mo vs $199/mo), multi-chain from one key. We'll keep Etherscan as an env-var fallback for one month.
+
+Done looks like
+
+Running the pipeline twice in one day: second run skips all wallets indexed in the first run and completes in seconds with near-zero API calls.
+If the pipeline crashes mid-run and restarts, it picks up from where it stopped — only scanning wallets that don't have a last_indexed_at timestamp from today.
+The seeding step (fetching top holders) only runs when explicitly requested or when the wallets table has fewer than 1000 entries — not on every incremental run.
+All Etherscan API calls go through Blockscout PRO API instead, controlled by env vars.
+Setting BLOCK_EXPLORER_PROVIDER=etherscan in env falls back to Etherscan (safety net).
+
+Out of scope
+
+Changing the scoring logic, wallet risk computation, or backlog pipeline
+Changing the database schema
+Changing any API endpoints in server.py
+Touching any spoke repos
+
+Tasks
+1. Add explorer provider abstraction in app/indexer/scanner.py
+Replace the hardcoded Etherscan base URL with a provider config:
+python# At top of scanner.py, replace:
+#   ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api"
+# With:
+
+import os
+
+BLOCK_EXPLORER_PROVIDER = os.environ.get("BLOCK_EXPLORER_PROVIDER", "blockscout").lower()
+
+if BLOCK_EXPLORER_PROVIDER == "etherscan":
+    EXPLORER_BASE = "https://api.etherscan.io/v2/api"
+    EXPLORER_KEY_PARAM = "apikey"
+else:
+    # Blockscout PRO API — unified endpoint, chain_id in URL for JSON RPC v2
+    # JSON RPC API v2 (Etherscan-compatible): uses query params like Etherscan
+    EXPLORER_BASE = "https://api.blockscout.com/v2/api"
+    EXPLORER_KEY_PARAM = "apikey"
+Then update every client.get() call in the file to use EXPLORER_BASE instead of ETHERSCAN_V2_BASE. The query parameter structure is the same — both use module, action, chainid, contractaddress, address, apikey.
+Key differences to handle:
+
+Etherscan uses chainid as a query param. Blockscout PRO API v2 also accepts chain_id as a query param in the same route format. Use chain_id=1 for Blockscout.
+Etherscan's tokenholderlist → Blockscout's getTokenHolders (different action name, same module=token). The response shape is similar but field names may differ — Etherscan returns TokenHolderAddress, Blockscout returns address. Handle both.
+Etherscan's tokenbalance and tokenbalancemulti — verify these exist on Blockscout. If tokenbalancemulti doesn't exist on Blockscout, fall back to individual tokenbalance calls with appropriate rate limiting.
+The API key env var: read BLOCKSCOUT_API_KEY when using Blockscout, ETHERSCAN_API_KEY when using Etherscan.
+
+2. Update rate limiting in app/indexer/config.py
+python# Replace:
+#   ETHERSCAN_RATE_LIMIT_DELAY = 0.11  # ~9 req/sec (Standard tier: 10/sec)
+# With:
+
+BLOCK_EXPLORER_PROVIDER = os.environ.get("BLOCK_EXPLORER_PROVIDER", "blockscout").lower()
+
+if BLOCK_EXPLORER_PROVIDER == "etherscan":
+    EXPLORER_RATE_LIMIT_DELAY = 0.11  # ~9 req/sec (Etherscan Standard: 10/sec)
+else:
+    EXPLORER_RATE_LIMIT_DELAY = 0.22  # ~4.5 req/sec (Blockscout Free: 5/sec)
+    # Bump to 0.07 (~14 req/sec) if on Blockscout Builder ($49/mo, 15 RPS)
+Update all imports in scanner.py and pipeline.py: ETHERSCAN_RATE_LIMIT_DELAY → EXPLORER_RATE_LIMIT_DELAY.
+3. Add resume logic to run_pipeline() in app/indexer/pipeline.py
+The pipeline currently does this:
+pythonwallet_addresses = await seed_wallets(client, api_key, holders_per_coin)
+existing = _get_existing_wallets()
+wallet_addresses |= existing
+wallet_list = list(wallet_addresses)
+Change to:
+python# Check if this is a full re-seed or an incremental run
+force_reseed = os.environ.get("INDEXER_FORCE_RESEED", "false").lower() == "true"
+existing = _get_existing_wallets()
+
+if force_reseed or len(existing) < 1000:
+    # Full seed: fetch top holders from explorer API
+    logger.info("Full seed run — fetching top holders from explorer")
+    wallet_addresses = await seed_wallets(client, api_key, holders_per_coin)
+    wallet_addresses |= existing
+else:
+    # Incremental run: only re-index existing wallets, no new seeding
+    logger.info(f"Incremental run — {len(existing)} existing wallets, skipping seed")
+    wallet_addresses = existing
+
+# Filter to wallets not yet indexed today
+already_indexed_today = set()
+rows = fetch_all("""
+    SELECT address FROM wallet_graph.wallets
+    WHERE last_indexed_at IS NOT NULL
+      AND last_indexed_at >= CURRENT_DATE
+""")
+already_indexed_today = {row["address"] for row in rows}
+
+wallet_list = [w for w in wallet_addresses if w not in already_indexed_today]
+skipped = len(wallet_addresses) - len(wallet_list)
+
+if skipped > 0:
+    logger.info(f"Skipping {skipped} wallets already indexed today, {len(wallet_list)} remaining")
+
+if not wallet_list:
+    logger.info("All wallets already indexed today — nothing to do")
+    return {
+        "wallets_discovered": len(wallet_addresses),
+        "wallets_indexed": 0,
+        "wallets_skipped_today": skipped,
+        "message": "All wallets already indexed today",
+    }
+4. Add checkpoint logging
+In the Phase B scoring loop (line ~670), after every 500 wallets, log a checkpoint that makes it easy to verify resume is working:
+pythonif indexed % 500 == 0:
+    logger.info(
+        f"  Checkpoint: {indexed}/{len(wallet_list)} wallets processed "
+        f"({skipped} skipped as already indexed today)"
+    )
+5. Update the admin trigger endpoint
+In app/server.py, find the admin endpoint that triggers the pipeline. Add a reseed query parameter:
+python# When calling: POST /api/admin/index-wallets?key=XXX&reseed=true
+# Set INDEXER_FORCE_RESEED=true for that run only
+This lets you trigger a full re-seed manually without changing env vars.
+Environment variables
+Add to Replit Secrets:
+
+BLOCK_EXPLORER_PROVIDER = blockscout (default if not set)
+BLOCKSCOUT_API_KEY = your key from dev.blockscout.com (get free key first)
+Keep ETHERSCAN_API_KEY as-is (fallback)
+INDEXER_FORCE_RESEED = false (default; set true for manual full re-seed)
+
+Testing
+After deploying:
+
+Trigger the pipeline once — it should do a full run (incremental, skipping wallets already indexed today if any).
+Trigger it again immediately — it should complete in seconds, reporting all wallets skipped.
+Check logs for "Skipping N wallets already indexed today" and "Checkpoint" messages.
+Verify /api/wallets/stats shows the same numbers as before.
+
+Relevant files
+
+app/indexer/scanner.py — explorer base URL, API call functions, rate limiting
+app/indexer/config.py — rate limit delay constant, provider detection
+app/indexer/pipeline.py — run_pipeline() seed/resume logic, checkpoint logging
+app/server.py — admin endpoint for reseed parameter
+
+Do NOT
+
+Run the pipeline during this deploy — just deploy the code changes
+Change the database schema or migration files
+Modify scoring logic in scorer.py
+Touch any spoke repos
+Remove Etherscan support — keep it as a fallback via env var
