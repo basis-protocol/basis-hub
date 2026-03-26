@@ -65,13 +65,17 @@ async def rate_limit_and_track(request: Request, call_next):
     from app.rate_limiter import rate_limiter, PUBLIC_RATE_LIMIT, KEYED_RATE_LIMIT
     from app.usage_tracker import validate_api_key, hash_api_key, log_request
 
-    api_key_str = request.query_params.get("apikey") or request.headers.get("x-api-key")
+    query_key = request.query_params.get("apikey")
+    header_key = request.headers.get("x-api-key")
     api_key_id: Optional[int] = None
     api_key_hash: Optional[str] = None
 
-    if api_key_str:
-        api_key_id = validate_api_key(api_key_str)
-        api_key_hash = hash_api_key(api_key_str)
+    # Try query param first; if invalid or absent, fall back to header
+    for candidate in filter(None, [query_key, header_key]):
+        api_key_id = validate_api_key(candidate)
+        api_key_hash = hash_api_key(candidate)
+        if api_key_id:
+            break
 
     ip = request.client.host if request.client else "unknown"
     ua = request.headers.get("user-agent", "")[:500]

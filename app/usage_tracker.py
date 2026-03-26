@@ -237,12 +237,20 @@ def _flush_sync() -> None:
 
 def _flush_loop() -> None:
     global _running
+    _cleanup_counter = 0
     while _running:
         time.sleep(FLUSH_INTERVAL_SECONDS)
         try:
             _flush_sync()
         except Exception as e:
             logger.warning(f"Periodic flush error: {e}")
+        _cleanup_counter += 1
+        if _cleanup_counter % 10 == 0:
+            try:
+                from app.rate_limiter import rate_limiter
+                rate_limiter.cleanup()
+            except Exception:
+                pass
 
 
 def _start_flush_thread() -> None:
