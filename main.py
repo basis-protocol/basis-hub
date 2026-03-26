@@ -244,6 +244,25 @@ def run_migrations():
         else:
             logger.warning(f"Migration file not found: {migration_path}")
 
+    try:
+        result = fetch_one("SELECT 1 FROM migrations WHERE name = '012_widen_symbol_columns'")
+        if result:
+            logger.info("Migration 012_widen_symbol_columns already applied ✓")
+    except Exception:
+        result = None
+
+    if not result:
+        logger.info("Applying migration 012: widen symbol/dominant_asset columns to VARCHAR(50)...")
+        migration_path = os.path.join(os.path.dirname(__file__), "migrations", "012_widen_symbol_columns.sql")
+        if os.path.exists(migration_path):
+            success = run_migration(migration_path)
+            if success:
+                logger.info("Migration 012_widen_symbol_columns applied ✓")
+            else:
+                logger.error("Failed to apply migration 012_widen_symbol_columns")
+        else:
+            logger.warning(f"Migration file not found: {migration_path}")
+
 
 def main():
     # 1. Initialize database
