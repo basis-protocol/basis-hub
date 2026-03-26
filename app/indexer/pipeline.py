@@ -691,15 +691,16 @@ async def run_pipeline(holders_per_coin: int = None) -> dict:
                 f"Discovery Phase 2: tiered scan of {new_contracts_discovered} new contracts "
                 f"× {len(sampled_wallets)} sampled wallets"
             )
-            # Build a minimal sii_scores-compatible dict for new (unscored) contracts
-            # All are unscored, so is_scored=False and no price data needed
-            # batch_scan_all_holdings will call get_all_known_contracts() internally, but
-            # we pass new_contracts directly by temporarily building a fake registry:
+            # _tiered_batch_scan operates only on the explicit new_contracts dict and
+            # the sampled wallets — not the full 44K wallet list or full contract registry.
+            # All discovered holdings are stored as is_scored=False.
             tiered_holdings, tiered_failures = await _tiered_batch_scan(
                 client, new_contracts, sampled_wallets, api_key
             )
+            # Estimated API call count: ceil(wallets/20) batches per contract.
+            # Actual call count may be lower if _tiered_batch_scan encountered batch failures.
             tiered_scan_api_calls = sum(
-                (len(sampled_wallets) + 19) // 20  # ceil batches per contract
+                (len(sampled_wallets) + 19) // 20
                 for _ in new_contracts
             )
 
