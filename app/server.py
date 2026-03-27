@@ -164,6 +164,20 @@ async def startup():
         logger.info("Wallet indexer routes registered")
     except Exception as e:
         logger.warning(f"Wallet indexer not available: {e}")
+    # Register verification agent routes
+    try:
+        from app.agent.api import register_agent_routes
+        register_agent_routes(app)
+        logger.info("Verification agent routes registered")
+    except Exception as e:
+        logger.warning(f"Verification agent not available: {e}")
+    # Register publisher page routes (wallet, asset, assessment, pulse HTML pages)
+    try:
+        from app.publisher.page_renderer import register_page_routes
+        register_page_routes(app)
+        logger.info("Publisher page routes registered")
+    except Exception as e:
+        logger.warning(f"Publisher pages not available: {e}")
     # MCP HTTP endpoint
     try:
         from app.mcp_server import mcp as mcp_server

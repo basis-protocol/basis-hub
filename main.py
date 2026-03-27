@@ -125,6 +125,15 @@ def run_worker_loop():
         except Exception as e:
             logger.error(f"Worker cycle error: {e}")
 
+        # Verification agent cycle — runs after every scoring cycle
+        try:
+            from app.agent.watcher import run_agent_cycle
+            result = run_agent_cycle()
+            if result:
+                logger.info(f"Agent cycle: {result.get('assessments', 0)} assessments")
+        except Exception as e:
+            logger.error(f"Agent cycle error: {e}")
+
         # Periodic wallet re-indexing (default every 24h, tunable via INDEXER_INTERVAL_HOURS)
         hours_since_index = (time.time() - last_indexed_at) / 3600
         if hours_since_index >= indexer_interval_hours:
@@ -279,6 +288,25 @@ def run_migrations():
                 logger.info("Migration 013_api_usage applied ✓")
             else:
                 logger.error("Failed to apply migration 013_api_usage")
+        else:
+            logger.warning(f"Migration file not found: {migration_path}")
+
+    try:
+        result = fetch_one("SELECT 1 FROM migrations WHERE name = '014_assessment_events'")
+        if result:
+            logger.info("Migration 014_assessment_events already applied ✓")
+    except Exception:
+        result = None
+
+    if not result:
+        logger.info("Applying migration 014: assessment events + daily pulses...")
+        migration_path = os.path.join(os.path.dirname(__file__), "migrations", "014_assessment_events.sql")
+        if os.path.exists(migration_path):
+            success = run_migration(migration_path)
+            if success:
+                logger.info("Migration 014_assessment_events applied ✓")
+            else:
+                logger.error("Failed to apply migration 014_assessment_events")
         else:
             logger.warning(f"Migration file not found: {migration_path}")
 

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ symbol }} Stablecoin Integrity Index | Basis Protocol</title>
+    <meta property="og:title" content="{{ symbol }} SII: {{ score.overall_score }} ({{ score.grade }})">
+    <meta property="og:description" content="Stablecoin Integrity Index score for {{ symbol }}">
+    <meta property="og:type" content="website">
+    <link rel="canonical" href="/asset/{{ symbol | lower }}">
+    <link rel="alternate" type="application/json" href="/api/scores/{{ symbol | lower }}">
+    <script type="application/ld+json">{{ json_ld | safe }}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; }
+        h1 { font-size: 1.4rem; color: #fff; }
+        .score-card { display: flex; gap: 24px; margin: 20px 0; }
+        .metric { background: #151515; border: 1px solid #222; border-radius: 8px; padding: 16px; flex: 1; text-align: center; }
+        .metric-label { font-size: 0.75rem; color: #666; text-transform: uppercase; }
+        .metric-value { font-size: 2rem; font-weight: 700; margin: 4px 0; }
+        .grade-a { color: #22c55e; } .grade-b { color: #84cc16; } .grade-c { color: #eab308; } .grade-d { color: #f97316; } .grade-f { color: #ef4444; }
+        table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+        th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #222; }
+        th { color: #666; font-size: 0.75rem; text-transform: uppercase; }
+        .delta-pos { color: #22c55e; } .delta-neg { color: #ef4444; }
+        footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #222; color: #444; font-size: 0.75rem; }
+    </style>
+</head>
+<body>
+    <h1>{{ symbol }}</h1>
+    <p>Stablecoin Integrity Index</p>
+
+    <div class="score-card">
+        <div class="metric">
+            <div class="metric-label">SII Score</div>
+            <div class="metric-value {% if score.grade and score.grade[0] == 'A' %}grade-a{% elif score.grade and score.grade[0] == 'B' %}grade-b{% elif score.grade and score.grade[0] == 'C' %}grade-c{% elif score.grade and score.grade[0] == 'D' %}grade-d{% else %}grade-f{% endif %}">
+                {{ score.overall_score }}
+            </div>
+            <div class="metric-label">{{ score.grade }}</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">24h Change</div>
+            <div class="metric-value {% if score.daily_change and score.daily_change > 0 %}delta-pos{% elif score.daily_change and score.daily_change < 0 %}delta-neg{% endif %}">
+                {{ '%+.1f' | format(score.daily_change or 0) }}
+            </div>
+            <div class="metric-label">points</div>
+        </div>
+    </div>
+
+    {% if history %}
+    <h2>Score History (30d)</h2>
+    <table>
+        <thead>
+            <tr><th>Date</th><th>Score</th><th>Grade</th></tr>
+        </thead>
+        <tbody>
+        {% for h in history %}
+            <tr>
+                <td>{{ h.scored_date }}</td>
+                <td>{{ h.overall_score }}</td>
+                <td>{{ h.grade }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <footer>
+        <p>Basis Protocol | Formula: v1.0.0 | Data updates hourly</p>
+    </footer>
+</body>
+</html>
