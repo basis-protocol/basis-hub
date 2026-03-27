@@ -34,8 +34,8 @@ def store_assessment(assessment: dict) -> str | None:
             logger.debug(f"Duplicate assessment skipped (hash: {content_hash[:16]}...)")
             return None
 
-    holdings_json = json.dumps(assessment.get("holdings_snapshot", []))
-    trigger_json = json.dumps(assessment.get("trigger_detail", {}))
+    holdings_json = json.dumps(assessment.get("holdings_snapshot", []), default=str)
+    trigger_json = json.dumps(assessment.get("trigger_detail", {}), default=str)
 
     row = fetch_one("""
         INSERT INTO assessment_events (

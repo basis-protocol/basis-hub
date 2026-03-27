@@ -45,8 +45,8 @@ def _get_sii_7d_deltas() -> dict:
                s.overall_score - COALESCE(h.overall_score, s.overall_score) AS delta_7d
         FROM scores s
         LEFT JOIN score_history h
-            ON h.stablecoin_id = s.stablecoin_id
-            AND h.scored_date = CURRENT_DATE - INTERVAL '7 days'
+            ON h.stablecoin = s.stablecoin_id
+            AND h.score_date = CURRENT_DATE - INTERVAL '7 days'
     """)
     return {r["stablecoin_id"]: round(r["delta_7d"] or 0, 2) for r in rows}
 

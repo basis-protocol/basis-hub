@@ -81,8 +81,8 @@ def detect_score_changes(config: dict, sii_scores: dict) -> list[dict]:
                h.overall_score AS prev_score
         FROM scores s
         JOIN score_history h
-            ON h.stablecoin_id = s.stablecoin_id
-            AND h.scored_date = CURRENT_DATE - 1
+            ON h.stablecoin = s.stablecoin_id
+            AND h.score_date = CURRENT_DATE - 1
         WHERE ABS(s.overall_score - h.overall_score) > %s
     """, (threshold,))
 
@@ -204,27 +204,27 @@ def detect_depeg_events(config: dict, sii_scores: dict) -> list[dict]:
     threshold_pct = config["depeg_threshold_pct"]
 
     rows = fetch_all("""
-        SELECT DISTINCT ON (stablecoin_id)
-            stablecoin_id, close_price, recorded_at
+        SELECT DISTINCT ON (coingecko_id)
+            coingecko_id, price, timestamp
         FROM historical_prices
-        ORDER BY stablecoin_id, recorded_at DESC
+        ORDER BY coingecko_id, timestamp DESC
     """)
 
     triggers = []
     for r in rows:
-        price = r.get("close_price")
+        price = r.get("price")
         if price is None:
             continue
         deviation = abs(price - 1.0) * 100
         if deviation >= threshold_pct:
             triggers.append({
-                "stablecoin_id": r["stablecoin_id"],
+                "stablecoin_id": r["coingecko_id"],
                 "price": price,
                 "deviation_pct": round(deviation, 3),
-                "recorded_at": r["recorded_at"].isoformat() if r.get("recorded_at") else None,
+                "recorded_at": r["timestamp"].isoformat() if r.get("timestamp") else None,
             })
             logger.warning(
-                f"Depeg trigger: {r['stablecoin_id']} at ${price:.4f} "
+                f"Depeg trigger: {r['coingecko_id']} at ${price:.4f} "
                 f"({deviation:.2f}% deviation)"
             )
     return triggers

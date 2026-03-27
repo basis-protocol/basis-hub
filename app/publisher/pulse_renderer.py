@@ -7,8 +7,16 @@ Generates daily pulse summaries from the day's assessment events + SII scores.
 import json
 import logging
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from app.database import fetch_all, fetch_one, execute
+
+
+class _DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super().default(obj)
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +107,7 @@ def generate_daily_pulse(pulse_date: date | None = None) -> dict | None:
         INSERT INTO daily_pulses (pulse_date, summary)
         VALUES (%s, %s)
         ON CONFLICT (pulse_date) DO UPDATE SET summary = EXCLUDED.summary
-    """, (pulse_date, json.dumps(summary)))
+    """, (pulse_date, json.dumps(summary, cls=_DecimalEncoder)))
 
     logger.info(
         f"Daily pulse generated for {pulse_date}: "
