@@ -211,6 +211,42 @@ function useAllHistory(coinIds) {
   return histMap;
 }
 
+function usePsiScores() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetch(`${API}/api/psi/scores`)
+      .then(r => r.json())
+      .then(d => { setData(d.protocols || d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+  return { data, loading };
+}
+
+function useCqiMatrix() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetch(`${API}/api/compose/cqi/matrix`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+  return { data, loading };
+}
+
+function usePulse() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetch(`${API}/api/pulse/latest`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+  return { data, loading };
+}
+
 function Sparkline({ data, width = 56, height = 28 }) {
   const scores = (data || []).map((d) => (typeof d === "number" ? d : d.score)).filter((s) => s != null);
   if (scores.length < 2) return null;
@@ -1416,6 +1452,469 @@ function WalletsView({ mobile }) {
   );
 }
 
+function ProtocolsView({ mobile }) {
+  const { data: protocols, loading: psiLoading } = usePsiScores();
+  const { data: cqiData, loading: cqiLoading } = useCqiMatrix();
+
+  const statsItems = [
+    `${protocols ? protocols.length : "—"} PROTOCOLS SCORED`,
+    `${cqiData ? cqiData.count : "—"} CQI PAIRS`,
+    "PSI v0.1.0",
+    "FORM PSI-001 · BASIS PROTOCOL",
+  ];
+
+  const sorted = protocols ? [...protocols].sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0)) : [];
+
+  return (
+    <div>
+      <div style={{ height: mobile ? 16 : 28 }} />
+
+      {/* Stats bar */}
+      <div style={{ border: `1.5px solid ${T.ink}`, marginBottom: 24, padding: mobile ? "10px 12px" : "14px 20px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: mobile ? 4 : 0 }}>
+          {statsItems.map((s, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center" }}>
+              <span style={{ fontFamily: T.mono, fontSize: mobile ? 8 : 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: mobile ? 0.5 : 1.5, padding: mobile ? "2px 6px" : "0 12px" }}>
+                {s}
+              </span>
+              {!mobile && i < statsItems.length - 1 && (
+                <div style={{ width: 1, height: 12, background: T.ruleMid }} />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* PSI Rankings Table */}
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 10 }}>
+          Protocol Solvency Index · Rankings
+        </div>
+        {psiLoading ? (
+          <div style={{ padding: 24, fontFamily: T.mono, fontSize: 12, color: T.inkFaint }}>Loading protocol scores...</div>
+        ) : sorted.length === 0 ? (
+          <div style={{ padding: 24, fontFamily: T.mono, fontSize: 12, color: T.inkFaint }}>No protocol scores yet. Run PSI scoring first.</div>
+        ) : (
+          <div style={{ border: `1px solid ${T.ruleMid}` }}>
+            {/* Header */}
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: mobile ? "32px 1fr 60px 40px" : "32px 1fr 80px 80px 80px 80px 60px 40px",
+              padding: "8px 16px",
+              background: T.paper,
+              borderBottom: `3px solid ${T.ink}`,
+              fontFamily: T.mono, fontSize: 9, textTransform: "uppercase",
+              letterSpacing: 1.5, color: T.inkLight,
+            }}>
+              <span>#</span>
+              <span>Protocol</span>
+              {!mobile && <span>Balance</span>}
+              {!mobile && <span>Revenue</span>}
+              {!mobile && <span>Security</span>}
+              {!mobile && <span>Gov</span>}
+              <span>Score</span>
+              <span>Grade</span>
+            </div>
+            {/* Rows */}
+            {sorted.map((p, i) => {
+              const cats = p.category_scores || {};
+              return (
+                <div key={p.protocol_slug} style={{
+                  display: "grid",
+                  gridTemplateColumns: mobile ? "32px 1fr 60px 40px" : "32px 1fr 80px 80px 80px 80px 60px 40px",
+                  padding: "11px 16px",
+                  borderBottom: `1px dotted ${T.ruleMid}`,
+                  alignItems: "center",
+                }}>
+                  <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint }}>{i + 1}</span>
+                  <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 700, color: T.ink }}>{p.protocol_name || p.protocol_slug}</span>
+                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.balance_sheet) }}>{fmt(cats.balance_sheet, 0)}</span>}
+                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.revenue) }}>{fmt(cats.revenue, 0)}</span>}
+                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.security) }}>{fmt(cats.security, 0)}</span>}
+                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.governance) }}>{fmt(cats.governance, 0)}</span>}
+                  <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 600, color: T.ink }}>{fmt(p.overall_score, 1)}</span>
+                  <span style={{ fontFamily: T.sans, fontSize: 18, fontWeight: 700, color: gradeColor(p.grade) }}>{p.grade || "—"}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Formula bar */}
+        <div style={{
+          border: `1px solid ${T.ruleMid}`, borderTop: "none",
+          padding: mobile ? "8px 12px" : "10px 16px",
+          fontFamily: T.mono, fontSize: mobile ? 9 : 10, color: T.inkLight,
+        }}>
+          PSI = 0.25×Balance + 0.20×Revenue + 0.20×Liquidity + 0.15×Security + 0.10×Governance + 0.10×Token
+        </div>
+      </div>
+
+      {/* CQI Composition Matrix */}
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 4 }}>
+          Collateral Quality Index · CQI = √(SII × PSI)
+        </div>
+        <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint, marginBottom: 12 }}>
+          Quality of each stablecoin as collateral in each protocol. Geometric mean penalizes weakness in either component.
+        </div>
+
+        {cqiLoading ? (
+          <div style={{ padding: 24, fontFamily: T.mono, fontSize: 12, color: T.inkFaint }}>Loading composition matrix...</div>
+        ) : !cqiData || !cqiData.matrix || cqiData.matrix.length === 0 ? (
+          <div style={{ padding: 24, fontFamily: T.mono, fontSize: 12, color: T.inkFaint }}>No CQI data. Requires both SII and PSI scores.</div>
+        ) : (() => {
+          const assets = [...new Set(cqiData.matrix.map(r => r.asset))];
+          const protos = [...new Set(cqiData.matrix.map(r => r.protocol))];
+          const lookup = {};
+          cqiData.matrix.forEach(r => { lookup[`${r.asset}-${r.protocol_slug}`] = r; });
+
+          const assetAvg = {};
+          assets.forEach(a => {
+            const scores = cqiData.matrix.filter(r => r.asset === a).map(r => r.cqi_score).filter(Boolean);
+            assetAvg[a] = scores.length ? scores.reduce((s, v) => s + v, 0) / scores.length : 0;
+          });
+          assets.sort((a, b) => assetAvg[b] - assetAvg[a]);
+
+          const protoAvg = {};
+          protos.forEach(p => {
+            const scores = cqiData.matrix.filter(r => r.protocol === p).map(r => r.cqi_score).filter(Boolean);
+            protoAvg[p] = scores.length ? scores.reduce((s, v) => s + v, 0) / scores.length : 0;
+          });
+          protos.sort((a, b) => protoAvg[b] - protoAvg[a]);
+
+          const protoSlugMap = {};
+          cqiData.matrix.forEach(r => { protoSlugMap[r.protocol] = r.protocol_slug; });
+
+          if (mobile) {
+            const sorted = [...cqiData.matrix].sort((a, b) => (b.cqi_score || 0) - (a.cqi_score || 0)).slice(0, 20);
+            return (
+              <div style={{ border: `1px solid ${T.ruleMid}` }}>
+                <div style={{
+                  display: "grid", gridTemplateColumns: "32px 1fr 60px 40px",
+                  padding: "8px 12px", borderBottom: `3px solid ${T.ink}`,
+                  fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1, color: T.inkLight,
+                }}>
+                  <span>#</span><span>Pair</span><span>CQI</span><span>Grade</span>
+                </div>
+                {sorted.map((r, i) => (
+                  <div key={i} style={{
+                    display: "grid", gridTemplateColumns: "32px 1fr 60px 40px",
+                    padding: "10px 12px", borderBottom: `1px dotted ${T.ruleMid}`, alignItems: "center",
+                  }}>
+                    <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint }}>{i + 1}</span>
+                    <div>
+                      <span style={{ fontFamily: T.mono, fontSize: 11, fontWeight: 700, color: T.ink }}>{r.asset}</span>
+                      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint }}> in </span>
+                      <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMid }}>{r.protocol}</span>
+                    </div>
+                    <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 600, color: T.ink }}>{fmt(r.cqi_score, 1)}</span>
+                    <span style={{ fontFamily: T.sans, fontSize: 16, fontWeight: 700, color: gradeColor(r.cqi_grade) }}>{r.cqi_grade || "—"}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          }
+
+          const displayAssets = assets.slice(0, 8);
+          const cellBg = (score) => {
+            if (!score) return T.ruleLight;
+            if (score >= 85) return "#e8f0e8";
+            if (score >= 70) return "#f0f0e4";
+            if (score >= 55) return "#f5ece0";
+            return "#f5e4e0";
+          };
+
+          return (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{
+                borderCollapse: "collapse", width: "100%",
+                fontFamily: T.mono, fontSize: 11,
+                border: `1px solid ${T.ruleMid}`,
+              }}>
+                <thead>
+                  <tr style={{ borderBottom: `3px solid ${T.ink}` }}>
+                    <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight }}>Asset \ Protocol</th>
+                    {protos.map(p => (
+                      <th key={p} style={{ padding: "8px 6px", textAlign: "center", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5, color: T.inkLight, maxWidth: 90 }}>
+                        {p.length > 10 ? p.slice(0, 9) + "…" : p}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayAssets.map(asset => (
+                    <tr key={asset} style={{ borderBottom: `1px dotted ${T.ruleMid}` }}>
+                      <td style={{ padding: "8px 12px", fontWeight: 700, color: T.ink }}>{asset}</td>
+                      {protos.map(proto => {
+                        const slug = protoSlugMap[proto];
+                        const entry = lookup[`${asset}-${slug}`];
+                        const score = entry ? entry.cqi_score : null;
+                        const grade = entry ? entry.cqi_grade : null;
+                        return (
+                          <td key={proto} style={{
+                            padding: "6px 6px", textAlign: "center",
+                            background: cellBg(score),
+                            borderLeft: `1px solid ${T.ruleLight}`,
+                          }}>
+                            <div style={{ fontWeight: 600, color: T.ink }}>{score ? fmt(score, 0) : "—"}</div>
+                            <div style={{ fontSize: 9, color: gradeColor(grade) }}>{grade || ""}</div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
+
+        {!cqiLoading && cqiData && cqiData.matrix && (
+          <div style={{ fontFamily: T.sans, fontSize: 10, color: T.inkFaint, marginTop: 8 }}>
+            Geometric mean: CQI = √(SII × PSI). A strong stablecoin in a weak protocol scores lower than the arithmetic average would suggest.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PulseView({ mobile }) {
+  const { data: pulse, loading } = usePulse();
+
+  if (loading) {
+    return (
+      <div style={{ padding: 40, display: "flex", justifyContent: "center" }}>
+        <div style={{ color: T.inkFaint, fontFamily: T.mono, fontSize: 12 }}>Loading daily pulse...</div>
+      </div>
+    );
+  }
+
+  if (!pulse || !pulse.summary) {
+    return (
+      <div style={{ padding: 40, textAlign: "center", color: T.inkFaint, fontSize: 13 }}>
+        No pulse data available. The daily pulse runs after each scoring cycle.
+      </div>
+    );
+  }
+
+  const s = typeof pulse.summary === "string" ? JSON.parse(pulse.summary) : pulse.summary;
+  const net = s.network_state || {};
+  const events = s.events_24h || {};
+  const scores = s.scores || [];
+  const psiScores = s.psi_scores || [];
+  const notables = s.notable_events || [];
+
+  const aTier = scores.filter(c => c.grade && c.grade.startsWith("A"));
+  const atRisk = scores.filter(c => c.grade && !c.grade.startsWith("A") && !c.grade.startsWith("B"));
+  const movers = scores.filter(c => c.delta_24h != null && Math.abs(c.delta_24h) >= 0.5)
+    .sort((a, b) => Math.abs(b.delta_24h) - Math.abs(a.delta_24h));
+
+  return (
+    <div>
+      <div style={{ height: mobile ? 16 : 28 }} />
+
+      {/* Pulse header — newspaper masthead style */}
+      <div style={{ border: `1.5px solid ${T.ink}`, marginBottom: 24 }}>
+        <div style={{ padding: mobile ? "14px 12px" : "18px 24px", borderBottom: `1px solid ${T.ruleMid}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: mobile ? "flex-start" : "baseline", flexDirection: mobile ? "column" : "row", gap: mobile ? 4 : 0 }}>
+            <h2 style={{ margin: 0, fontSize: mobile ? 18 : 24, fontFamily: T.sans, fontWeight: 400, color: T.ink }}>
+              <span style={{ fontWeight: 700 }}>Daily</span> Pulse
+            </h2>
+            <span style={{ fontFamily: T.mono, fontSize: mobile ? 9 : 10, color: T.inkFaint, textTransform: "uppercase", letterSpacing: 2 }}>
+              {s.pulse_date || pulse.pulse_date || "—"} · FORM PLS-001 · BASIS PROTOCOL
+            </span>
+          </div>
+        </div>
+
+        {/* Network state summary — big numbers */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr 1fr",
+          borderBottom: `1px solid ${T.ruleMid}`,
+        }}>
+          {[
+            { label: "Tracked", value: fmtB(net.total_tracked_usd) },
+            { label: "Wallets", value: net.wallets_indexed != null ? net.wallets_indexed.toLocaleString() : "—" },
+            { label: "Avg Risk", value: net.avg_risk_score != null ? fmt(net.avg_risk_score, 1) : "—" },
+            { label: "Stablecoins", value: net.stablecoins_scored || scores.length || "—" },
+            { label: "Events 24h", value: events.total || 0 },
+          ].map((item, i) => (
+            <div key={i} style={{
+              padding: mobile ? "12px 12px" : "14px 20px",
+              borderRight: (!mobile || i % 2 === 0) ? `1px solid ${T.ruleLight}` : "none",
+              borderBottom: mobile && i < 4 ? `1px solid ${T.ruleLight}` : "none",
+            }}>
+              <div style={{ fontFamily: T.mono, fontSize: 8, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkFaint, marginBottom: 4 }}>{item.label}</div>
+              <div style={{ fontFamily: T.mono, fontSize: mobile ? 18 : 22, fontWeight: 700, color: T.ink }}>{item.value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Event severity bar */}
+        <div style={{ padding: mobile ? "10px 12px" : "10px 24px", display: "flex", gap: mobile ? 12 : 24, alignItems: "center" }}>
+          {[
+            { label: "Critical", count: events.critical || 0, color: T.accent },
+            { label: "Alert", count: events.alert || 0, color: "#c77b2a" },
+            { label: "Notable", count: events.notable || 0, color: T.inkMid },
+            { label: "Silent", count: events.silent || 0, color: T.inkFaint },
+          ].map((sev, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: sev.color, flexShrink: 0 }} />
+              <span style={{ fontFamily: T.mono, fontSize: mobile ? 9 : 10, color: sev.color }}>
+                {sev.count} {sev.label}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Content hash verification line */}
+        {pulse.content_hash && (
+          <div style={{
+            borderTop: `1px solid ${T.ruleLight}`,
+            padding: mobile ? "6px 12px" : "6px 24px",
+            fontFamily: T.mono, fontSize: 9, color: T.inkFaint,
+          }}>
+            Content hash: {pulse.content_hash}
+          </div>
+        )}
+      </div>
+
+      {/* Stablecoin scores — compact table */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 10 }}>
+          Stablecoin Integrity · All Scores
+        </div>
+        <div style={{ border: `1px solid ${T.ruleMid}` }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: mobile ? "32px 1fr 56px 56px 44px" : "32px 1fr 72px 72px 56px",
+            padding: "8px 16px",
+            borderBottom: `3px solid ${T.ink}`,
+            fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight,
+          }}>
+            <span>#</span><span>Asset</span><span>Score</span><span>Δ 24h</span><span>Grade</span>
+          </div>
+          {[...scores].sort((a, b) => (b.score || 0) - (a.score || 0)).map((coin, i) => (
+            <div key={coin.symbol} style={{
+              display: "grid",
+              gridTemplateColumns: mobile ? "32px 1fr 56px 56px 44px" : "32px 1fr 72px 72px 56px",
+              padding: "9px 16px",
+              borderBottom: `1px dotted ${T.ruleMid}`,
+              alignItems: "center",
+            }}>
+              <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint }}>{i + 1}</span>
+              <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 700, color: T.ink }}>{coin.symbol}</span>
+              <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 500, color: T.ink }}>{fmt(coin.score, 1)}</span>
+              <span style={{
+                fontFamily: T.mono, fontSize: 11,
+                color: coin.delta_24h > 0 ? "#2d6b45" : coin.delta_24h < 0 ? T.accent : T.inkFaint,
+              }}>
+                {coin.delta_24h != null ? (coin.delta_24h > 0 ? "+" : "") + fmt(coin.delta_24h, 2) : "—"}
+              </span>
+              <span style={{ fontFamily: T.sans, fontSize: 16, fontWeight: 700, color: gradeColor(coin.grade) }}>{coin.grade || "—"}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* PSI scores — if present */}
+      {psiScores.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 10 }}>
+            Protocol Solvency · Snapshot
+          </div>
+          <div style={{ border: `1px solid ${T.ruleMid}` }}>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "32px 1fr 72px 56px",
+              padding: "8px 16px",
+              borderBottom: `3px solid ${T.ink}`,
+              fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight,
+            }}>
+              <span>#</span><span>Protocol</span><span>Score</span><span>Grade</span>
+            </div>
+            {[...psiScores].sort((a, b) => (b.score || 0) - (a.score || 0)).map((p, i) => (
+              <div key={p.protocol_slug} style={{
+                display: "grid",
+                gridTemplateColumns: "32px 1fr 72px 56px",
+                padding: "9px 16px",
+                borderBottom: `1px dotted ${T.ruleMid}`,
+                alignItems: "center",
+              }}>
+                <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint }}>{i + 1}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 700, color: T.ink }}>{p.protocol_name || p.protocol_slug}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 500, color: T.ink }}>{fmt(p.score, 1)}</span>
+                <span style={{ fontFamily: T.sans, fontSize: 16, fontWeight: 700, color: gradeColor(p.grade) }}>{p.grade || "—"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Notable events — if any */}
+      {notables.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 10 }}>
+            Notable Events · Last 24 Hours
+          </div>
+          <div style={{ border: `1px solid ${T.ruleMid}` }}>
+            {notables.map((evt, i) => (
+              <div key={i} style={{
+                padding: "10px 16px",
+                borderBottom: `1px dotted ${T.ruleMid}`,
+                display: "flex", alignItems: "center", gap: 12,
+              }}>
+                <div style={{
+                  width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                  background: evt.severity === "critical" ? T.accent : evt.severity === "alert" ? "#c77b2a" : T.inkMid,
+                }} />
+                <div>
+                  <span style={{ fontFamily: T.mono, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: T.inkLight }}>{evt.severity} · {evt.trigger}</span>
+                  <div style={{ fontFamily: T.mono, fontSize: 11, color: T.ink, marginTop: 2 }}>
+                    {truncAddr(evt.wallet)} · Score: {evt.score != null ? fmt(evt.score, 1) : "—"}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Movers — biggest score changes */}
+      {movers.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 10 }}>
+            Biggest Movers · |Δ| ≥ 0.5
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {movers.map(m => (
+              <div key={m.symbol} style={{
+                border: `1px solid ${T.ruleMid}`, padding: "8px 14px",
+                display: "flex", alignItems: "baseline", gap: 8,
+              }}>
+                <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 700, color: T.ink }}>{m.symbol}</span>
+                <span style={{
+                  fontFamily: T.mono, fontSize: 12, fontWeight: 600,
+                  color: m.delta_24h > 0 ? "#2d6b45" : T.accent,
+                }}>
+                  {m.delta_24h > 0 ? "+" : ""}{fmt(m.delta_24h, 2)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Methodology footer */}
+      <div style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, marginTop: 16 }}>
+        Methodology {s.methodology_version || "v1.0.0"} · Pulse generated after daily scoring cycle · Content-hashed for on-chain verification
+      </div>
+    </div>
+  );
+}
+
 function Footer() {
   return (
     <footer style={{
@@ -1481,7 +1980,9 @@ export default function App() {
             <nav style={{ display: "flex", gap: 16 }}>
               {[
                 { id: "rankings", label: "Rankings" },
+                { id: "protocols", label: "Protocols" },
                 { id: "wallets", label: "Wallets" },
+                { id: "pulse", label: "Pulse" },
                 { id: "methodology", label: "Methodology" },
               ].map((tab) => (
                 <button
@@ -1513,6 +2014,8 @@ export default function App() {
                 <DetailView coinId={selectedCoin} onBack={handleBack} mobile={mobile} />
               )}
               {view === "wallets" && <WalletsView mobile={mobile} />}
+              {view === "protocols" && <ProtocolsView mobile={mobile} />}
+              {view === "pulse" && <PulseView mobile={mobile} />}
               {view === "methodology" && <MethodologyView mobile={mobile} />}
             </main>
           </div>

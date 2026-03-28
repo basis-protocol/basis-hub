@@ -1175,6 +1175,16 @@ td{padding:6px 8px;border-bottom:1px solid #111520}
 <h2>Content Signals</h2>
 <div id="signalsCard"><div class="loading">Loading signals...</div></div>
 
+<h2>Protocol State</h2>
+<div class="grid">
+  <div class="card" id="pulseCard"><div class="loading">Loading pulse...</div></div>
+  <div class="card" id="psiCard"><div class="loading">Loading PSI...</div></div>
+</div>
+<div class="grid" style="margin-top:16px">
+  <div class="card" id="cdaCard"><div class="loading">Loading CDA...</div></div>
+  <div class="card" id="eventsCard"><div class="loading">Loading events...</div></div>
+</div>
+
 <script>
 const KEY = new URLSearchParams(window.location.search).get('key') || '';
 const api = (path) => fetch('/api/admin/' + path + '?key=' + encodeURIComponent(KEY)).then(r => {
@@ -1311,7 +1321,104 @@ async function loadSignals() {
   } catch(e) { document.getElementById('signalsCard').innerHTML = '<div class="error">'+e.message+'</div>'; }
 }
 
+async function loadPulse() {
+  try {
+    const d = await fetch('/api/pulse/latest').then(r=>r.json());
+    const today = new Date().toISOString().slice(0,10);
+    const pd = d.pulse_date || 'none';
+    const cur = pd === today;
+    const hash = (d.content_hash || '').slice(0,18);
+    let h = '<h3>Pulse Status</h3>';
+    h += '<div class="stats-row"><div><span class="dot '+(cur?'green':'red')+'"></span> ';
+    h += '<b>'+pd+'</b> '+(cur?'<span class="fresh">(current)</span>':'<span class="stale">(STALE)</span>')+'</div></div>';
+    if (hash) h += '<div style="font-size:0.8rem;color:#8b95a5;margin-top:4px">Hash: '+hash+'…</div>';
+    const s = typeof d.summary==='string'?JSON.parse(d.summary):d.summary;
+    if (s && s.network_state) {
+      const n = s.network_state;
+      h += '<table><tr><th>Metric</th><th>Value</th></tr>';
+      h += '<tr><td>Wallets indexed</td><td>'+(n.wallets_indexed||'—')+'</td></tr>';
+      h += '<tr><td>Avg risk</td><td>'+(n.avg_risk_score!=null?n.avg_risk_score.toFixed(1):'—')+'</td></tr>';
+      h += '<tr><td>Tracked USD</td><td>'+(n.total_tracked_usd?'$'+(n.total_tracked_usd/1e9).toFixed(1)+'B':'—')+'</td></tr>';
+      h += '</table>';
+    }
+    document.getElementById('pulseCard').innerHTML = h;
+  } catch(e) { document.getElementById('pulseCard').innerHTML = '<div class="error">Pulse: '+e.message+'</div>'; }
+}
+
+async function loadPSI() {
+  try {
+    const d = await fetch('/api/psi/scores').then(r=>r.json());
+    const protos = d.protocols || d || [];
+    let h = '<h3>PSI Scoring</h3>';
+    h += '<div class="stats-row"><div><div class="stat">'+protos.length+'</div><div class="stat-label">Protocols Scored</div></div></div>';
+    if (protos.length) {
+      h += '<table><tr><th>Protocol</th><th>Score</th><th>Grade</th></tr>';
+      protos.sort((a,b)=>(b.overall_score||0)-(a.overall_score||0)).forEach(p => {
+        h += '<tr><td>'+(p.protocol_name||p.protocol_slug)+'</td>';
+        h += '<td>'+(p.overall_score!=null?p.overall_score.toFixed(1):'—')+'</td>';
+        h += '<td>'+(p.grade||'—')+'</td></tr>';
+      });
+      h += '</table>';
+    }
+    document.getElementById('psiCard').innerHTML = h;
+  } catch(e) { document.getElementById('psiCard').innerHTML = '<div class="error">PSI: '+e.message+'</div>'; }
+}
+
+async function loadCDA() {
+  try {
+    const d = await fetch('/api/cda/issuers').then(r=>r.json());
+    const issuers = d.issuers || [];
+    const now = Date.now();
+    const WEEK = 7*24*60*60*1000;
+    let h = '<h3>CDA Pipeline</h3>';
+    h += '<div class="stats-row"><div><div class="stat">'+issuers.length+'</div><div class="stat-label">Issuers Tracked</div></div></div>';
+    if (issuers.length) {
+      h += '<table><tr><th>Asset</th><th>Issuer</th><th>Last Attestation</th></tr>';
+      issuers.forEach(i => {
+        const la = i.last_attestation_date || i.extracted_at;
+        const stale = la && (now - new Date(la).getTime()) > WEEK;
+        h += '<tr><td><b>'+(i.asset_symbol||'—')+'</b></td>';
+        h += '<td>'+(i.issuer_name||'—')+'</td>';
+        h += '<td class="'+(stale?'stale':'fresh')+'">'+(la?fmtDate(la):'—')+'</td></tr>';
+      });
+      h += '</table>';
+    }
+    document.getElementById('cdaCard').innerHTML = h;
+  } catch(e) { document.getElementById('cdaCard').innerHTML = '<div class="error">CDA: '+e.message+'</div>'; }
+}
+
+async function loadEvents() {
+  try {
+    const d = await fetch('/api/assessment-events?severity=notable&limit=10').then(r=>r.json());
+    const evts = d.events || [];
+    let h = '<h3>Assessment Events (24h)</h3>';
+    const counts = {};
+    evts.forEach(e => { counts[e.severity] = (counts[e.severity]||0)+1; });
+    h += '<div style="margin:6px 0">';
+    Object.entries(counts).forEach(([s,c]) => {
+      const cls = s==='critical'?'tag-neg':s==='alert'?'tag-con':'tag-neu';
+      h += '<span class="tag '+cls+'">'+s+': '+c+'</span> ';
+    });
+    if (!evts.length) h += '<span style="color:#8b95a5">No notable events</span>';
+    h += '</div>';
+    if (evts.length) {
+      h += '<table><tr><th>Severity</th><th>Trigger</th><th>Wallet</th><th>Score</th></tr>';
+      evts.slice(0,10).forEach(e => {
+        const addr = e.wallet_address||e.wallet||'';
+        const short = addr ? addr.slice(0,8)+'…'+addr.slice(-6) : '—';
+        h += '<tr><td><span class="tag '+(e.severity==='critical'?'tag-neg':e.severity==='alert'?'tag-con':'tag-neu')+'">'+e.severity+'</span></td>';
+        h += '<td>'+(e.trigger||e.event_type||'—')+'</td>';
+        h += '<td style="font-family:monospace;font-size:0.8rem">'+short+'</td>';
+        h += '<td>'+(e.score!=null?Number(e.score).toFixed(1):'—')+'</td></tr>';
+      });
+      h += '</table>';
+    }
+    document.getElementById('eventsCard').innerHTML = h;
+  } catch(e) { document.getElementById('eventsCard').innerHTML = '<div class="error">Events: '+e.message+'</div>'; }
+}
+
 loadHealth(); loadFreshness(); loadGovernance(); loadSignals();
+loadPulse(); loadPSI(); loadCDA(); loadEvents();
 </script>
 </body>
 </html>"""
