@@ -2456,6 +2456,19 @@ export default function App() {
                 </button>
               ))}
             </nav>
+            <a
+              href="/developers"
+              style={{
+                fontFamily: T.mono,
+                fontSize: 10,
+                color: T.inkLight,
+                textDecoration: "none",
+                letterSpacing: 0.5,
+                whiteSpace: "nowrap",
+              }}
+            >
+              API →
+            </a>
           </div>
 
           <div style={{ borderTop: `1px solid ${T.ruleLight}` }} />
