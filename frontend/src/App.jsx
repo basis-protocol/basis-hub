@@ -247,6 +247,58 @@ function usePulse() {
   return { data, loading };
 }
 
+function useWitnessIssuers() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetch(`${API}/api/cda/issuers`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+  return { data, loading };
+}
+
+function useWitnessCoverage() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetch(`${API}/api/cda/coverage`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+  return { data, loading };
+}
+
+function useIssuerHistory(symbol) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!symbol) return;
+    setLoading(true);
+    fetch(`${API}/api/cda/issuers/${symbol}/history?days=365`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [symbol]);
+  return { data, loading };
+}
+
+function useIssuerLatest(symbol) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!symbol) return;
+    setLoading(true);
+    fetch(`${API}/api/cda/issuers/${symbol}/latest`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [symbol]);
+  return { data, loading };
+}
+
 function Sparkline({ data, width = 56, height = 28 }) {
   const scores = (data || []).map((d) => (typeof d === "number" ? d : d.score)).filter((s) => s != null);
   if (scores.length < 2) return null;
@@ -1957,6 +2009,356 @@ function PulseView({ mobile }) {
   );
 }
 
+function WitnessView({ mobile, onSelectIssuer }) {
+  const { data: issuersData, loading: issuersLoading } = useWitnessIssuers();
+  const { data: coverageData } = useWitnessCoverage();
+  const [latestHashes, setLatestHashes] = useState({});
+  const [copiedHash, setCopiedHash] = useState(null);
+
+  const issuers = issuersData?.issuers || [];
+
+  useEffect(() => {
+    issuers.forEach(iss => {
+      if (!latestHashes[iss.asset_symbol]) {
+        fetch(`${API}/api/cda/issuers/${iss.asset_symbol}/latest`)
+          .then(r => r.json())
+          .then(d => {
+            setLatestHashes(prev => ({ ...prev, [iss.asset_symbol]: d.evidence_hash || null }));
+          })
+          .catch(() => {});
+      }
+    });
+  }, [issuers.length]);
+
+  const copyHash = (hash) => {
+    navigator.clipboard.writeText(hash).then(() => {
+      setCopiedHash(hash);
+      setTimeout(() => setCopiedHash(null), 1500);
+    });
+  };
+
+  const fmtRelative = (dateStr) => {
+    if (!dateStr) return "—";
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now - d;
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return `${days}d ago`;
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  };
+
+  const truncHash = (h) => h ? `${h.slice(0, 10)}…${h.slice(-6)}` : "—";
+
+  const totalAttestations = coverageData?.fiat_backed?.covered || issuers.length;
+
+  if (issuersLoading) {
+    return (
+      <div style={{ padding: 40, display: "flex", justifyContent: "center" }}>
+        <div style={{ color: T.inkFaint, fontFamily: T.mono, fontSize: 12 }}>Loading witness data...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: mobile ? "16px 0 32px" : "24px 0 64px" }}>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8, fontFamily: T.mono }}>
+          BASIS WITNESS
+        </div>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: T.inkMid, fontFamily: T.sans, lineHeight: 1.6, maxWidth: 600 }}>
+          Structured, timestamped, hash-verified archive of stablecoin issuer disclosures.
+        </p>
+        <div style={{ fontFamily: T.mono, fontSize: 11, color: T.inkLight, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <span>{issuers.length} issuers tracked</span>
+          <span style={{ color: T.ruleMid }}>·</span>
+          <span>{totalAttestations} attestations archived</span>
+          <span style={{ color: T.ruleMid }}>·</span>
+          <span>Updated daily</span>
+        </div>
+      </div>
+
+      <div style={{ border: `1px solid ${T.ruleMid}` }}>
+        {!mobile && (
+          <div style={{
+            display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 1.8fr 28px",
+            padding: "10px 16px", borderBottom: `1px solid ${T.ruleMid}`,
+            fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase",
+            letterSpacing: 1, fontFamily: T.mono,
+          }}>
+            <span>Issuer</span>
+            <span>Last Attestation</span>
+            <span>Method</span>
+            <span>Witness Hash</span>
+            <span />
+          </div>
+        )}
+        {issuers.map((iss, i) => (
+          <div
+            key={iss.asset_symbol}
+            onClick={() => onSelectIssuer(iss.asset_symbol)}
+            style={{
+              display: mobile ? "flex" : "grid",
+              flexDirection: mobile ? "column" : undefined,
+              gridTemplateColumns: mobile ? undefined : "2fr 1.2fr 1fr 1.8fr 28px",
+              padding: mobile ? "12px 12px" : "12px 16px",
+              borderBottom: i < issuers.length - 1 ? `1px dotted ${T.ruleMid}` : "none",
+              cursor: "pointer",
+              alignItems: mobile ? "flex-start" : "center",
+              gap: mobile ? 6 : 0,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = T.paperWarm}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+          >
+            <div>
+              <span style={{ fontFamily: T.sans, fontSize: 13, fontWeight: 500, color: T.ink }}>{iss.issuer_name}</span>
+              <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint, marginLeft: 8 }}>{iss.asset_symbol}</span>
+            </div>
+            <div style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
+              {mobile && <span style={{ fontSize: 10, color: T.inkLight, fontFamily: T.mono, marginRight: 6 }}>LAST:</span>}
+              {fmtRelative(iss.last_attestation)}
+            </div>
+            <div>
+              <span style={{
+                fontFamily: T.mono, fontSize: 10, color: T.inkLight,
+                border: `1px solid ${T.ruleLight}`, padding: "2px 6px",
+                display: "inline-block",
+              }}>
+                {iss.collection_method || "—"}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMid }}>
+                {truncHash(latestHashes[iss.asset_symbol])}
+              </span>
+              {latestHashes[iss.asset_symbol] && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); copyHash(latestHashes[iss.asset_symbol]); }}
+                  style={{
+                    background: "none", border: `1px solid ${T.ruleLight}`, cursor: "pointer",
+                    padding: "1px 5px", fontSize: 10, fontFamily: T.mono, color: T.inkLight,
+                  }}
+                >
+                  {copiedHash === latestHashes[iss.asset_symbol] ? "✓" : "copy"}
+                </button>
+              )}
+            </div>
+            <div style={{ fontFamily: T.sans, fontSize: 12, color: T.inkFaint }}>→</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 28, fontSize: 11, color: T.inkLight, fontFamily: T.mono, lineHeight: 1.7, maxWidth: 640 }}>
+        Basis Witness is the disclosure primitive in the Basis Protocol stack. Scores and enforcement surfaces are built on top of this data.
+      </div>
+      <div style={{ marginTop: 8, fontSize: 11, fontFamily: T.mono }}>
+        <a href="/api/cda/" style={{ color: T.inkLight, textDecoration: "none", borderBottom: `1px solid ${T.ruleMid}`, marginRight: 12 }}>API docs</a>
+        <a href="/developers" style={{ color: T.inkLight, textDecoration: "none", borderBottom: `1px solid ${T.ruleMid}` }}>Developers</a>
+      </div>
+    </div>
+  );
+}
+
+function WitnessDetailView({ symbol, onBack, mobile }) {
+  const { data: histData, loading: histLoading } = useIssuerHistory(symbol);
+  const { data: latest, loading: latestLoading } = useIssuerLatest(symbol);
+  const [expanded, setExpanded] = useState(null);
+  const [copiedHash, setCopiedHash] = useState(null);
+
+  const attestations = histData?.attestations || [];
+  const issuerName = latest?.issuer_name || symbol;
+  const transparencyUrl = latest?.source_url || null;
+
+  const copyHash = (hash) => {
+    navigator.clipboard.writeText(hash).then(() => {
+      setCopiedHash(hash);
+      setTimeout(() => setCopiedHash(null), 1500);
+    });
+  };
+
+  const fmtDate = (dateStr) => {
+    if (!dateStr) return "—";
+    const d = new Date(dateStr);
+    return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+      + " " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const renderStructuredData = (sd) => {
+    if (!sd) return null;
+    const obj = typeof sd === "string" ? JSON.parse(sd) : sd;
+    return Object.entries(obj).map(([key, val]) => (
+      <div key={key} style={{
+        display: "flex", justifyContent: "space-between", padding: "6px 0",
+        borderBottom: `1px dotted ${T.ruleLight}`, fontSize: 12,
+      }}>
+        <span style={{ fontFamily: T.sans, color: T.inkLight, textTransform: "capitalize" }}>
+          {key.replace(/_/g, " ")}
+        </span>
+        <span style={{ fontFamily: T.mono, color: T.ink }}>
+          {typeof val === "number" ? fmtB(val) : String(val)}
+        </span>
+      </div>
+    ));
+  };
+
+  if (histLoading || latestLoading) {
+    return (
+      <div style={{ padding: 40, display: "flex", justifyContent: "center" }}>
+        <div style={{ color: T.inkFaint, fontFamily: T.mono, fontSize: 12 }}>Loading {symbol} attestations...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: mobile ? "16px 0 32px" : "24px 0 64px" }}>
+      <button
+        onClick={onBack}
+        style={{
+          background: "none", border: "none", color: T.inkLight,
+          cursor: "pointer", fontSize: 12, fontFamily: T.sans,
+          padding: 0, marginBottom: 20,
+        }}
+      >
+        ← Back to Witness
+      </button>
+
+      <div style={{ display: "flex", alignItems: mobile ? "flex-start" : "baseline", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+        <h1 style={{ margin: 0, fontSize: mobile ? 20 : 24, fontWeight: 600, color: T.ink, fontFamily: T.sans, letterSpacing: -0.3 }}>
+          {issuerName}
+        </h1>
+        <span style={{ fontFamily: T.mono, fontSize: 13, color: T.inkFaint }}>{symbol}</span>
+        {transparencyUrl && (
+          <a
+            href={transparencyUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: 11, fontFamily: T.mono, color: T.inkLight, textDecoration: "none", borderBottom: `1px solid ${T.ruleMid}` }}
+          >
+            View source ↗
+          </a>
+        )}
+      </div>
+
+      <div style={{
+        margin: "20px 0 24px", padding: "12px 16px", border: `1px solid ${T.ruleLight}`,
+        fontFamily: T.mono, fontSize: 11, color: T.inkLight, lineHeight: 1.7,
+      }}>
+        Every attestation is hashed at ingestion. This hash proves the document existed in this exact form on the date recorded. Basis does not modify source documents.
+      </div>
+
+      <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12, fontFamily: T.mono }}>
+        ATTESTATION HISTORY
+      </div>
+
+      <div style={{ border: `1px solid ${T.ruleMid}` }}>
+        {!mobile && (
+          <div style={{
+            display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 0.8fr 0.6fr",
+            padding: "10px 16px", borderBottom: `1px solid ${T.ruleMid}`,
+            fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase",
+            letterSpacing: 1, fontFamily: T.mono,
+          }}>
+            <span>Date</span>
+            <span>Source</span>
+            <span>Vendor</span>
+            <span>Confidence</span>
+            <span>Warnings</span>
+          </div>
+        )}
+        {attestations.length === 0 && (
+          <div style={{ padding: 24, textAlign: "center", color: T.inkFaint, fontSize: 12, fontFamily: T.sans }}>
+            No attestations recorded yet.
+          </div>
+        )}
+        {attestations.map((att, i) => {
+          const isExpanded = expanded === i;
+          const warningCount = att.extraction_warnings ? (Array.isArray(att.extraction_warnings) ? att.extraction_warnings.length : 1) : 0;
+          const confidence = att.confidence_score != null ? `${Math.round(att.confidence_score * 100)}%` : "—";
+          return (
+            <div key={i}>
+              <div
+                onClick={() => setExpanded(isExpanded ? null : i)}
+                style={{
+                  display: mobile ? "flex" : "grid",
+                  flexDirection: mobile ? "column" : undefined,
+                  gridTemplateColumns: mobile ? undefined : "1.5fr 1fr 1fr 0.8fr 0.6fr",
+                  padding: mobile ? "12px 12px" : "12px 16px",
+                  borderBottom: (i < attestations.length - 1 || isExpanded) ? `1px dotted ${T.ruleMid}` : "none",
+                  cursor: "pointer",
+                  alignItems: mobile ? "flex-start" : "center",
+                  gap: mobile ? 4 : 0,
+                  background: isExpanded ? T.paperWarm : "transparent",
+                  transition: "background 0.15s",
+                }}
+                onMouseEnter={e => { if (!isExpanded) e.currentTarget.style.background = T.paperWarm; }}
+                onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = "transparent"; }}
+              >
+                <span style={{ fontFamily: T.mono, fontSize: 12, color: T.ink }}>
+                  {mobile && <span style={{ fontSize: 10, color: T.inkLight, marginRight: 6 }}>DATE:</span>}
+                  {fmtDate(att.extracted_at)}
+                </span>
+                <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
+                  {att.source_type || att.extraction_method || "—"}
+                </span>
+                <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
+                  {att.extraction_vendor || "—"}
+                </span>
+                <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
+                  {confidence}
+                </span>
+                <span style={{ fontFamily: T.mono, fontSize: 12, color: warningCount > 0 ? T.accent : T.inkFaint }}>
+                  {warningCount > 0 ? warningCount : "—"}
+                </span>
+              </div>
+              {isExpanded && (
+                <div style={{
+                  padding: mobile ? "12px 12px 16px" : "16px 16px 20px",
+                  background: T.paperWarm,
+                  borderBottom: i < attestations.length - 1 ? `1px dotted ${T.ruleMid}` : "none",
+                }}>
+                  {att.structured_data && (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8, fontFamily: T.mono }}>
+                        STRUCTURED DATA
+                      </div>
+                      <div style={{ border: `1px solid ${T.ruleLight}`, padding: "8px 12px" }}>
+                        {renderStructuredData(att.structured_data)}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, fontFamily: T.mono }}>
+                      WITNESS HASH
+                    </span>
+                    <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMid, wordBreak: "break-all" }}>
+                      {att.evidence_hash || "—"}
+                    </span>
+                    {att.evidence_hash && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); copyHash(att.evidence_hash); }}
+                        style={{
+                          background: "none", border: `1px solid ${T.ruleLight}`, cursor: "pointer",
+                          padding: "1px 5px", fontSize: 10, fontFamily: T.mono, color: T.inkLight,
+                        }}
+                      >
+                        {copiedHash === att.evidence_hash ? "✓" : "copy"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Footer() {
   return (
     <footer style={{
@@ -1974,6 +2376,7 @@ function Footer() {
 export default function App() {
   const [view, setView] = useState("rankings");
   const [selectedCoin, setSelectedCoin] = useState(null);
+  const [witnessSymbol, setWitnessSymbol] = useState(null);
   const { data: scores, loading, error, ts } = useScores();
   const mobile = useIsMobile();
 
@@ -1991,6 +2394,7 @@ export default function App() {
   const handleSetView = useCallback((v) => {
     setView(v);
     if (v !== "detail") setSelectedCoin(null);
+    if (v !== "witness-detail") setWitnessSymbol(null);
     window.scrollTo(0, 0);
   }, []);
 
@@ -2025,6 +2429,7 @@ export default function App() {
                 { id: "protocols", label: "Protocols" },
                 { id: "wallets", label: "Wallets" },
                 { id: "pulse", label: "Pulse" },
+                { id: "witness", label: "Witness" },
                 { id: "methodology", label: "Methodology" },
               ].map((tab) => (
                 <button
@@ -2058,6 +2463,8 @@ export default function App() {
               {view === "wallets" && <WalletsView mobile={mobile} />}
               {view === "protocols" && <ProtocolsView mobile={mobile} />}
               {view === "pulse" && <PulseView mobile={mobile} />}
+              {view === "witness" && <WitnessView mobile={mobile} onSelectIssuer={(sym) => { setWitnessSymbol(sym); setView("witness-detail"); window.scrollTo(0, 0); }} />}
+              {view === "witness-detail" && witnessSymbol && <WitnessDetailView symbol={witnessSymbol} onBack={() => { setView("witness"); setWitnessSymbol(null); }} mobile={mobile} />}
               {view === "methodology" && <MethodologyView mobile={mobile} />}
             </main>
           </div>
