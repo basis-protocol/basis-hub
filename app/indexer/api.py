@@ -9,11 +9,14 @@ import os
 import asyncio
 import logging
 
+from typing import Optional
+
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
 
 from app.database import fetch_all, fetch_one
 from app.indexer.backlog import get_backlog, get_backlog_detail
 from app.indexer.pipeline import get_coverage_diagnostic
+from app.specs.methodology_versions import WALLET_METHODOLOGY_VERSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +171,11 @@ def register_wallet_routes(app: FastAPI) -> None:
         return get_coverage_diagnostic()
 
     @app.get("/api/wallets/{address}")
-    async def wallet_profile(address: str):
+    async def wallet_profile(address: str, methodology_version: Optional[str] = Query(default=None)):
         """Full wallet profile: risk score, holdings, concentration, coverage."""
+        from app.server import check_methodology_version
+        current_wallet_version = WALLET_METHODOLOGY_VERSIONS["current"]
+        pinned = check_methodology_version(methodology_version, current_version=current_wallet_version)
         addr = address.strip()
         wallet = fetch_one(
             """
@@ -219,6 +225,8 @@ def register_wallet_routes(app: FastAPI) -> None:
             "wallet": wallet,
             "risk": risk,
             "holdings": holdings,
+            "methodology_version": current_wallet_version,
+            "methodology_version_pinned": pinned,
         }
 
     @app.get("/api/wallets/{address}/history")
@@ -239,6 +247,30 @@ def register_wallet_routes(app: FastAPI) -> None:
             (address.strip(), limit),
         )
         return {"address": address.strip(), "history": rows}
+
+    # -- Wallet profile routes --
+
+    @app.get("/api/wallets/{address}/profile")
+    async def wallet_profile_full(address: str):
+        """Full wallet risk profile — reputation primitive with behavioral signals."""
+        from app.wallet_profile import generate_wallet_profile
+        profile = generate_wallet_profile(address)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Wallet not found in index")
+        return profile
+
+    @app.get("/api/wallets/{address}/profile/hash")
+    async def wallet_profile_hash(address: str):
+        """Just the profile hash and timestamp — lightweight verification."""
+        from app.wallet_profile import generate_wallet_profile
+        profile = generate_wallet_profile(address)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Wallet not found in index")
+        return {
+            "address": profile["address"],
+            "profile_hash": profile["profile_hash"],
+            "computed_at": profile["computed_at"],
+        }
 
     # -- Backlog routes --
 

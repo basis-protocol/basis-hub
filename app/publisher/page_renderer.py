@@ -11,7 +11,7 @@ import os
 from decimal import Decimal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from app.database import fetch_one, fetch_all
 
@@ -41,6 +41,18 @@ def _get_jinja_env():
     return _jinja_env
 
 
+CANONICAL_BASE_URL = os.environ.get("CANONICAL_BASE_URL", "https://basis-deploy-guide.replit.app").rstrip("/")
+
+
+def _page_response(html_content: str) -> HTMLResponse:
+    """Wrap HTML content with URL stability headers."""
+    response = HTMLResponse(content=html_content)
+    response.headers["Basis-URL-Stability"] = "permanent"
+    response.headers["Basis-Protocol-Version"] = "v1.0.0"
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
 async def update_wallet_page(assessment: dict) -> None:
     """Update wallet page data (on-demand rendering — no-op for now)."""
     pass
@@ -59,9 +71,14 @@ async def create_assessment_page(assessment: dict) -> None:
 def register_page_routes(app: FastAPI) -> None:
     """Register HTML page routes for wallets, assets, assessments, and pulses."""
 
-    @app.get("/wallet/{address}", response_class=HTMLResponse)
-    async def wallet_page(address: str):
+    @app.get("/wallet/{address}")
+    async def wallet_page(request: Request, address: str):
         """Rendered HTML wallet risk page with JSON-LD."""
+        # Content negotiation: JSON clients get redirected to API
+        if "application/json" in request.headers.get("accept", ""):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=f"/api/wallets/{address}", status_code=307)
+
         # Fetch current risk data
         risk = fetch_one("""
             SELECT * FROM wallet_graph.wallet_risk_scores
@@ -102,14 +119,19 @@ def register_page_routes(app: FastAPI) -> None:
         try:
             env = _get_jinja_env()
             template = env.get_template("wallet.html")
-            return HTMLResponse(template.render(**context))
+            return _page_response(template.render(**context))
         except Exception as e:
             logger.error(f"Template rendering failed: {e}")
-            return HTMLResponse(_fallback_wallet_html(context))
+            return _page_response(_fallback_wallet_html(context))
 
-    @app.get("/asset/{symbol}", response_class=HTMLResponse)
-    async def asset_page(symbol: str):
+    @app.get("/asset/{symbol}")
+    async def asset_page(request: Request, symbol: str):
         """Rendered HTML asset page with JSON-LD."""
+        # Content negotiation: JSON clients get redirected to API
+        if "application/json" in request.headers.get("accept", ""):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=f"/api/scores/{symbol}", status_code=307)
+
         score = fetch_one("""
             SELECT * FROM scores WHERE stablecoin_id = %s
         """, (symbol.lower(),))
@@ -133,19 +155,30 @@ def register_page_routes(app: FastAPI) -> None:
         try:
             env = _get_jinja_env()
             template = env.get_template("asset.html")
-            return HTMLResponse(template.render(**context))
+            return _page_response(template.render(**context))
         except Exception as e:
             logger.error(f"Template rendering failed: {e}")
-            return HTMLResponse(_fallback_asset_html(context))
+            return _page_response(_fallback_asset_html(context))
 
-    @app.get("/assessment/{assessment_id}", response_class=HTMLResponse)
-    async def assessment_page(assessment_id: str):
+    @app.get("/assessment/{assessment_id}")
+    async def assessment_page(request: Request, assessment_id: str):
         """Rendered HTML assessment event page with JSON-LD."""
         row = fetch_one("""
             SELECT * FROM assessment_events WHERE id::text = %s
         """, (assessment_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Assessment not found")
+
+        # Content negotiation: return JSON directly (no dedicated API endpoint)
+        if "application/json" in request.headers.get("accept", ""):
+            data = dict(row)
+            # Convert non-serializable types
+            for k, v in data.items():
+                if hasattr(v, "isoformat"):
+                    data[k] = v.isoformat()
+                elif isinstance(v, Decimal):
+                    data[k] = float(v)
+            return JSONResponse(content=data)
 
         context = {
             "assessment": dict(row),
@@ -155,13 +188,13 @@ def register_page_routes(app: FastAPI) -> None:
         try:
             env = _get_jinja_env()
             template = env.get_template("assessment.html")
-            return HTMLResponse(template.render(**context))
+            return _page_response(template.render(**context))
         except Exception as e:
             logger.error(f"Template rendering failed: {e}")
-            return HTMLResponse(_fallback_assessment_html(context))
+            return _page_response(_fallback_assessment_html(context))
 
-    @app.get("/pulse/{pulse_date}", response_class=HTMLResponse)
-    async def pulse_page(pulse_date: str):
+    @app.get("/pulse/{pulse_date}")
+    async def pulse_page(request: Request, pulse_date: str):
         """Rendered HTML daily pulse page."""
         row = fetch_one("""
             SELECT * FROM daily_pulses WHERE pulse_date = %s
@@ -173,6 +206,16 @@ def register_page_routes(app: FastAPI) -> None:
         if isinstance(summary, str):
             summary = json.loads(summary)
 
+        # Content negotiation: return JSON directly (no dedicated API endpoint)
+        if "application/json" in request.headers.get("accept", ""):
+            data = dict(row)
+            for k, v in data.items():
+                if hasattr(v, "isoformat"):
+                    data[k] = v.isoformat()
+                elif isinstance(v, Decimal):
+                    data[k] = float(v)
+            return JSONResponse(content=data)
+
         context = {
             "pulse_date": pulse_date,
             "summary": summary,
@@ -182,12 +225,86 @@ def register_page_routes(app: FastAPI) -> None:
         try:
             env = _get_jinja_env()
             template = env.get_template("pulse.html")
-            return HTMLResponse(template.render(**context))
+            return _page_response(template.render(**context))
         except Exception as e:
             logger.error(f"Template rendering failed: {e}")
-            return HTMLResponse(_fallback_pulse_html(context))
+            return _page_response(_fallback_pulse_html(context))
 
-    logger.info("Page routes registered: /wallet, /asset, /assessment, /pulse")
+    @app.get("/sitemap.xml")
+    async def sitemap_xml():
+        """Dynamic XML sitemap of all published entities."""
+        urls = []
+
+        # Active stablecoins
+        try:
+            coins = fetch_all("SELECT symbol FROM stablecoins WHERE is_active = TRUE")
+            for row in coins:
+                urls.append(f"{CANONICAL_BASE_URL}/asset/{row['symbol']}")
+        except Exception as e:
+            logger.warning(f"Sitemap: failed to fetch stablecoins: {e}")
+
+        # Top wallets by value
+        try:
+            wallets = fetch_all("""
+                SELECT DISTINCT ON (wallet_address) wallet_address
+                FROM wallet_graph.wallet_risk_scores
+                ORDER BY wallet_address, total_stablecoin_value DESC
+                LIMIT 1000
+            """)
+            for row in wallets:
+                urls.append(f"{CANONICAL_BASE_URL}/wallet/{row['wallet_address']}")
+        except Exception as e:
+            logger.warning(f"Sitemap: failed to fetch wallets: {e}")
+
+        # Notable+ assessment events
+        try:
+            assessments = fetch_all("""
+                SELECT id::text FROM assessment_events
+                WHERE severity IN ('notable', 'alert', 'critical')
+                ORDER BY created_at DESC LIMIT 500
+            """)
+            for row in assessments:
+                urls.append(f"{CANONICAL_BASE_URL}/assessment/{row['id']}")
+        except Exception as e:
+            logger.warning(f"Sitemap: failed to fetch assessments: {e}")
+
+        # Daily pulses
+        try:
+            pulses = fetch_all("""
+                SELECT pulse_date FROM daily_pulses ORDER BY pulse_date DESC
+            """)
+            for row in pulses:
+                date_str = row["pulse_date"]
+                if hasattr(date_str, "isoformat"):
+                    date_str = date_str.isoformat()
+                urls.append(f"{CANONICAL_BASE_URL}/pulse/{date_str}")
+        except Exception as e:
+            logger.warning(f"Sitemap: failed to fetch pulses: {e}")
+
+        xml_lines = ['<?xml version="1.0" encoding="UTF-8"?>',
+                     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+        for url in urls:
+            xml_lines.append(f"  <url><loc>{url}</loc></url>")
+        xml_lines.append("</urlset>")
+
+        return Response(content="\n".join(xml_lines), media_type="application/xml")
+
+    @app.get("/robots.txt")
+    async def robots_txt():
+        """Robots.txt with sitemap reference."""
+        content = (
+            "User-agent: *\n"
+            "Allow: /wallet/\n"
+            "Allow: /asset/\n"
+            "Allow: /assessment/\n"
+            "Allow: /pulse/\n"
+            "Disallow: /api/admin/\n"
+            "Disallow: /admin\n"
+            f"Sitemap: {CANONICAL_BASE_URL}/sitemap.xml\n"
+        )
+        return PlainTextResponse(content=content)
+
+    logger.info("Page routes registered: /wallet, /asset, /assessment, /pulse, /sitemap.xml, /robots.txt")
 
 
 # --- JSON-LD Generators ---

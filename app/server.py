@@ -5,10 +5,13 @@ Clean FastAPI server. Reads from database only. No data collection.
 """
 
 import atexit
+import json
 import logging
 import os
 import time
+import uuid as uuid_mod
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -25,6 +28,7 @@ from app.scoring import (
     SII_V1_WEIGHTS, STRUCTURAL_SUBWEIGHTS, FORMULA_VERSION,
     score_to_grade, COMPONENT_NORMALIZATIONS,
 )
+from app.specs.methodology_versions import METHODOLOGY_VERSIONS, WALLET_METHODOLOGY_VERSIONS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -132,6 +136,8 @@ async def rate_limit_and_track(request: Request, call_next):
     )
     response.headers["X-RateLimit-Remaining"] = str(remaining)
     response.headers["X-RateLimit-Limit"] = str(limit)
+    if path.startswith("/api/scores") or path.startswith("/api/wallets"):
+        response.headers["Basis-Methodology-Version"] = FORMULA_VERSION
     return response
 
 
@@ -312,6 +318,24 @@ if os.path.isdir(FRONTEND_DIR):
 
 
 # =============================================================================
+# Methodology version helper
+# =============================================================================
+
+def check_methodology_version(requested_version, current_version="v1.0.0"):
+    """Validate a methodology_version query param. Returns True if pinned, False if omitted."""
+    if requested_version is None:
+        return False  # not pinned
+    if requested_version == current_version:
+        return True  # pinned
+    raise HTTPException(status_code=404, detail={
+        "error": "version_not_found",
+        "requested": requested_version,
+        "available": [current_version],
+        "message": f"Requested methodology version not available. Current version: {current_version}"
+    })
+
+
+# =============================================================================
 # 1. GET /api/health
 # =============================================================================
 
@@ -346,8 +370,9 @@ async def get_health():
 # =============================================================================
 
 @app.get("/api/scores")
-async def get_scores():
+async def get_scores(methodology_version: Optional[str] = Query(default=None)):
     """Get current SII scores for all stablecoins."""
+    pinned = check_methodology_version(methodology_version)
     rows = fetch_all("""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
         FROM scores s
@@ -393,6 +418,8 @@ async def get_scores():
         "stablecoins": results,
         "count": len(results),
         "formula_version": FORMULA_VERSION,
+        "methodology_version": FORMULA_VERSION,
+        "methodology_version_pinned": pinned,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -402,8 +429,9 @@ async def get_scores():
 # =============================================================================
 
 @app.get("/api/scores/{coin}")
-async def get_score_detail(coin: str):
+async def get_score_detail(coin: str, methodology_version: Optional[str] = Query(default=None)):
     """Get detailed SII score breakdown for a specific stablecoin."""
+    pinned = check_methodology_version(methodology_version)
     row = fetch_one("""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract, st.attestation_config, st.regulatory_licenses
         FROM scores s
@@ -467,6 +495,8 @@ async def get_score_detail(coin: str):
         "regulatory_licenses": row.get("regulatory_licenses"),
         "component_count": row.get("component_count"),
         "formula_version": row.get("formula_version"),
+        "methodology_version": FORMULA_VERSION,
+        "methodology_version_pinned": pinned,
         "daily_change": float(row["daily_change"]) if row.get("daily_change") else None,
         "weekly_change": float(row["weekly_change"]) if row.get("weekly_change") else None,
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
@@ -571,8 +601,9 @@ async def compare_scores(
 # =============================================================================
 
 @app.get("/api/methodology")
-async def get_methodology():
+async def get_methodology(methodology_version: Optional[str] = Query(default=None)):
     """Get the SII methodology — formula, weights, and component specifications."""
+    pinned = check_methodology_version(methodology_version)
     return {
         "version": FORMULA_VERSION,
         "formula": "SII = 0.30×Peg + 0.25×Liquidity + 0.15×MintBurn + 0.10×Distribution + 0.20×Structural",
@@ -600,6 +631,21 @@ async def get_methodology():
             "CoinGecko Pro", "DeFiLlama", "Etherscan", "Curve Finance",
             "Issuer attestation reports", "On-chain contract analysis",
         ],
+        "methodology_version": FORMULA_VERSION,
+        "methodology_version_pinned": pinned,
+    }
+
+
+# =============================================================================
+# 6b. GET /api/methodology/versions — Version history and governance
+# =============================================================================
+
+@app.get("/api/methodology/versions")
+async def get_methodology_versions():
+    """Get methodology version history, governance rules, and wallet scoring versions."""
+    return {
+        "sii": METHODOLOGY_VERSIONS,
+        "wallet": WALLET_METHODOLOGY_VERSIONS,
     }
 
 
@@ -623,6 +669,35 @@ async def get_config():
             for sid, cfg in STABLECOIN_REGISTRY.items()
         },
         "count": len(STABLECOIN_REGISTRY),
+    }
+
+
+# =============================================================================
+# Namespace spec — URL addressing scheme
+# =============================================================================
+
+@app.get("/api/namespace")
+async def get_namespace():
+    """Addressing namespace specification for Basis Protocol URLs."""
+    return {
+        "version": "1.0.0",
+        "stability": "permanent",
+        "patterns": {
+            "wallet": "/wallet/{address}",
+            "asset": "/asset/{symbol}",
+            "assessment": "/assessment/{uuid}",
+            "pulse": "/pulse/{YYYY-MM-DD}",
+        },
+        "content_negotiation": {
+            "text/html": "Returns rendered HTML page with JSON-LD",
+            "application/json": "Returns structured JSON data",
+        },
+        "guarantees": [
+            "URLs will not change structure",
+            "URLs will not 404 for previously published entities",
+            "JSON-LD schema will remain backward-compatible",
+            "API alternate links are stable",
+        ],
     }
 
 
@@ -1449,6 +1524,456 @@ async def handle_monitor_alert(request: Request):
         return {"status": "collected", "asset": issuer["asset_symbol"]}
 
     return {"status": "unknown_monitor", "monitor_id": monitor_id}
+
+
+# =============================================================================
+# CDA Public Evidence Layer API
+# =============================================================================
+
+@app.get("/api/cda")
+async def cda_overview():
+    """Public documentation/overview of the CDA evidence layer."""
+    return {
+        "name": "Basis Protocol Evidence Layer (CDA)",
+        "version": "1.0.0",
+        "description": "Structured, timestamped disclosure data for stablecoin issuers. Build your own index on this evidence.",
+        "endpoints": [
+            "GET /api/cda/issuers",
+            "GET /api/cda/issuers/{symbol}/latest",
+            "GET /api/cda/issuers/{symbol}/history",
+            "GET /api/cda/coverage"
+        ],
+        "license": "Open data. Attribution requested.",
+        "update_frequency": "Daily before SII scoring cycle"
+    }
+
+
+@app.get("/api/cda/issuers")
+async def cda_issuers():
+    """List all CDA-tracked issuers with last attestation date."""
+    rows = fetch_all("""
+        SELECT r.asset_symbol, r.issuer_name, r.transparency_url,
+               r.collection_method, r.created_at,
+               (
+                   SELECT MAX(e.extracted_at)
+                   FROM cda_vendor_extractions e
+                   WHERE e.asset_symbol = r.asset_symbol
+               ) AS last_attestation
+        FROM cda_issuer_registry r
+        WHERE r.is_active = TRUE
+        ORDER BY r.asset_symbol
+    """)
+    issuers = []
+    for r in rows:
+        issuers.append({
+            "asset_symbol": r["asset_symbol"],
+            "issuer_name": r["issuer_name"],
+            "transparency_url": r["transparency_url"],
+            "collection_method": r["collection_method"],
+            "last_attestation": r["last_attestation"].isoformat() if r.get("last_attestation") else None,
+        })
+    return {"issuers": issuers, "count": len(issuers)}
+
+
+@app.get("/api/cda/issuers/{symbol}/latest")
+async def cda_issuer_latest(symbol: str):
+    """Most recent attestation for a specific issuer, with evidence hash."""
+    import hashlib
+    import json as _json
+
+    row = fetch_one("""
+        SELECT id, asset_symbol, source_url, source_type, extraction_method,
+               extraction_vendor, structured_data, confidence_score,
+               extraction_warnings, extracted_at
+        FROM cda_vendor_extractions
+        WHERE UPPER(asset_symbol) = %s
+          AND structured_data IS NOT NULL
+        ORDER BY extracted_at DESC
+        LIMIT 1
+    """, (symbol.upper(),))
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No attestation data found for {symbol.upper()}")
+
+    attestation = {
+        "id": row["id"],
+        "asset_symbol": row["asset_symbol"],
+        "source_url": row["source_url"],
+        "source_type": row["source_type"],
+        "extraction_method": row["extraction_method"],
+        "extraction_vendor": row["extraction_vendor"],
+        "structured_data": row["structured_data"],
+        "confidence_score": float(row["confidence_score"]) if row.get("confidence_score") else None,
+        "extraction_warnings": row.get("extraction_warnings"),
+        "extracted_at": row["extracted_at"].isoformat() if row.get("extracted_at") else None,
+    }
+
+    raw_data = _json.dumps(attestation, sort_keys=True, separators=(',', ':'), default=str)
+    evidence_hash = '0x' + hashlib.sha256(raw_data.encode()).hexdigest()
+    attestation["evidence_hash"] = evidence_hash
+
+    return attestation
+
+
+@app.get("/api/cda/issuers/{symbol}/history")
+async def cda_issuer_history(symbol: str, days: int = Query(default=90, ge=1, le=365)):
+    """Attestation history for a specific issuer."""
+    rows = fetch_all("""
+        SELECT id, asset_symbol, source_url, source_type, extraction_method,
+               extraction_vendor, structured_data, confidence_score,
+               extraction_warnings, extracted_at
+        FROM cda_vendor_extractions
+        WHERE UPPER(asset_symbol) = %s
+          AND extracted_at > NOW() - INTERVAL '%s days'
+        ORDER BY extracted_at DESC
+    """, (symbol.upper(), days))
+
+    attestations = []
+    for r in rows:
+        attestations.append({
+            "id": r["id"],
+            "asset_symbol": r["asset_symbol"],
+            "source_url": r["source_url"],
+            "source_type": r["source_type"],
+            "extraction_method": r["extraction_method"],
+            "extraction_vendor": r["extraction_vendor"],
+            "structured_data": r["structured_data"],
+            "confidence_score": float(r["confidence_score"]) if r.get("confidence_score") else None,
+            "extraction_warnings": r.get("extraction_warnings"),
+            "extracted_at": r["extracted_at"].isoformat() if r.get("extracted_at") else None,
+        })
+
+    return {
+        "asset": symbol.upper(),
+        "days": days,
+        "attestations": attestations,
+        "count": len(attestations),
+    }
+
+
+@app.get("/api/cda/coverage")
+async def cda_coverage():
+    """Coverage summary of the CDA evidence layer."""
+    issuers = fetch_all(
+        "SELECT asset_symbol, collection_method, asset_category FROM cda_issuer_registry WHERE is_active = TRUE ORDER BY asset_symbol"
+    )
+
+    # Count by collection method
+    method_counts: dict = {}
+    fiat_covered = []
+    for iss in issuers:
+        method = iss.get("collection_method") or "unknown"
+        method_counts[method] = method_counts.get(method, 0) + 1
+        category = (iss.get("asset_category") or "").lower()
+        if category in ("fiat_backed", "fiat-backed", "fiat") or method != "nav_oracle":
+            fiat_covered.append(iss["asset_symbol"])
+
+    # Total known fiat-backed from stablecoin registry
+    all_coins = fetch_all("SELECT id, symbol FROM stablecoins")
+    total_fiat = len(all_coins)
+
+    gaps = []
+    covered_symbols = {i["asset_symbol"] for i in issuers}
+    for coin in all_coins:
+        sym = coin["symbol"].upper() if coin.get("symbol") else coin["id"].upper()
+        if sym not in covered_symbols:
+            gaps.append(f"{sym} — not yet in CDA pipeline")
+
+    return {
+        "fiat_backed": {
+            "covered": len(fiat_covered),
+            "total": total_fiat,
+            "issuers": sorted(fiat_covered),
+            "gaps": gaps,
+        },
+        "crypto_backed": {
+            "note": "On-chain data used directly via smart contract reads, no attestation pipeline needed"
+        },
+        "collection_methods": method_counts,
+        "update_frequency": "daily",
+        "vendors": ["parallel.ai", "reducto", "firecrawl"],
+    }
+
+
+# =============================================================================
+# Severity spec + assessment events
+# =============================================================================
+
+@app.get("/api/specs/severity")
+async def get_severity_spec():
+    """Published severity taxonomy for assessment events."""
+    from app.specs.severity_v1 import SEVERITY_V1
+    return SEVERITY_V1
+
+
+@app.get("/api/specs/wallet-profile")
+async def get_wallet_profile_spec():
+    """Published wallet profile schema — reputation primitive definition."""
+    from app.specs.wallet_profile_v1 import WALLET_PROFILE_SCHEMA_V1
+    return WALLET_PROFILE_SCHEMA_V1
+
+
+@app.get("/api/assessment-events")
+async def get_assessment_events(
+    severity: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """Assessment events with optional severity filtering."""
+    from app.specs.severity_v1 import SEVERITY_ORDER
+
+    if severity and severity not in SEVERITY_ORDER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown severity '{severity}'. Valid: {', '.join(SEVERITY_ORDER.keys())}",
+        )
+
+    ordinal = SEVERITY_ORDER.get(severity, 0) if severity else 0
+
+    rows = fetch_all("""
+        SELECT * FROM assessment_events
+        WHERE severity_ordinal >= %s
+        ORDER BY created_at DESC
+        LIMIT %s
+    """, (ordinal, limit))
+
+    events = []
+    for row in rows:
+        d = dict(row)
+        for k, v in d.items():
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+            elif isinstance(v, (Decimal,)):
+                d[k] = float(v)
+            elif isinstance(v, uuid_mod.UUID):
+                d[k] = str(v)
+        events.append(d)
+
+    return {
+        "events": events,
+        "count": len(events),
+        "filter": {"severity_gte": severity} if severity else {},
+        "taxonomy_version": "1.0.0",
+    }
+
+
+@app.get("/api/assessments/{assessment_id}/inputs")
+async def get_assessment_inputs(assessment_id: str):
+    """Computation attestation: retrieve input hash and summary for an assessment event."""
+    row = fetch_one("""
+        SELECT id, inputs_hash, inputs_summary, content_hash, methodology_version,
+               wallet_risk_score, severity, created_at
+        FROM assessment_events
+        WHERE id = %s::uuid
+    """, (assessment_id,))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Assessment event not found")
+
+    has_hash = row.get("inputs_hash") is not None
+    return {
+        "assessment_id": str(row["id"]),
+        "inputs_hash": row.get("inputs_hash"),
+        "inputs_summary": row.get("inputs_summary"),
+        "content_hash": row.get("content_hash"),
+        "methodology_version": row.get("methodology_version"),
+        "wallet_risk_score": float(row["wallet_risk_score"]) if row.get("wallet_risk_score") else None,
+        "severity": row.get("severity"),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "verification_status": "hash_available" if has_hash else "hash_not_available",
+        "note": "Full input vector retrieval available in v2. Hash can be verified against on-chain anchor.",
+    }
+
+
+# =============================================================================
+# PSI (Protocol Solvency Index) API
+# =============================================================================
+
+@app.get("/api/psi/scores")
+async def psi_scores():
+    """All scored protocols — latest score per protocol."""
+    rows = fetch_all("""
+        SELECT DISTINCT ON (protocol_slug)
+            id, protocol_slug, protocol_name, overall_score, grade,
+            category_scores, component_scores, raw_values,
+            formula_version, computed_at
+        FROM psi_scores
+        ORDER BY protocol_slug, computed_at DESC
+    """)
+    results = []
+    for row in rows:
+        results.append({
+            "protocol_slug": row["protocol_slug"],
+            "protocol_name": row["protocol_name"],
+            "score": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row["grade"],
+            "category_scores": row.get("category_scores"),
+            "formula_version": row.get("formula_version"),
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        })
+    return {
+        "protocols": results,
+        "count": len(results),
+        "index": "psi",
+        "version": "v0.1.0",
+    }
+
+
+@app.get("/api/psi/scores/{slug}")
+async def psi_score_detail(slug: str):
+    """Detailed PSI breakdown for one protocol."""
+    row = fetch_one("""
+        SELECT id, protocol_slug, protocol_name, overall_score, grade,
+               category_scores, component_scores, raw_values,
+               formula_version, computed_at
+        FROM psi_scores
+        WHERE protocol_slug = %s
+        ORDER BY computed_at DESC
+        LIMIT 1
+    """, (slug,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in PSI scores")
+    return {
+        "protocol_slug": row["protocol_slug"],
+        "protocol_name": row["protocol_name"],
+        "score": float(row["overall_score"]) if row.get("overall_score") else None,
+        "grade": row["grade"],
+        "category_scores": row.get("category_scores"),
+        "component_scores": row.get("component_scores"),
+        "raw_values": row.get("raw_values"),
+        "formula_version": row.get("formula_version"),
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+    }
+
+
+@app.get("/api/psi/definition")
+async def psi_definition():
+    """Return the full PSI v0.1 index definition."""
+    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+    return PSI_V01_DEFINITION
+
+
+@app.get("/api/indices")
+async def list_indices():
+    """List all available index definitions."""
+    from app.index_definitions.sii_v1 import SII_V1_DEFINITION
+    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+    return {
+        "indices": [
+            {
+                "id": SII_V1_DEFINITION["index_id"],
+                "version": SII_V1_DEFINITION["version"],
+                "name": SII_V1_DEFINITION["name"],
+                "entity_type": SII_V1_DEFINITION["entity_type"],
+                "components": len(SII_V1_DEFINITION["components"]),
+                "status": "live",
+            },
+            {
+                "id": PSI_V01_DEFINITION["index_id"],
+                "version": PSI_V01_DEFINITION["version"],
+                "name": PSI_V01_DEFINITION["name"],
+                "entity_type": PSI_V01_DEFINITION["entity_type"],
+                "components": len(PSI_V01_DEFINITION["components"]),
+                "status": "live",
+            },
+        ]
+    }
+
+
+# =============================================================================
+# Daily Pulse API
+# =============================================================================
+
+@app.get("/api/pulse/latest")
+async def pulse_latest():
+    """Latest daily pulse — full risk surface snapshot."""
+    import hashlib
+    row = fetch_one("SELECT * FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1")
+    if not row:
+        raise HTTPException(status_code=404, detail="No pulse data available yet. Run the scoring cycle first.")
+    summary = row.get("summary", {})
+    if isinstance(summary, str):
+        import json as _json
+        summary = _json.loads(summary)
+    canonical = json.dumps(summary, sort_keys=True, separators=(",", ":"), default=str)
+    content_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+    return {
+        "pulse_date": row["pulse_date"].isoformat() if hasattr(row["pulse_date"], "isoformat") else str(row["pulse_date"]),
+        "summary": summary,
+        "content_hash": content_hash,
+        "page_url": row.get("page_url"),
+    }
+
+
+@app.get("/api/pulse/history")
+async def pulse_history(days: int = Query(default=30, ge=1, le=365)):
+    """List of recent pulse dates with page URLs (not full summaries)."""
+    rows = fetch_all(
+        "SELECT pulse_date, created_at, page_url FROM daily_pulses ORDER BY pulse_date DESC LIMIT %s",
+        (days,),
+    )
+    return {
+        "pulses": [
+            {
+                "pulse_date": r["pulse_date"].isoformat() if hasattr(r["pulse_date"], "isoformat") else str(r["pulse_date"]),
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                "page_url": r.get("page_url"),
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@app.get("/api/pulse/{date_str}")
+async def pulse_by_date(date_str: str):
+    """Daily pulse for a specific date (YYYY-MM-DD)."""
+    import hashlib
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+    row = fetch_one("SELECT * FROM daily_pulses WHERE pulse_date = %s", (date_str,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No pulse found for {date_str}")
+    summary = row.get("summary", {})
+    if isinstance(summary, str):
+        import json as _json
+        summary = _json.loads(summary)
+    canonical = json.dumps(summary, sort_keys=True, separators=(",", ":"), default=str)
+    content_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+    return {
+        "pulse_date": row["pulse_date"].isoformat() if hasattr(row["pulse_date"], "isoformat") else str(row["pulse_date"]),
+        "summary": summary,
+        "content_hash": content_hash,
+        "page_url": row.get("page_url"),
+    }
+
+
+# =============================================================================
+# CQI (Collateral Quality Index) — Composition API
+# =============================================================================
+
+@app.get("/api/compose/cqi")
+async def compose_cqi(asset: str = Query(...), protocol: str = Query(...)):
+    """Compute Collateral Quality Index for an asset-in-protocol pair."""
+    from app.composition import compute_cqi
+    result = compute_cqi(asset, protocol)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.get("/api/compose/cqi/matrix")
+async def compose_cqi_matrix():
+    """CQI for all stablecoin x protocol combinations."""
+    from app.composition import compute_cqi_matrix
+    return compute_cqi_matrix()
+
+
+@app.get("/api/specs/composition")
+async def get_composition_spec():
+    """Published composition grammar specification."""
+    from app.specs.composition_grammar_v1 import COMPOSITION_GRAMMAR_V1
+    return COMPOSITION_GRAMMAR_V1
 
 
 @app.get("/admin")

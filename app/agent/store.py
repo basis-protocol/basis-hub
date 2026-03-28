@@ -8,6 +8,7 @@ Every event is persisted, even silent ones.
 import json
 import logging
 
+from app.computation_attestation import compute_inputs_hash
 from app.database import execute, fetch_one
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,22 @@ def store_assessment(assessment: dict) -> str | None:
     holdings_json = json.dumps(assessment.get("holdings_snapshot", []), default=str)
     trigger_json = json.dumps(assessment.get("trigger_detail", {}), default=str)
 
+    # Compute inputs hash for computation attestation
+    holdings_snapshot = assessment.get("holdings_snapshot", [])
+    formula_ver = assessment.get("methodology_version", "wallet-v1.0.0")
+    inputs_hash = None
+    inputs_summary = None
+    try:
+        inputs_hash, inputs_summary = compute_inputs_hash(
+            component_scores={},
+            wallet_holdings=holdings_snapshot,
+            formula_version=formula_ver,
+        )
+        inputs_summary_json = json.dumps(inputs_summary, default=str)
+    except Exception:
+        logger.debug("Could not compute inputs_hash, storing without it")
+        inputs_summary_json = None
+
     row = fetch_one("""
         INSERT INTO assessment_events (
             wallet_address, chain, trigger_type, trigger_detail,
@@ -44,14 +61,16 @@ def store_assessment(assessment: dict) -> str | None:
             wallet_risk_score_prev, concentration_hhi,
             concentration_hhi_prev, coverage_ratio,
             total_stablecoin_value, holdings_snapshot,
-            severity, broadcast, content_hash, methodology_version
+            severity, broadcast, content_hash, methodology_version,
+            inputs_hash, inputs_summary
         ) VALUES (
             %s, %s, %s, %s,
             %s, %s,
             %s, %s,
             %s, %s,
             %s, %s,
-            %s, %s, %s, %s
+            %s, %s, %s, %s,
+            %s, %s
         ) RETURNING id::text
     """, (
         assessment["wallet_address"],
@@ -70,6 +89,8 @@ def store_assessment(assessment: dict) -> str | None:
         assessment.get("broadcast", False),
         content_hash,
         assessment.get("methodology_version", "wallet-v1.0.0"),
+        inputs_hash,
+        inputs_summary_json,
     ))
 
     event_id = row["id"] if row else None

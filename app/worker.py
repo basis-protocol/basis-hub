@@ -506,7 +506,14 @@ async def run_scoring_cycle():
     logger.info(
         f"Scoring cycle complete: {successes}/{len(stablecoins)} scored in {elapsed:.0f}s"
     )
-    
+
+    # Generate daily pulse after scoring
+    try:
+        from app.pulse_generator import run_daily_pulse
+        run_daily_pulse()
+    except Exception as e:
+        logger.warning(f"Daily pulse generation failed: {e}")
+
     return {
         "results": results,
         "successes": successes,
