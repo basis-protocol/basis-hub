@@ -95,11 +95,10 @@ async def _run_psi_phase(budget: ApiBudgetManager):
         )
 
     try:
-        # PSI scorer — import dynamically
-        # PSI is mostly DeFiLlama/CoinGecko, Etherscan usage is light
-        logger.info(f"PSI phase: {available} Etherscan calls available")
-        # TODO: Wire PSI scorer when it exists as a standalone module
-        logger.info("PSI scoring phase placeholder — scorer not yet wired")
+        from app.collectors.psi_collector import run_psi_scoring
+        logger.info("Running PSI scoring...")
+        results = run_psi_scoring()
+        logger.info(f"PSI scoring complete: {len(results)} protocols scored")
     except Exception as e:
         logger.error(f"PSI scoring cycle failed: {e}")
 

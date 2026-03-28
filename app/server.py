@@ -96,15 +96,17 @@ async def rate_limit_and_track(request: Request, call_next):
         return response
 
     # Determine rate limit tier
-    # Same-origin requests from the dashboard get the keyed tier — the dashboard
-    # is a first-party consumer served by this same FastAPI server and should
-    # never be subject to the 10/min public cap.
-    referer = request.headers.get("referer", "")
-    origin = request.headers.get("origin", "")
-    is_dashboard = any(
-        h and ("basisprotocol.xyz" in h or "localhost" in h or "127.0.0.1" in h)
-        for h in (referer, origin)
-    )
+    # First-party dashboard requests get the keyed tier. The dashboard's
+    # apiFetch() helper sends X-Basis-Dashboard: 1 on every call. We also
+    # check Referer/Origin as a fallback for any fetch that slips through.
+    is_dashboard = request.headers.get("x-basis-dashboard") == "1"
+    if not is_dashboard:
+        referer = request.headers.get("referer", "")
+        origin_hdr = request.headers.get("origin", "")
+        is_dashboard = any(
+            h and ("basisprotocol.xyz" in h or "localhost" in h or "127.0.0.1" in h)
+            for h in (referer, origin_hdr)
+        )
 
     if api_key_id:
         identifier = f"key:{api_key_id}"
@@ -354,25 +356,51 @@ def check_methodology_version(requested_version, current_version="v1.0.0"):
 
 @app.get("/api/health")
 async def get_health():
-    """System health check — is the database up, how many stablecoins scored."""
+    """System health check — verifies all critical tables are non-empty."""
     db_status = db_health_check()
-    
-    scores_result = fetch_one("SELECT COUNT(*) as count FROM scores")
-    scored_count = scores_result["count"] if scores_result else 0
-    
-    latest_result = fetch_one(
-        "SELECT MAX(computed_at) as latest FROM scores"
-    )
-    latest_score = latest_result["latest"] if latest_result else None
-    
+
+    # Check all critical tables
+    table_checks = {
+        "scores": "SELECT COUNT(*) AS cnt, MAX(computed_at) AS latest FROM scores",
+        "stablecoins": "SELECT COUNT(*) AS cnt FROM stablecoins",
+        "component_readings": "SELECT COUNT(*) AS cnt FROM component_readings",
+        "score_history": "SELECT COUNT(*) AS cnt FROM score_history",
+        "psi_scores": "SELECT COUNT(*) AS cnt, MAX(computed_at) AS latest FROM psi_scores",
+        "cda_issuer_registry": "SELECT COUNT(*) AS cnt FROM cda_issuer_registry WHERE is_active = TRUE",
+        "cda_vendor_extractions": "SELECT COUNT(*) AS cnt FROM cda_vendor_extractions",
+        "wallet_graph.wallets": "SELECT COUNT(*) AS cnt FROM wallet_graph.wallets",
+        "wallet_graph.wallet_risk_scores": "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_risk_scores",
+        "wallet_graph.wallet_edges": "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges",
+    }
+
+    tables = {}
+    all_ok = True
+    for table_name, query in table_checks.items():
+        try:
+            row = fetch_one(query)
+            count = row["cnt"] if row else 0
+            entry = {"count": count, "status": "ok" if count > 0 else "empty"}
+            if row and row.get("latest"):
+                entry["latest"] = row["latest"].isoformat() if hasattr(row["latest"], "isoformat") else str(row["latest"])
+            tables[table_name] = entry
+            if count == 0:
+                all_ok = False
+        except Exception as e:
+            tables[table_name] = {"count": 0, "status": "error", "error": str(e)}
+            all_ok = False
+
+    db_ok = db_status.get("status") == "healthy"
+    if db_ok and all_ok:
+        status = "healthy"
+    elif db_ok:
+        status = "degraded"
+    else:
+        status = "unhealthy"
+
     return {
-        "status": "healthy" if db_status["status"] == "healthy" else "degraded",
+        "status": status,
         "database": db_status,
-        "scores": {
-            "stablecoins_scored": scored_count,
-            "stablecoins_registered": len(STABLECOIN_REGISTRY),
-            "last_computed": latest_score.isoformat() if latest_score else None,
-        },
+        "tables": tables,
         "formula_version": FORMULA_VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

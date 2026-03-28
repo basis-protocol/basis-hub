@@ -17,7 +17,7 @@ run = ["python", "main.py"]
 [userenv.shared]
 WORKER_ENABLED = "true"
 ADMIN_KEY = "basis-admin-2026"
-INDEXER_INTERVAL_HOURS = "72"
+INDEXER_INTERVAL_HOURS = "24"
 BLOCK_EXPLORER_PROVIDER = "blockscout"
 
 [workflows]

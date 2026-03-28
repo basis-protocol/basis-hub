@@ -125,6 +125,15 @@ def run_worker_loop():
         except Exception as e:
             logger.error(f"Worker cycle error: {e}")
 
+        # PSI scoring — uses DeFiLlama only, no explorer API budget
+        try:
+            from app.collectors.psi_collector import run_psi_scoring
+            logger.info("Running PSI scoring cycle...")
+            psi_results = run_psi_scoring()
+            logger.info(f"PSI scoring complete: {len(psi_results)} protocols scored")
+        except Exception as e:
+            logger.warning(f"PSI scoring failed: {e}")
+
         # Verification agent cycle — runs after every scoring cycle
         try:
             from app.agent.watcher import run_agent_cycle
@@ -145,6 +154,38 @@ def run_worker_loop():
                 logger.info("Scheduled wallet re-indexing complete")
             except Exception as e:
                 logger.warning(f"Scheduled wallet re-indexing failed: {e}")
+
+            # Wallet expansion — seed new wallets until we hit 100K
+            try:
+                from app.database import fetch_one
+                wallet_count = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallets")
+                current_count = wallet_count["cnt"] if wallet_count else 0
+
+                if current_count < 100_000:
+                    from app.indexer.expander import run_wallet_expansion
+                    max_calls = min(20_000, (100_000 - current_count) * 2)
+                    logger.info(f"Wallet expansion: {current_count} wallets, target 100K, budget {max_calls} calls")
+                    expansion_result = asyncio.run(run_wallet_expansion(max_etherscan_calls=max_calls))
+                    logger.info(
+                        f"Wallet expansion: {expansion_result.get('new_wallets_seeded', 0)} new wallets, "
+                        f"{expansion_result.get('etherscan_calls_used', 0)} API calls"
+                    )
+                else:
+                    logger.info(f"Wallet expansion: {current_count} wallets — at or above 100K target, skipping")
+            except Exception as e:
+                logger.warning(f"Wallet expansion failed: {e}")
+
+            # Edge building — build transfer edges for unbuilt wallets
+            try:
+                from app.indexer.edges import run_edge_builder
+                logger.info("Running edge builder (top 200 unbuilt wallets by value)...")
+                edge_result = asyncio.run(run_edge_builder(max_wallets=200, priority="value"))
+                logger.info(
+                    f"Edge builder complete: {edge_result.get('wallets_processed', 0)} wallets, "
+                    f"{edge_result.get('total_edges_created', 0)} edges"
+                )
+            except Exception as e:
+                logger.warning(f"Edge building failed: {e}")
 
         logger.info(f"Worker sleeping {WORKER_INTERVAL} minutes...")
         time.sleep(WORKER_INTERVAL * 60)

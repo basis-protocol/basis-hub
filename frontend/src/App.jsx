@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const API = "";
+const apiFetch = (url, opts = {}) => fetch(url, { ...opts, headers: { ...opts.headers, "X-Basis-Dashboard": "1" } });
 
 const T = {
   paper: "#f5f2ec",
@@ -84,7 +85,7 @@ function useScores() {
     let mounted = true;
     const load = async () => {
       try {
-        const r = await fetch(`${API}/api/scores`);
+        const r = await apiFetch(`${API}/api/scores`);
         const d = await r.json();
         if (mounted) {
           setData(d.stablecoins || []);
@@ -110,7 +111,7 @@ function useCoinDetail(coinId) {
   useEffect(() => {
     if (!coinId) return;
     setLoading(true);
-    fetch(`${API}/api/scores/${coinId}`)
+    apiFetch(`${API}/api/scores/${coinId}`)
       .then((r) => r.json())
       .then((d) => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -126,7 +127,7 @@ function useCoinHistory(coinId, days = 90) {
   useEffect(() => {
     if (!coinId) return;
     setLoading(true);
-    fetch(`${API}/api/scores/${coinId}/history?days=${days}`)
+    apiFetch(`${API}/api/scores/${coinId}/history?days=${days}`)
       .then((r) => r.json())
       .then((d) => { setData(d.history || []); setLoading(false); })
       .catch(() => setLoading(false));
@@ -139,7 +140,7 @@ function useWalletTop(limit = 50) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/wallets/top?limit=${limit}`)
+    apiFetch(`${API}/api/wallets/top?limit=${limit}`)
       .then((r) => r.json())
       .then((d) => { setData(d.wallets || []); setLoading(false); })
       .catch(() => setLoading(false));
@@ -151,7 +152,7 @@ function useWalletRiskiest(limit = 50) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/wallets/riskiest?limit=${limit}`)
+    apiFetch(`${API}/api/wallets/riskiest?limit=${limit}`)
       .then((r) => r.json())
       .then((d) => { setData(d.wallets || []); setLoading(false); })
       .catch(() => setLoading(false));
@@ -163,7 +164,7 @@ function useBacklog(limit = 50) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/backlog?limit=${limit}`)
+    apiFetch(`${API}/api/backlog?limit=${limit}`)
       .then((r) => r.json())
       .then((d) => { setData(d.backlog || []); setLoading(false); })
       .catch(() => setLoading(false));
@@ -181,7 +182,7 @@ function useWalletDetail(address) {
     setLoading(true);
     setError(null);
     setData(null);
-    fetch(`${API}/api/wallets/${addr.trim()}`)
+    apiFetch(`${API}/api/wallets/${addr.trim()}`)
       .then((r) => {
         if (!r.ok) throw new Error(`Not found (${r.status})`);
         return r.json();
@@ -199,7 +200,7 @@ function useAllHistory(coinIds) {
   useEffect(() => {
     if (!coinIds || coinIds.length === 0) return;
     coinIds.forEach((id) => {
-      fetch(`${API}/api/scores/${id}/history?days=21`)
+      apiFetch(`${API}/api/scores/${id}/history?days=21`)
         .then((r) => r.json())
         .then((d) => {
           setHistMap((prev) => ({ ...prev, [id]: d.history || [] }));
@@ -215,7 +216,7 @@ function usePsiScores() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/psi/scores`)
+    apiFetch(`${API}/api/psi/scores`)
       .then(r => r.json())
       .then(d => { setData(d.protocols || d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -227,7 +228,7 @@ function useCqiMatrix() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/compose/cqi/matrix`)
+    apiFetch(`${API}/api/compose/cqi/matrix`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -239,7 +240,7 @@ function usePulse() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/pulse/latest`)
+    apiFetch(`${API}/api/pulse/latest`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -251,7 +252,7 @@ function useWitnessIssuers() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/cda/issuers`)
+    apiFetch(`${API}/api/cda/issuers`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -263,7 +264,7 @@ function useWitnessCoverage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${API}/api/cda/coverage`)
+    apiFetch(`${API}/api/cda/coverage`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -277,7 +278,7 @@ function useIssuerHistory(symbol) {
   useEffect(() => {
     if (!symbol) return;
     setLoading(true);
-    fetch(`${API}/api/cda/issuers/${symbol}/history?days=365`)
+    apiFetch(`${API}/api/cda/issuers/${symbol}/history?days=365`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -291,7 +292,7 @@ function useIssuerLatest(symbol) {
   useEffect(() => {
     if (!symbol) return;
     setLoading(true);
-    fetch(`${API}/api/cda/issuers/${symbol}/latest`)
+    apiFetch(`${API}/api/cda/issuers/${symbol}/latest`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -1736,7 +1737,7 @@ function PulseView({ mobile }) {
   const { data: pulse, loading } = usePulse();
   const [divergence, setDivergence] = useState(null);
   useEffect(() => {
-    fetch(`${API}/api/divergence`)
+    apiFetch(`${API}/api/divergence`)
       .then(r => r.ok ? r.json() : null)
       .then(d => setDivergence(d))
       .catch(() => {});
@@ -2020,7 +2021,7 @@ function WitnessView({ mobile, onSelectIssuer }) {
   useEffect(() => {
     issuers.forEach(iss => {
       if (!latestHashes[iss.asset_symbol]) {
-        fetch(`${API}/api/cda/issuers/${iss.asset_symbol}/latest`)
+        apiFetch(`${API}/api/cda/issuers/${iss.asset_symbol}/latest`)
           .then(r => r.json())
           .then(d => {
             setLatestHashes(prev => ({ ...prev, [iss.asset_symbol]: d.evidence_hash || null }));
