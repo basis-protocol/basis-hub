@@ -1463,7 +1463,7 @@ function ProtocolsView({ mobile }) {
     "FORM PSI-001 · BASIS PROTOCOL",
   ];
 
-  const sorted = protocols ? [...protocols].sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0)) : [];
+  const sorted = protocols ? [...protocols].sort((a, b) => (b.score || b.overall_score || 0) - (a.score || a.overall_score || 0)) : [];
 
   return (
     <div>
@@ -1532,7 +1532,7 @@ function ProtocolsView({ mobile }) {
                   {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.revenue) }}>{fmt(cats.revenue, 0)}</span>}
                   {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.security) }}>{fmt(cats.security, 0)}</span>}
                   {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.governance) }}>{fmt(cats.governance, 0)}</span>}
-                  <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 600, color: T.ink }}>{fmt(p.overall_score, 1)}</span>
+                  <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 600, color: T.ink }}>{fmt(p.score || p.overall_score, 1)}</span>
                   <span style={{ fontFamily: T.sans, fontSize: 18, fontWeight: 700, color: gradeColor(p.grade) }}>{p.grade || "—"}</span>
                 </div>
               );
