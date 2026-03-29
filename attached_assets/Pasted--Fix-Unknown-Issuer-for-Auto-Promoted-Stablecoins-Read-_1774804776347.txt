@@ -1,0 +1,101 @@
+# Fix “Unknown” Issuer for Auto-Promoted Stablecoins
+
+Read AGENTS.md and CLAUDE.md first.
+
+## Problem
+
+When the discovery pipeline promotes stablecoins from `unscored_assets` to the `stablecoins` scoring table, it hardcodes `issuer` as `'Unknown'` (line ~215 of `app/indexer/backlog.py`). This shows up on the Rankings page as “Unknown · $0.9990” under the coin name.
+
+## Fix 1: Known issuer lookup (immediate)
+
+In `app/indexer/backlog.py`, add a static lookup above `promote_eligible_assets()`:
+
+```python
+# Known stablecoin issuers by symbol (uppercase)
+KNOWN_ISSUERS = {
+    "USDP": "Paxos",
+    "GUSD": "Gemini",
+    "BUSD": "Paxos",
+    "LUSD": "Liquity",
+    "SUSD": "Synthetix",
+    "CRVUSD": "Curve",
+    "GHO": "Aave",
+    "DOLA": "Inverse Finance",
+    "ALUSD": "Alchemix",
+    "MIM": "Abracadabra",
+    "EURC": "Circle",
+    "USDM": "Mountain Protocol",
+    "USDY": "Ondo Finance",
+    "USDB": "Blast",
+    "ZUSD": "Zai Finance",
+    "R": "Raft",
+    "WUSDM": "Mountain Protocol",
+    "HUSD": "Stable Universal",
+    "UST": "Terra",
+    "FEI": "Fei Protocol",
+    "RAI": "Reflexer",
+    "BEAN": "Beanstalk",
+}
+```
+
+Then in the INSERT statement, change `'Unknown'` to use the lookup:
+
+```python
+issuer = KNOWN_ISSUERS.get(asset["symbol"].upper(), asset["name"] or "Unknown")
+```
+
+This falls back to the on-chain token `name` field (which is often the issuer or protocol name) instead of literal “Unknown”.
+
+Replace the INSERT line:
+
+```python
+VALUES (%s, %s, %s, 'Unknown', %s, %s, %s, TRUE)
+```
+
+With:
+
+```python
+VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+```
+
+And update the params tuple — add `issuer` as the 4th parameter:
+
+```python
+(
+    coin_id,
+    asset["name"] or asset["symbol"],
+    asset["symbol"],
+    KNOWN_ISSUERS.get(asset["symbol"].upper(), asset["name"] or "Unknown"),
+    asset["coingecko_id"],
+    asset["token_address"],
+    asset["decimals"],
+),
+```
+
+## Fix 2: Patch existing “Unknown” rows (one-time)
+
+Run this SQL against the database to fix coins already promoted with “Unknown”:
+
+```sql
+UPDATE stablecoins SET issuer = 'Paxos' WHERE UPPER(symbol) = 'USDP' AND issuer = 'Unknown';
+UPDATE stablecoins SET issuer = 'Gemini' WHERE UPPER(symbol) = 'GUSD' AND issuer = 'Unknown';
+UPDATE stablecoins SET issuer = 'Liquity' WHERE UPPER(symbol) = 'LUSD' AND issuer = 'Unknown';
+UPDATE stablecoins SET issuer = 'Curve' WHERE UPPER(symbol) = 'CRVUSD' AND issuer = 'Unknown';
+UPDATE stablecoins SET issuer = 'Aave' WHERE UPPER(symbol) = 'GHO' AND issuer = 'Unknown';
+```
+
+Add more as needed — check which coins currently show “Unknown”:
+
+```sql
+SELECT id, symbol, name, issuer FROM stablecoins WHERE issuer = 'Unknown' ORDER BY symbol;
+```
+
+For any remaining unknowns after the lookup, set issuer to the `name` field as a fallback:
+
+```sql
+UPDATE stablecoins SET issuer = name WHERE issuer = 'Unknown' AND name IS NOT NULL AND name != '';
+```
+
+-----
+
+git add, commit “fix: resolve Unknown issuer for auto-promoted stablecoins”, push.

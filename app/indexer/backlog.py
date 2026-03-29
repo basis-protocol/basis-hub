@@ -178,6 +178,32 @@ def _make_coin_id(symbol: str) -> str:
     return re.sub(r"[^a-z0-9_]", "_", symbol.lower())[:20]
 
 
+KNOWN_ISSUERS = {
+    "USDP": "Paxos",
+    "GUSD": "Gemini",
+    "BUSD": "Paxos",
+    "LUSD": "Liquity",
+    "SUSD": "Synthetix",
+    "CRVUSD": "Curve",
+    "GHO": "Aave",
+    "DOLA": "Inverse Finance",
+    "ALUSD": "Alchemix",
+    "MIM": "Abracadabra",
+    "EURC": "Circle",
+    "USDM": "Mountain Protocol",
+    "USDY": "Ondo Finance",
+    "USDB": "Blast",
+    "ZUSD": "Zai Finance",
+    "R": "Raft",
+    "WUSDM": "Mountain Protocol",
+    "HUSD": "Stable Universal",
+    "UST": "Terra",
+    "FEI": "Fei Protocol",
+    "RAI": "Reflexer",
+    "BEAN": "Beanstalk",
+}
+
+
 def promote_eligible_assets() -> int:
     """
     Promote unscored assets above the value threshold into the stablecoins
@@ -213,13 +239,14 @@ def promote_eligible_assets() -> int:
                 """
                 INSERT INTO stablecoins
                     (id, name, symbol, issuer, coingecko_id, contract, decimals, scoring_enabled)
-                VALUES (%s, %s, %s, 'Unknown', %s, %s, %s, TRUE)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
                 ON CONFLICT (id) DO UPDATE SET scoring_enabled = TRUE
                 """,
                 (
                     coin_id,
                     asset["name"] or asset["symbol"],
                     asset["symbol"],
+                    KNOWN_ISSUERS.get(asset["symbol"].upper(), asset["name"] or "Unknown"),
                     asset["coingecko_id"],
                     asset["token_address"],
                     asset["decimals"],
