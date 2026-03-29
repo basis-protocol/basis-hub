@@ -2138,6 +2138,24 @@ async def admin_reindex_batch(request: Request, background_tasks: BackgroundTask
     return {"status": "started", "batch_size": batch_size}
 
 
+@app.post("/api/admin/decay-edges")
+async def admin_decay_edges(request: Request):
+    """Recalculate edge weights with time-decay multiplier."""
+    _check_admin_key(request)
+    from app.indexer.edges import decay_edges
+    result = decay_edges()
+    return result
+
+
+@app.post("/api/admin/prune-edges")
+async def admin_prune_edges(request: Request):
+    """Archive edges older than 180 days."""
+    _check_admin_key(request)
+    from app.indexer.edges import prune_stale_edges
+    result = prune_stale_edges()
+    return result
+
+
 @app.post("/api/admin/collect-cda")
 async def trigger_cda_collection(key: str = Query(default=None)):
     """Manually trigger CDA collection pipeline. Requires admin key."""

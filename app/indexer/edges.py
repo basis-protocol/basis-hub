@@ -282,3 +282,96 @@ async def run_edge_builder(
         "total_edges_created": total_edges,
         "total_transfers": total_transfers,
     }
+
+
+# =============================================================================
+# Edge Decay — recalculate weights with time-decay multiplier
+# =============================================================================
+
+def decay_edges() -> dict:
+    """
+    Recalculate edge weights using a time-decay multiplier.
+
+    decay_factor = max(0.1, 1.0 - (days_since_last_transfer / 180))
+    new_weight = log10(total_value_usd + 1) * ln(transfer_count + 1) * decay_factor
+
+    Skips edges with last_transfer_at within the last day (fresh edges).
+    """
+    result = execute(
+        """
+        UPDATE wallet_graph.wallet_edges
+        SET
+            weight = GREATEST(0.01,
+                log(total_value_usd + 1)
+                * ln(transfer_count + 1)
+                * GREATEST(0.1, 1.0 - (EXTRACT(EPOCH FROM (NOW() - last_transfer_at)) / 86400.0 / 180.0))
+            ),
+            updated_at = NOW()
+        WHERE last_transfer_at < NOW() - INTERVAL '1 day'
+          AND last_transfer_at IS NOT NULL
+        """,
+    )
+
+    # Count how many were updated
+    count_row = fetch_one(
+        """
+        SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges
+        WHERE updated_at > NOW() - INTERVAL '10 seconds'
+        """
+    )
+    updated = count_row["cnt"] if count_row else 0
+    logger.info(f"Edge decay: {updated} edges recalculated")
+    return {"edges_decayed": updated}
+
+
+# =============================================================================
+# Edge Pruning — archive edges older than 180 days
+# =============================================================================
+
+def prune_stale_edges() -> dict:
+    """
+    Move edges with last_transfer_at older than 180 days to archive table.
+    Returns count of edges archived.
+    """
+    # Count before archiving
+    count_row = fetch_one(
+        """
+        SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges
+        WHERE last_transfer_at < NOW() - INTERVAL '180 days'
+        """
+    )
+    to_archive = count_row["cnt"] if count_row else 0
+
+    if to_archive == 0:
+        logger.info("Edge pruning: no stale edges to archive")
+        return {"edges_archived": 0, "edges_remaining": 0}
+
+    # Archive: copy to archive table
+    execute(
+        """
+        INSERT INTO wallet_graph.wallet_edges_archive
+            (id, from_address, to_address, transfer_count, total_value_usd,
+             first_transfer_at, last_transfer_at, weight, tokens_transferred,
+             created_at, updated_at)
+        SELECT id, from_address, to_address, transfer_count, total_value_usd,
+               first_transfer_at, last_transfer_at, weight, tokens_transferred,
+               created_at, updated_at
+        FROM wallet_graph.wallet_edges
+        WHERE last_transfer_at < NOW() - INTERVAL '180 days'
+        ON CONFLICT DO NOTHING
+        """,
+    )
+
+    # Delete from live table
+    execute(
+        """
+        DELETE FROM wallet_graph.wallet_edges
+        WHERE last_transfer_at < NOW() - INTERVAL '180 days'
+        """,
+    )
+
+    remaining_row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges")
+    remaining = remaining_row["cnt"] if remaining_row else 0
+
+    logger.info(f"Edge pruning: {to_archive} edges archived, {remaining} remaining")
+    return {"edges_archived": to_archive, "edges_remaining": remaining}

@@ -157,6 +157,16 @@ def run_worker_loop():
             except Exception as e:
                 logger.warning(f"Edge building failed: {e}")
 
+            # Decay + prune after edge building
+            try:
+                from app.indexer.edges import decay_edges, prune_stale_edges
+                decay_result = decay_edges()
+                logger.info(f"Edge decay: {decay_result.get('edges_decayed', 0)} edges recalculated")
+                prune_result = prune_stale_edges()
+                logger.info(f"Edge prune: {prune_result.get('edges_archived', 0)} archived")
+            except Exception as e:
+                logger.warning(f"Edge decay/prune failed: {e}")
+
         logger.info(f"Worker sleeping {WORKER_INTERVAL} minutes...")
         time.sleep(WORKER_INTERVAL * 60)
 
