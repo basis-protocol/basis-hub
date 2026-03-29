@@ -301,64 +301,110 @@ def register_wallet_routes(app: FastAPI) -> None:
         }
 
     @app.get("/api/wallets/{address}/contagion")
-    async def wallet_contagion(address: str, depth: int = Query(default=1, ge=1, le=2)):
-        """If this wallet's holdings depeg, who's exposed?"""
+    async def wallet_contagion(address: str, depth: int = Query(default=2, ge=1, le=3)):
+        """
+        Recursive contagion traversal: if this wallet's holdings depeg, who's exposed?
+        Uses recursive CTE to follow edges up to `depth` hops (max 3).
+        """
+        if depth > 3:
+            raise HTTPException(status_code=400, detail="Maximum depth is 3")
+
         addr = address.lower()
-        direct = fetch_all(
+        MAX_NODES = 500
+
+        rows = fetch_all(
             """
-            SELECT
-                CASE WHEN from_address = %s THEN to_address ELSE from_address END AS counterparty,
-                weight, total_value_usd
-            FROM wallet_graph.wallet_edges
-            WHERE (from_address = %s OR to_address = %s)
-              AND weight > 0.1
-            ORDER BY weight DESC
-            LIMIT 50
+            WITH RECURSIVE contagion_path AS (
+                -- Base case: direct counterparties (depth 1)
+                SELECT
+                    CASE WHEN from_address = %s THEN to_address ELSE from_address END AS node,
+                    weight,
+                    total_value_usd,
+                    1 AS depth,
+                    ARRAY[%s,
+                        CASE WHEN from_address = %s THEN to_address ELSE from_address END
+                    ] AS path
+                FROM wallet_graph.wallet_edges
+                WHERE (from_address = %s OR to_address = %s)
+                  AND weight > 0.05
+
+                UNION ALL
+
+                -- Recursive case: follow outbound edges from discovered nodes
+                SELECT
+                    CASE WHEN e.from_address = cp.node THEN e.to_address ELSE e.from_address END,
+                    e.weight,
+                    e.total_value_usd,
+                    cp.depth + 1,
+                    cp.path || CASE WHEN e.from_address = cp.node THEN e.to_address ELSE e.from_address END
+                FROM wallet_graph.wallet_edges e
+                JOIN contagion_path cp ON (e.from_address = cp.node OR e.to_address = cp.node)
+                WHERE cp.depth < %s
+                  AND NOT (CASE WHEN e.from_address = cp.node THEN e.to_address ELSE e.from_address END) = ANY(cp.path)
+                  AND e.weight > 0.05
+            )
+            SELECT DISTINCT ON (node)
+                node AS address,
+                depth,
+                weight AS edge_weight,
+                total_value_usd AS exposure_usd,
+                path
+            FROM contagion_path
+            ORDER BY node, depth ASC, weight DESC
+            LIMIT %s
             """,
-            (addr, addr, addr),
+            (addr, addr, addr, addr, addr, depth, MAX_NODES + 1),
         )
 
-        counterparties = []
-        for edge in direct:
-            cp = edge["counterparty"]
-            risk = fetch_one(
-                """SELECT risk_score, risk_grade, total_stablecoin_value
+        truncated = len(rows) > MAX_NODES
+        if truncated:
+            rows = rows[:MAX_NODES]
+
+        # Batch-fetch risk grades for all discovered nodes
+        node_addrs = [r["address"] for r in rows]
+        risk_map = {}
+        if node_addrs:
+            risk_rows = fetch_all(
+                """
+                SELECT DISTINCT ON (wallet_address)
+                    wallet_address, risk_score, risk_grade
                 FROM wallet_graph.wallet_risk_scores
-                WHERE wallet_address = %s ORDER BY computed_at DESC LIMIT 1""",
-                (cp,),
+                WHERE wallet_address = ANY(%s)
+                ORDER BY wallet_address, computed_at DESC
+                """,
+                (node_addrs,),
             )
-            entry = {
-                "address": cp,
-                "edge_weight": round(float(edge["weight"]), 4) if edge.get("weight") else 0,
-                "transfer_value_usd": edge["total_value_usd"],
-                "risk_score": float(risk["risk_score"]) if risk and risk.get("risk_score") else None,
+            risk_map = {r["wallet_address"]: r for r in risk_rows}
+
+        nodes = []
+        total_exposed = 0.0
+        for r in rows:
+            risk = risk_map.get(r["address"])
+            exposure = float(r["exposure_usd"]) if r["exposure_usd"] else 0
+            total_exposed += exposure
+            nodes.append({
+                "address": r["address"],
+                "depth": r["depth"],
+                "edge_weight": round(float(r["edge_weight"]), 4) if r["edge_weight"] else 0,
+                "exposure_usd": exposure,
                 "risk_grade": risk["risk_grade"] if risk else None,
-                "holdings_value_usd": float(risk["total_stablecoin_value"]) if risk and risk.get("total_stablecoin_value") else None,
-            }
+                "path": r["path"],
+            })
 
-            if depth >= 2:
-                secondary = fetch_all(
-                    """
-                    SELECT COUNT(*) AS cnt, COALESCE(SUM(total_value_usd), 0) AS exposure
-                    FROM wallet_graph.wallet_edges
-                    WHERE (from_address = %s OR to_address = %s)
-                      AND from_address != %s AND to_address != %s
-                      AND weight > 0.1
-                    """,
-                    (cp, cp, addr, addr),
-                )
-                entry["secondary_connections"] = secondary[0]["cnt"] if secondary else 0
-                entry["secondary_exposure_usd"] = float(secondary[0]["exposure"]) if secondary else 0
+        # Sort by depth then weight descending
+        nodes.sort(key=lambda n: (n["depth"], -n["edge_weight"]))
 
-            counterparties.append(entry)
-
-        return {
-            "source_wallet": addr,
+        result = {
+            "source": addr,
             "depth": depth,
-            "direct_counterparties": len(counterparties),
-            "direct_exposure_usd": sum(c["transfer_value_usd"] or 0 for c in counterparties),
-            "counterparties": counterparties,
+            "nodes": nodes,
+            "total_exposed_usd": round(total_exposed, 2),
+            "node_count": len(nodes),
         }
+        if truncated:
+            result["truncated"] = True
+
+        return result
 
     # -- Wallet profile routes --
 
