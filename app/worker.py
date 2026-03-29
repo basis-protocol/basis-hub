@@ -42,6 +42,7 @@ from app.collectors.offline import (
     collect_network_components,
 )
 from app.collectors.etherscan import collect_holder_distribution
+from app.collectors.flows import collect_flows_components
 
 logging.basicConfig(
     level=logging.INFO,
@@ -150,6 +151,7 @@ async def collect_all_components(
         safe_collect("defillama", collect_defillama_components(client, cg_id, stablecoin_id)),
         safe_collect("curve", collect_curve_components(client, stablecoin_id)),
         safe_collect("etherscan", collect_holder_distribution(client, stablecoin_id)),
+        safe_collect("flows", collect_flows_components(client, stablecoin_id)),
     )
     
     for result in results:

@@ -193,6 +193,7 @@ LEGACY_TO_V1_MAPPING = {
     "peg_stability": "peg_stability",
     "liquidity": "liquidity_depth",
     "market_activity": "mint_burn_dynamics",
+    "flows": "mint_burn_dynamics",
     "holder_distribution": "holder_distribution",
     # These all roll into structural_risk_composite:
     "governance": "structural_risk_composite",
@@ -410,6 +411,40 @@ COMPONENT_NORMALIZATIONS = {
         "params": {"min_val": 1, "max_val": 50},
         "category": "network",
         "weight": 1.0,
+    },
+
+    # =========================================================================
+    # Flows / Mint-Burn Dynamics (5 components, weights sum to 1.0)
+    # =========================================================================
+    "daily_mint_volume": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 0, "threshold": 5},  # % of market cap
+        "category": "flows",
+        "weight": 0.20,
+    },
+    "daily_burn_volume": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 0, "threshold": 5},
+        "category": "flows",
+        "weight": 0.20,
+    },
+    "net_mint_burn_ratio": {
+        "fn": normalize_centered,
+        "params": {"center": 0.5, "tolerance": 0.1, "extreme": 0.5},
+        "category": "flows",
+        "weight": 0.20,
+    },
+    "supply_change_velocity": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 0, "threshold": 3},  # % daily change
+        "category": "flows",
+        "weight": 0.20,
+    },
+    "unusual_minting_detection": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 0, "threshold": 5},  # z-score
+        "category": "flows",
+        "weight": 0.20,
     },
 }
 
