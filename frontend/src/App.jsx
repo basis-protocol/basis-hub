@@ -600,7 +600,7 @@ function PageHeader({ ts, mobile, coinCount }) {
     <TabHeader
       title={<><span style={{ fontWeight: 700 }}>Stablecoin</span> Integrity <span style={{ fontWeight: 700 }}>Index</span></>}
       formId="FORM SII-001 · BASIS PROTOCOL"
-      stats={[`${coinCount || 14} STABLECOINS`, "102 COMPONENTS", "6 DATA SOURCES", "DETERMINISTIC METHODOLOGY", "UPDATED HOURLY"]}
+      stats={[`${coinCount || 14} STABLECOINS`, "15 SCORING COMPONENTS", "4 LIVE DATA SOURCES", "DETERMINISTIC METHODOLOGY", "UPDATED HOURLY"]}
       formulaLine="SII = 0.30×Peg + 0.25×Liq + 0.20×Struct + 0.15×Flow + 0.10×Dist"
       versionLabel={`Methodology v1.0 · ${timestamp}`}
       accent="#fc988f"
@@ -638,7 +638,7 @@ function PulseSummarySection({ mobile }) {
           { label: "Tracked", value: fmtB(net.total_tracked_usd) },
           { label: "Wallets", value: net.wallets_active != null ? net.wallets_active.toLocaleString() : "—" },
           { label: "Avg Risk", value: net.avg_risk_score != null ? fmt(net.avg_risk_score, 1) : "—" },
-          { label: "Data Points", value: (pScores.length * 102).toLocaleString() },
+          { label: "Data Points", value: (pScores.length * 51).toLocaleString() },
         ].map((item, i) => (
           <div key={i} style={{
             padding: mobile ? "10px 12px" : "12px 20px",
@@ -1990,7 +1990,7 @@ function PulseView({ mobile, integrity }) {
             { label: "Wallets", value: net.wallets_active != null ? net.wallets_active.toLocaleString() : (net.wallets_scored != null ? net.wallets_scored.toLocaleString() : "—") },
             { label: "Avg Risk", value: net.avg_risk_score != null ? fmt(net.avg_risk_score, 1) : "—" },
             { label: "Stablecoins", value: net.stablecoins_scored || scores.length || "—" },
-            { label: "Data Points", value: (scores.length * 102).toLocaleString() },
+            { label: "Data Points", value: (scores.length * 51).toLocaleString() },
           ].map((item, i) => (
             <div key={i} style={{
               padding: mobile ? "12px 12px" : "14px 20px",

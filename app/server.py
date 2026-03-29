@@ -559,6 +559,11 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
                 "raw_value": c["raw_value"],
                 "normalized_score": round(c["normalized_score"], 2) if c["normalized_score"] else None,
                 "data_source": c["data_source"],
+                "source_type": (
+                    "cda_extraction" if (c["data_source"] or "").startswith("cda_") else
+                    "live_api" if c["data_source"] in ("coingecko", "etherscan", "curve", "defillama") else
+                    "static_config"
+                ),
                 "collected_at": c["collected_at"].isoformat() if c["collected_at"] else None,
             }
             for c in components
@@ -697,8 +702,8 @@ async def get_methodology(methodology_version: Optional[str] = Query(default=Non
             }
             for comp_id, spec in COMPONENT_NORMALIZATIONS.items()
         },
-        "total_components": 102,
-        "automated_components": 83,
+        "scoring_components": len(COMPONENT_NORMALIZATIONS),
+        "diagnostic_components": 36,
         "data_sources": [
             "CoinGecko Pro", "DeFiLlama", "Etherscan", "Curve Finance",
             "Issuer attestation reports", "On-chain contract analysis",
@@ -3118,7 +3123,7 @@ def _render_rankings_html() -> str:
         "@context": "https://schema.org",
         "@type": "Dataset",
         "name": "Basis Protocol — Stablecoin Integrity Index",
-        "description": "Standardized risk scores for on-chain stablecoins. SII measures 102 data points across 7 categories.",
+        "description": "Standardized risk scores for on-chain stablecoins. SII scores 15 canonical components across 4 categories with 36 diagnostic signals.",
         "url": f"{CANONICAL_BASE_URL}/",
         "dateModified": datetime.now(timezone.utc).isoformat(),
         "creator": {"@type": "Organization", "name": "Basis Protocol", "url": CANONICAL_BASE_URL},
@@ -3172,7 +3177,7 @@ def _render_rankings_html() -> str:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Basis Protocol — Stablecoin Integrity Index</title>
-    <meta name="description" content="Standardized risk scores for {count} on-chain stablecoins. Updated hourly. SII measures 102 data points across 7 categories.">
+    <meta name="description" content="Standardized risk scores for {count} on-chain stablecoins. Updated hourly. 15 scoring components, 36 diagnostic signals, 4 live data sources.">
     <meta property="og:title" content="Basis Protocol — Stablecoin Integrity Index">
     <meta property="og:description" content="Live SII scores for {count} stablecoins. Deterministic methodology. Updated hourly.">
     <meta property="og:type" content="website">

@@ -346,7 +346,7 @@ def store_score(stablecoin_id: str, score_data: dict, price_ctx: dict):
             score_data["oracle_score"], score_data["governance_score"],
             score_data["network_score"],
             score_data["component_count"], score_data["formula_version"],
-            round(score_data["component_count"] / 102 * 100, 1),  # freshness pct
+            round(score_data["component_count"] / 51 * 100, 1),  # freshness pct (51 collectible components)
             price_ctx.get("current_price"), price_ctx.get("market_cap"),
             price_ctx.get("volume_24h"),
             daily_change, weekly_change,
