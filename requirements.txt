@@ -13,3 +13,7 @@ python-dotenv
 uvicorn[standard]
 mcp[http]
 mcp[http]
+dbt-core>=1.7.0
+dbt-postgres>=1.7.0
+scipy>=1.11.0
+networkx>=3.1

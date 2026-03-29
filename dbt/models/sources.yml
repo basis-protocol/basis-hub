@@ -1,0 +1,25 @@
+version: 2
+
+sources:
+  - name: basis
+    schema: public
+    tables:
+      - name: scores
+      - name: score_history
+      - name: stablecoins
+      - name: psi_scores
+      - name: daily_pulses
+      - name: assessment_events
+      - name: assessment_input_vectors
+      - name: cda_vendor_extractions
+      - name: cda_issuer_registry
+
+  - name: wallet_graph
+    schema: wallet_graph
+    tables:
+      - name: wallets
+      - name: wallet_holdings
+      - name: wallet_risk_scores
+      - name: wallet_edges
+      - name: edge_build_status
+      - name: unscored_assets

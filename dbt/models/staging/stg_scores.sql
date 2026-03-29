@@ -1,0 +1,20 @@
+SELECT
+    stablecoin_id,
+    overall_score,
+    grade,
+    peg_score,
+    liquidity_score,
+    mint_burn_score,
+    distribution_score,
+    structural_score,
+    reserves_score,
+    contract_score,
+    oracle_score,
+    governance_score,
+    network_score,
+    daily_change,
+    weekly_change,
+    current_price,
+    market_cap,
+    computed_at
+FROM {{ source('basis', 'scores') }}

@@ -250,6 +250,47 @@ function usePulse() {
   return { data, loading };
 }
 
+function useIntegrity() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    apiFetch(`${API}/api/integrity`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setData(d))
+      .catch(() => {});
+  }, []);
+  return data;
+}
+
+const DOMAIN_DEPS = {
+  rankings: ["sii"],
+  protocols: ["psi"],
+  wallets: ["wallets"],
+  pulse: ["pulse", "sii", "wallets", "events"],
+  witness: ["cda"],
+};
+
+function domainStatus(integrity, tabId) {
+  if (!integrity || !integrity.domains) return null;
+  const deps = DOMAIN_DEPS[tabId];
+  if (!deps) return null;
+  let worst = "fresh";
+  for (const d of deps) {
+    const ds = integrity.domains[d];
+    if (!ds) continue;
+    if (ds.status === "error" || (ds.warnings && ds.warnings.some(w => w.level === "error"))) return "error";
+    if (ds.status === "stale" || (ds.warnings && ds.warnings.length > 0)) worst = "stale";
+  }
+  return worst;
+}
+
+function StatusDot({ status }) {
+  if (!status || status === "fresh") return null;
+  const color = status === "error" ? "#c0392b" : "#c77b2a";
+  return (
+    <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: color, marginLeft: 5, verticalAlign: "middle" }} />
+  );
+}
+
 function useWitnessIssuers() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1735,7 +1776,7 @@ function ProtocolsView({ mobile }) {
   );
 }
 
-function PulseView({ mobile }) {
+function PulseView({ mobile, integrity }) {
   const { data: pulse, loading } = usePulse();
   const [divergence, setDivergence] = useState(null);
   useEffect(() => {
@@ -1839,6 +1880,24 @@ function PulseView({ mobile }) {
             fontFamily: T.mono, fontSize: 9, color: T.inkFaint,
           }}>
             Content hash: {pulse.content_hash}
+          </div>
+        )}
+
+        {/* Data freshness line */}
+        {integrity && integrity.domains && (
+          <div style={{
+            borderTop: `1px solid ${T.ruleLight}`,
+            padding: mobile ? "6px 12px" : "6px 24px",
+            fontFamily: T.mono, fontSize: 9, color: T.inkFaint,
+          }}>
+            {["sii", "wallets", "events", "pulse"].map(d => {
+              const dm = integrity.domains[d];
+              if (!dm) return null;
+              const label = d === "sii" ? "SII" : d.charAt(0).toUpperCase() + d.slice(1);
+              const age = dm.age_hours;
+              const txt = age == null ? "—" : age < 1 ? `${Math.round(age * 60)}m ago` : `${Math.round(age)}h ago`;
+              return `${label}: ${txt}`;
+            }).filter(Boolean).join(" · ")}
           </div>
         )}
       </div>
@@ -2387,6 +2446,7 @@ export default function App() {
   const [witnessSymbol, setWitnessSymbol] = useState(null);
   const { data: scores, loading, error, ts } = useScores();
   const mobile = useIsMobile();
+  const integrity = useIntegrity();
 
   const handleSelect = useCallback((coinId) => {
     setSelectedCoin(coinId);
@@ -2453,6 +2513,7 @@ export default function App() {
                   }}
                 >
                   {tab.label}
+                  <StatusDot status={domainStatus(integrity, tab.id)} />
                 </button>
               ))}
             </nav>
@@ -2484,7 +2545,7 @@ export default function App() {
               )}
               {view === "wallets" && <WalletsView mobile={mobile} />}
               {view === "protocols" && <ProtocolsView mobile={mobile} />}
-              {view === "pulse" && <PulseView mobile={mobile} />}
+              {view === "pulse" && <PulseView mobile={mobile} integrity={integrity} />}
               {view === "witness" && <WitnessView mobile={mobile} onSelectIssuer={(sym) => { setWitnessSymbol(sym); setView("witness-detail"); window.scrollTo(0, 0); }} />}
               {view === "witness-detail" && witnessSymbol && <WitnessDetailView symbol={witnessSymbol} onBack={() => { setView("witness"); setWitnessSymbol(null); }} mobile={mobile} />}
               {view === "methodology" && <MethodologyView mobile={mobile} />}

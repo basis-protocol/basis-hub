@@ -174,7 +174,19 @@ def run_daily_pulse():
         "psi_scores": psi_summary,
     }
 
-    # 9. Compute content hash
+    # 9. Embed integrity status
+    try:
+        from app.integrity import check_domain
+        pulse_integrity = check_domain("pulse")
+        summary["integrity"] = {
+            "status": pulse_integrity["status"],
+            "warnings": pulse_integrity["warnings"],
+            "checked_at": pulse_integrity.get("checked_at"),
+        }
+    except Exception as e:
+        logger.warning(f"Integrity check embedding failed: {e}")
+
+    # 10. Compute content hash
     canonical = json.dumps(summary, sort_keys=True, separators=(",", ":"), default=_default_serializer)
     content_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
 

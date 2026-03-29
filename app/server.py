@@ -390,54 +390,33 @@ def check_methodology_version(requested_version, current_version="v1.0.0"):
 
 @app.get("/api/health")
 async def get_health():
-    """System health check — verifies all critical tables are non-empty."""
+    """System health check — powered by the integrity layer."""
+    from app.integrity import check_all
+    result = check_all()
     db_status = db_health_check()
-
-    # Check all critical tables
-    table_checks = {
-        "scores": "SELECT COUNT(*) AS cnt, MAX(computed_at) AS latest FROM scores",
-        "stablecoins": "SELECT COUNT(*) AS cnt FROM stablecoins",
-        "component_readings": "SELECT COUNT(*) AS cnt FROM component_readings",
-        "score_history": "SELECT COUNT(*) AS cnt FROM score_history",
-        "psi_scores": "SELECT COUNT(*) AS cnt, MAX(computed_at) AS latest FROM psi_scores",
-        "cda_issuer_registry": "SELECT COUNT(*) AS cnt FROM cda_issuer_registry WHERE is_active = TRUE",
-        "cda_vendor_extractions": "SELECT COUNT(*) AS cnt FROM cda_vendor_extractions",
-        "wallet_graph.wallets": "SELECT COUNT(*) AS cnt FROM wallet_graph.wallets",
-        "wallet_graph.wallet_risk_scores": "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_risk_scores",
-        "wallet_graph.wallet_edges": "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges",
-    }
-
-    tables = {}
-    all_ok = True
-    for table_name, query in table_checks.items():
-        try:
-            row = fetch_one(query)
-            count = row["cnt"] if row else 0
-            entry = {"count": count, "status": "ok" if count > 0 else "empty"}
-            if row and row.get("latest"):
-                entry["latest"] = row["latest"].isoformat() if hasattr(row["latest"], "isoformat") else str(row["latest"])
-            tables[table_name] = entry
-            if count == 0:
-                all_ok = False
-        except Exception as e:
-            tables[table_name] = {"count": 0, "status": "error", "error": str(e)}
-            all_ok = False
-
-    db_ok = db_status.get("status") == "healthy"
-    if db_ok and all_ok:
-        status = "healthy"
-    elif db_ok:
-        status = "degraded"
-    else:
-        status = "unhealthy"
-
     return {
-        "status": status,
+        "status": result["status"],
         "database": db_status,
-        "tables": tables,
-        "formula_version": FORMULA_VERSION,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "domains": result["domains"],
+        "checked_at": result["checked_at"],
     }
+
+
+@app.get("/api/integrity")
+async def get_integrity():
+    """Full data integrity status across all domains."""
+    from app.integrity import check_all
+    return check_all()
+
+
+@app.get("/api/integrity/{domain}")
+async def get_integrity_domain(domain: str):
+    """Data integrity status for a specific domain."""
+    from app.integrity import check_domain
+    result = check_domain(domain)
+    if result.get("warnings") and any(w.get("rule") == "unknown_domain" for w in result["warnings"]):
+        raise HTTPException(status_code=404, detail=f"Unknown domain: {domain}")
+    return result
 
 
 # =============================================================================
@@ -3090,6 +3069,68 @@ def _render_witness_html() -> str:
     </footer>
 </body>
 </html>"""
+
+# =============================================================================
+# Discovery Layer API
+# =============================================================================
+
+@app.get("/api/discovery/latest")
+async def get_discovery_latest():
+    """Top 20 signals from last 7 days by novelty_score."""
+    rows = fetch_all("""
+        SELECT id, signal_type, domain, title, description, entities,
+               novelty_score, direction, magnitude, baseline, detail,
+               methodology_version, detected_at, acknowledged, published
+        FROM discovery_signals
+        WHERE detected_at >= NOW() - INTERVAL '7 days'
+        ORDER BY novelty_score DESC
+        LIMIT 20
+    """)
+    return {"signals": rows, "count": len(rows)}
+
+
+@app.get("/api/discovery/domain/{domain}")
+async def get_discovery_by_domain(domain: str):
+    """Signals for a specific domain."""
+    rows = fetch_all("""
+        SELECT id, signal_type, domain, title, description, entities,
+               novelty_score, direction, magnitude, baseline, detail,
+               methodology_version, detected_at, acknowledged, published
+        FROM discovery_signals
+        WHERE domain = %s
+          AND detected_at >= NOW() - INTERVAL '7 days'
+        ORDER BY novelty_score DESC
+        LIMIT 50
+    """, (domain,))
+    return {"domain": domain, "signals": rows, "count": len(rows)}
+
+
+@app.get("/api/discovery/unacknowledged")
+async def get_discovery_unacknowledged():
+    """Signals not yet reviewed."""
+    rows = fetch_all("""
+        SELECT id, signal_type, domain, title, description, entities,
+               novelty_score, direction, magnitude, baseline, detail,
+               methodology_version, detected_at
+        FROM discovery_signals
+        WHERE acknowledged = FALSE
+        ORDER BY detected_at DESC
+        LIMIT 50
+    """)
+    return {"signals": rows, "count": len(rows)}
+
+
+@app.post("/api/admin/discovery/ack/{signal_id}")
+async def acknowledge_discovery_signal(signal_id: int, key: str = Query(default=None)):
+    """Mark a discovery signal as acknowledged. Requires admin key."""
+    admin_key = os.environ.get("ADMIN_KEY", "")
+    if not admin_key or key != admin_key:
+        raise HTTPException(status_code=401, detail="Unauthorized — provide ?key=YOUR_ADMIN_KEY")
+    execute("""
+        UPDATE discovery_signals SET acknowledged = TRUE WHERE id = %s
+    """, (signal_id,))
+    return {"status": "acknowledged", "id": signal_id}
+
 
 # =============================================================================
 

@@ -514,6 +514,13 @@ async def run_scoring_cycle():
     except Exception as e:
         logger.warning(f"Daily pulse generation failed: {e}")
 
+    # Run discovery layer after pulse
+    try:
+        from app.discovery import run_discovery_cycle
+        run_discovery_cycle()
+    except Exception as e:
+        logger.warning(f"Discovery cycle failed: {e}")
+
     return {
         "results": results,
         "successes": successes,
