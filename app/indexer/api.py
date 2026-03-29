@@ -177,19 +177,29 @@ def register_wallet_routes(app: FastAPI) -> None:
         current_wallet_version = WALLET_METHODOLOGY_VERSIONS["current"]
         pinned = check_methodology_version(methodology_version, current_version=current_wallet_version)
         addr = address.strip()
+
+        # Try unified cross-chain profile first
+        profile = fetch_one(
+            "SELECT * FROM wallet_graph.wallet_profiles WHERE address = %s",
+            (addr.lower(),),
+        )
+
+        # Fall back to single-chain lookup
         wallet = fetch_one(
             """
-            SELECT address, first_seen_at, last_indexed_at, total_stablecoin_value,
+            SELECT address, chain, first_seen_at, last_indexed_at, total_stablecoin_value,
                    size_tier, source, is_contract, label
             FROM wallet_graph.wallets
             WHERE address = %s
+            ORDER BY total_stablecoin_value DESC NULLS LAST
+            LIMIT 1
             """,
             (addr,),
         )
-        if not wallet:
+        if not wallet and not profile:
             raise HTTPException(status_code=404, detail="Wallet not found in index")
 
-        # Latest risk score
+        # Latest risk score (best chain)
         risk = fetch_one(
             """
             SELECT risk_score, risk_grade, concentration_hhi, concentration_grade,
@@ -205,29 +215,38 @@ def register_wallet_routes(app: FastAPI) -> None:
             (addr,),
         )
 
-        # Latest holdings
+        # Latest holdings (all chains)
         holdings = fetch_all(
             """
-            SELECT token_address, symbol, balance, value_usd,
+            SELECT token_address, symbol, chain, balance, value_usd,
                    is_scored, sii_score, sii_grade, pct_of_wallet, indexed_at
             FROM wallet_graph.wallet_holdings
             WHERE wallet_address = %s
-              AND indexed_at = (
-                  SELECT MAX(indexed_at) FROM wallet_graph.wallet_holdings
-                  WHERE wallet_address = %s
-              )
+              AND indexed_at > NOW() - INTERVAL '7 days'
             ORDER BY value_usd DESC
             """,
-            (addr, addr),
+            (addr,),
         )
 
-        return {
+        result = {
             "wallet": wallet,
             "risk": risk,
             "holdings": holdings,
             "methodology_version": current_wallet_version,
             "methodology_version_pinned": pinned,
         }
+
+        # Add cross-chain profile data if available
+        if profile:
+            result["cross_chain"] = {
+                "chains_active": profile.get("chains_active", []),
+                "total_value_all_chains": float(profile["total_value_all_chains"]) if profile.get("total_value_all_chains") else 0,
+                "holdings_by_chain": profile.get("holdings_by_chain", {}),
+                "edge_count_all_chains": profile.get("edge_count_all_chains", 0),
+                "risk_grade_aggregate": profile.get("risk_grade_aggregate"),
+            }
+
+        return result
 
     @app.get("/api/wallets/{address}/history")
     async def wallet_history(

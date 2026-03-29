@@ -2138,6 +2138,15 @@ async def admin_reindex_batch(request: Request, background_tasks: BackgroundTask
     return {"status": "started", "batch_size": batch_size}
 
 
+@app.post("/api/admin/rebuild-profiles")
+async def admin_rebuild_profiles(request: Request, background_tasks: BackgroundTasks):
+    """Rebuild unified cross-chain wallet profiles."""
+    _check_admin_key(request)
+    from app.indexer.profiles import rebuild_all_profiles
+    background_tasks.add_task(rebuild_all_profiles)
+    return {"status": "started"}
+
+
 @app.post("/api/admin/decay-edges")
 async def admin_decay_edges(request: Request):
     """Recalculate edge weights with time-decay multiplier."""

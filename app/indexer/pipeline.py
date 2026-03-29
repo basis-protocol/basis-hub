@@ -59,22 +59,22 @@ def _get_current_sii_scores() -> dict:
     }
 
 
-def _get_existing_wallets() -> set:
-    """Get all wallet addresses already in the graph."""
-    rows = fetch_all("SELECT address FROM wallet_graph.wallets")
+def _get_existing_wallets(chain: str = "ethereum") -> set:
+    """Get all wallet addresses already in the graph for a given chain."""
+    rows = fetch_all("SELECT address FROM wallet_graph.wallets WHERE chain = %s", (chain,))
     return {row["address"] for row in rows}
 
 
-def _store_wallet(address: str, source: str, label: str = None) -> None:
+def _store_wallet(address: str, source: str, label: str = None, chain: str = "ethereum") -> None:
     """Upsert a wallet into the wallets table."""
     execute(
         """
-        INSERT INTO wallet_graph.wallets (address, source, label, created_at, updated_at)
-        VALUES (%s, %s, %s, NOW(), NOW())
-        ON CONFLICT (address) DO UPDATE SET
+        INSERT INTO wallet_graph.wallets (address, chain, source, label, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (address, chain) DO UPDATE SET
             updated_at = NOW()
         """,
-        (address, source, label),
+        (address, chain, source, label),
     )
 
 
@@ -154,7 +154,7 @@ def _store_risk_score(wallet_address: str, risk: dict) -> None:
     )
 
 
-def _update_wallet_summary(wallet_address: str, total_value: float, size_tier: str) -> None:
+def _update_wallet_summary(wallet_address: str, total_value: float, size_tier: str, chain: str = "ethereum") -> None:
     """Update wallet summary fields after scoring."""
     execute(
         """
@@ -163,9 +163,9 @@ def _update_wallet_summary(wallet_address: str, total_value: float, size_tier: s
             total_stablecoin_value = %s,
             size_tier = %s,
             updated_at = NOW()
-        WHERE address = %s
+        WHERE address = %s AND chain = %s
         """,
-        (total_value, size_tier, wallet_address),
+        (total_value, size_tier, wallet_address, chain),
     )
 
 
