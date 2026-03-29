@@ -2274,6 +2274,11 @@ function WitnessView({ mobile, onSelectIssuer }) {
               }}>
                 {iss.collection_method === "nav_oracle" ? "on-chain" : (iss.collection_method || "—")}
               </span>
+              {iss.collection_method === "nav_oracle" && (
+                <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkLight, fontStyle: "italic", marginTop: 4 }}>
+                  Reserves verifiable on-chain — no attestation needed
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {mobile && <span style={{ fontSize: 10, color: T.inkLight, fontFamily: T.mono, marginRight: 2 }}>HASH:</span>}
@@ -2332,19 +2337,20 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
       + " " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
   };
 
-  const renderStructuredData = (sd) => {
-    if (!sd) return null;
-    const obj = typeof sd === "string" ? JSON.parse(sd) : sd;
-    return Object.entries(obj).map(([key, val]) => (
-      <div key={key} style={{
-        display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "2px 8px", padding: "6px 0",
-        borderBottom: `1px dotted ${T.ruleLight}`, fontSize: 12,
+  const renderDisplayFields = (fields) => {
+    if (!fields || fields.length === 0) return null;
+    return fields.map((f, i) => (
+      <div key={i} style={{
+        display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "2px 8px",
+        padding: "6px 0", borderBottom: `1px dotted ${T.ruleLight}`, fontSize: 12,
       }}>
-        <span style={{ fontFamily: T.sans, color: T.inkLight, textTransform: "capitalize" }}>
-          {key.replace(/_/g, " ")}
-        </span>
+        <span style={{ fontFamily: T.sans, color: T.inkLight }}>{f.label}</span>
         <span style={{ fontFamily: T.mono, color: T.ink }}>
-          {typeof val === "number" ? fmtB(val) : String(val)}
+          {f.type === "currency" ? `$${fmtB(f.value)}` :
+           f.type === "percent" ? `${f.value}%` :
+           f.type === "ratio" ? `${f.value}\u00d7` :
+           f.type === "number" ? fmtB(f.value) :
+           String(f.value)}
         </span>
       </div>
     ));
@@ -2402,16 +2408,14 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
       <div style={{ border: `1px solid ${T.ruleMid}` }}>
         {!mobile && (
           <div style={{
-            display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 0.8fr 0.6fr",
+            display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr",
             padding: "10px 16px", borderBottom: `1px solid ${T.ruleMid}`,
             fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase",
             letterSpacing: 1, fontFamily: T.mono,
           }}>
             <span>Date</span>
-            <span>Source</span>
-            <span>Vendor</span>
-            <span>Confidence</span>
-            <span>Warnings</span>
+            <span>Type</span>
+            <span>Quality</span>
           </div>
         )}
         {attestations.length === 0 && (
@@ -2421,8 +2425,10 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
         )}
         {attestations.map((att, i) => {
           const isExpanded = expanded === i;
-          const warningCount = att.extraction_warnings ? (Array.isArray(att.extraction_warnings) ? att.extraction_warnings.length : 1) : 0;
-          const confidence = att.confidence_score != null ? `${Math.round(att.confidence_score * 100)}%` : "—";
+          const sourceLabel = att.source_type === "pdf_attestation" ? "PDF Report" :
+            att.source_type === "transparency_page" ? "Web Page" :
+            att.source_type === "research" ? "Research" :
+            att.source_type || "—";
           return (
             <div key={i}>
               <div
@@ -2430,7 +2436,7 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
                 style={{
                   display: mobile ? "flex" : "grid",
                   flexDirection: mobile ? "column" : undefined,
-                  gridTemplateColumns: mobile ? undefined : "1.5fr 1fr 1fr 0.8fr 0.6fr",
+                  gridTemplateColumns: mobile ? undefined : "1.5fr 1fr 1fr",
                   padding: mobile ? "12px 12px" : "12px 16px",
                   borderBottom: (i < attestations.length - 1 || isExpanded) ? `1px dotted ${T.ruleMid}` : "none",
                   cursor: "pointer",
@@ -2447,16 +2453,17 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
                   {fmtDate(att.extracted_at)}
                 </span>
                 <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
-                  {att.source_type || att.extraction_method || "—"}
+                  {mobile && <span style={{ fontSize: 10, color: T.inkLight, marginRight: 6 }}>TYPE:</span>}
+                  {sourceLabel}
                 </span>
-                <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
-                  {att.extraction_vendor || "—"}
-                </span>
-                <span style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
-                  {confidence}
-                </span>
-                <span style={{ fontFamily: T.mono, fontSize: 12, color: warningCount > 0 ? T.accent : T.inkFaint }}>
-                  {warningCount > 0 ? warningCount : "—"}
+                <span style={{
+                  fontFamily: T.mono, fontSize: 11,
+                  color: att.quality === "full" ? "#2d7a3a" :
+                         att.quality === "partial" ? T.inkMid :
+                         T.inkFaint,
+                }}>
+                  {mobile && <span style={{ fontSize: 10, color: T.inkLight, marginRight: 6 }}>QUALITY:</span>}
+                  {att.quality_label || "—"}
                 </span>
               </div>
               {isExpanded && (
@@ -2465,14 +2472,19 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
                   background: T.paperWarm,
                   borderBottom: i < attestations.length - 1 ? `1px dotted ${T.ruleMid}` : "none",
                 }}>
-                  {att.structured_data && (
+                  {att.display_fields && att.display_fields.length > 0 && (
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8, fontFamily: T.mono }}>
-                        STRUCTURED DATA
+                        RESERVE DATA
                       </div>
                       <div style={{ border: `1px solid ${T.ruleLight}`, padding: "8px 12px" }}>
-                        {renderStructuredData(att.structured_data)}
+                        {renderDisplayFields(att.display_fields)}
                       </div>
+                    </div>
+                  )}
+                  {att.quality === "metadata" && (
+                    <div style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint, fontStyle: "italic", marginBottom: 12 }}>
+                      Page was scraped but no structured reserve data could be extracted. View the source document directly.
                     </div>
                   )}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

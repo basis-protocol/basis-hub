@@ -2182,6 +2182,71 @@ async def cda_issuers():
 
 
 @app.get("/api/cda/issuers/{symbol}/latest")
+def _classify_attestation_quality(att: dict) -> dict:
+    """Add human-readable quality classification to an attestation."""
+    sd = att.get("structured_data")
+    if not sd:
+        att["quality"] = "empty"
+        att["quality_label"] = "No data extracted"
+        att["display_fields"] = []
+        return att
+
+    if isinstance(sd, str):
+        import json as _j
+        try:
+            sd = _j.loads(sd)
+        except Exception:
+            att["quality"] = "empty"
+            att["quality_label"] = "Parse error"
+            att["display_fields"] = []
+            return att
+
+    has_reserves = sd.get("total_reserves_usd") is not None
+    has_supply = sd.get("total_supply") is not None
+    has_date = sd.get("attestation_date") is not None
+    has_auditor = sd.get("auditor") or sd.get("auditor_name")
+    has_composition = sd.get("reserve_composition") or sd.get("cash_pct") or sd.get("tbills_pct")
+
+    display = []
+    if has_reserves:
+        display.append({"label": "Total Reserves", "value": sd["total_reserves_usd"], "type": "currency"})
+    if has_supply:
+        display.append({"label": "Total Supply", "value": sd["total_supply"], "type": "number"})
+    if has_reserves and has_supply:
+        try:
+            ratio = float(sd["total_reserves_usd"]) / float(sd["total_supply"])
+            display.append({"label": "Reserve Ratio", "value": round(ratio, 4), "type": "ratio"})
+        except (ValueError, ZeroDivisionError, TypeError):
+            pass
+    if has_date:
+        display.append({"label": "Report Date", "value": sd["attestation_date"], "type": "text"})
+    if has_auditor:
+        display.append({"label": "Auditor", "value": sd.get("auditor") or sd.get("auditor_name"), "type": "text"})
+    if has_composition:
+        comp = sd.get("reserve_composition", {})
+        if isinstance(comp, dict):
+            for k, v in comp.items():
+                if v is not None:
+                    label = k.replace("_pct", "").replace("_", " ").title()
+                    display.append({"label": label, "value": v, "type": "percent"})
+
+    if has_reserves or (has_date and has_auditor):
+        att["quality"] = "full"
+        att["quality_label"] = "Reserve attestation"
+    elif has_date or has_auditor:
+        att["quality"] = "partial"
+        att["quality_label"] = "Partial data"
+    elif sd.get("content_length") or sd.get("excerpt_count"):
+        att["quality"] = "metadata"
+        att["quality_label"] = "Page scraped — no reserve data extracted"
+    else:
+        att["quality"] = "minimal"
+        att["quality_label"] = "Minimal data"
+
+    att["display_fields"] = display
+    return att
+
+
 async def cda_issuer_latest(symbol: str):
     """Most recent attestation for a specific issuer, with evidence hash."""
     import hashlib
@@ -2218,7 +2283,7 @@ async def cda_issuer_latest(symbol: str):
     evidence_hash = '0x' + hashlib.sha256(raw_data.encode()).hexdigest()
     attestation["evidence_hash"] = evidence_hash
 
-    return attestation
+    return _classify_attestation_quality(attestation)
 
 
 @app.get("/api/cda/issuers/{symbol}/history")
@@ -2248,6 +2313,8 @@ async def cda_issuer_history(symbol: str, days: int = Query(default=90, ge=1, le
             "extraction_warnings": r.get("extraction_warnings"),
             "extracted_at": r["extracted_at"].isoformat() if r.get("extracted_at") else None,
         })
+
+    attestations = [_classify_attestation_quality(a) for a in attestations]
 
     return {
         "asset": symbol.upper(),
