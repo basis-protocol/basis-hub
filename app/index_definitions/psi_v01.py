@@ -130,6 +130,6 @@ PSI_V01_DEFINITION = {
 }
 
 TARGET_PROTOCOLS = [
-    "aave", "lido", "eigenlayer", "maker", "compound-finance",
+    "aave", "lido", "eigenlayer", "sky", "compound-finance",
     "uniswap", "curve-finance", "morpho", "spark", "convex-finance",
 ]

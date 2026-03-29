@@ -2121,6 +2121,16 @@ async def cda_attestations(asset_symbol: str):
     return {"asset": asset_symbol.upper(), "extractions": rows}
 
 
+@app.post("/api/admin/reindex")
+async def admin_reindex_batch(request: Request, batch_size: int = Query(default=500)):
+    """Run one batch of wallet re-indexing. Call externally via cron."""
+    _check_admin_key(request)
+    import asyncio as _asyncio
+    from app.indexer.pipeline import run_pipeline_batch
+    result = await _asyncio.to_thread(run_pipeline_batch, batch_size)
+    return result
+
+
 @app.post("/api/admin/collect-cda")
 async def trigger_cda_collection(key: str = Query(default=None)):
     """Manually trigger CDA collection pipeline. Requires admin key."""

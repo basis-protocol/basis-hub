@@ -101,11 +101,9 @@ def run_worker_loop():
 
     from app.worker import run_scoring_cycle
 
-    indexer_interval_hours = int(os.environ.get("INDEXER_INTERVAL_HOURS", "24"))
-    last_indexed_at = time.time()  # treat startup as last index time
-
     cda_interval_hours = int(os.environ.get("CDA_COLLECTION_INTERVAL_HOURS", "24"))
     last_cda_at = 0  # Run CDA on first cycle
+    edge_cycle_counter = 0
 
     while True:
         # CDA collection before scoring so fresh off-chain data is available
@@ -126,6 +124,8 @@ def run_worker_loop():
             logger.error(f"Worker cycle error: {e}")
 
         # PSI scoring — uses DeFiLlama only, no explorer API budget
+        # Sleep to avoid API contention with SII cycle
+        time.sleep(60)
         try:
             from app.collectors.psi_collector import run_psi_scoring
             logger.info("Running PSI scoring cycle...")
@@ -143,39 +143,9 @@ def run_worker_loop():
         except Exception as e:
             logger.error(f"Agent cycle error: {e}")
 
-        # Periodic wallet re-indexing (default every 24h, tunable via INDEXER_INTERVAL_HOURS)
-        hours_since_index = (time.time() - last_indexed_at) / 3600
-        if hours_since_index >= indexer_interval_hours:
-            try:
-                logger.info(f"Scheduled wallet re-indexing ({hours_since_index:.1f}h since last run)...")
-                from app.indexer.pipeline import run_pipeline
-                asyncio.run(run_pipeline())
-                last_indexed_at = time.time()
-                logger.info("Scheduled wallet re-indexing complete")
-            except Exception as e:
-                logger.warning(f"Scheduled wallet re-indexing failed: {e}")
-
-            # Wallet expansion — seed new wallets until we hit 100K
-            try:
-                from app.database import fetch_one
-                wallet_count = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallets")
-                current_count = wallet_count["cnt"] if wallet_count else 0
-
-                if current_count < 100_000:
-                    from app.indexer.expander import run_wallet_expansion
-                    max_calls = min(20_000, (100_000 - current_count) * 2)
-                    logger.info(f"Wallet expansion: {current_count} wallets, target 100K, budget {max_calls} calls")
-                    expansion_result = asyncio.run(run_wallet_expansion(max_etherscan_calls=max_calls))
-                    logger.info(
-                        f"Wallet expansion: {expansion_result.get('new_wallets_seeded', 0)} new wallets, "
-                        f"{expansion_result.get('etherscan_calls_used', 0)} API calls"
-                    )
-                else:
-                    logger.info(f"Wallet expansion: {current_count} wallets — at or above 100K target, skipping")
-            except Exception as e:
-                logger.warning(f"Wallet expansion failed: {e}")
-
-            # Edge building — build transfer edges for unbuilt wallets
+        # Edge building — run every 10th cycle (~10 hours)
+        edge_cycle_counter += 1
+        if edge_cycle_counter % 10 == 0:
             try:
                 from app.indexer.edges import run_edge_builder
                 logger.info("Running edge builder (top 200 unbuilt wallets by value)...")

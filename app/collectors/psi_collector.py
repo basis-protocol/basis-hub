@@ -24,7 +24,7 @@ def fetch_protocol_data(slug):
     """Fetch protocol data from DeFiLlama."""
     time.sleep(1)  # rate limit
     try:
-        resp = requests.get(f"{DEFILLAMA_BASE}/protocol/{slug}", timeout=15)
+        resp = requests.get(f"{DEFILLAMA_BASE}/protocol/{slug}", timeout=45)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -36,7 +36,7 @@ def fetch_fees_data(slug):
     """Fetch fee/revenue data from DeFiLlama."""
     time.sleep(1)
     try:
-        resp = requests.get(f"{DEFILLAMA_BASE}/summary/fees/{slug}", timeout=15)
+        resp = requests.get(f"{DEFILLAMA_BASE}/summary/fees/{slug}", timeout=45)
         if resp.status_code == 200:
             return resp.json()
     except Exception:

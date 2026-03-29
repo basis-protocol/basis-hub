@@ -561,6 +561,107 @@ async def index_wallet(
     }
 
 
+def run_pipeline_batch(batch_size: int = 500) -> dict:
+    """
+    Incremental batch re-indexing: scan + score the oldest `batch_size` wallets.
+
+    Unlike run_pipeline(), this does NOT seed new wallets or run discovery.
+    It processes wallets already in the graph that haven't been re-indexed recently.
+    Designed to be called externally via cron (every 30 min) so container restarts
+    don't lose progress.
+
+    Returns:
+        Summary dict with processed/remaining counts.
+    """
+    if BLOCK_EXPLORER_PROVIDER == "etherscan":
+        api_key = os.environ.get("ETHERSCAN_API_KEY", "")
+    else:
+        api_key = os.environ.get("BLOCKSCOUT_API_KEY", "")
+
+    if not api_key:
+        return {"error": "API key not set", "processed": 0}
+
+    started_at = datetime.now(timezone.utc)
+    logger.info(f"=== Wallet Batch Re-index Starting (batch_size={batch_size}) ===")
+
+    # Find the oldest wallets (not indexed in last 24h)
+    stale_rows = fetch_all("""
+        SELECT address FROM wallet_graph.wallets
+        WHERE last_indexed_at IS NULL
+           OR last_indexed_at < NOW() - INTERVAL '24 hours'
+        ORDER BY last_indexed_at ASC NULLS FIRST
+        LIMIT %s
+    """, (batch_size,))
+    wallet_list = [r["address"] for r in stale_rows]
+
+    if not wallet_list:
+        return {"processed": 0, "remaining": 0, "message": "All wallets fresh"}
+
+    # Count total remaining for reporting
+    remaining_row = fetch_one("""
+        SELECT COUNT(*) AS cnt FROM wallet_graph.wallets
+        WHERE last_indexed_at IS NULL
+           OR last_indexed_at < NOW() - INTERVAL '24 hours'
+    """)
+    total_remaining = remaining_row["cnt"] if remaining_row else 0
+
+    logger.info(f"Batch: {len(wallet_list)} wallets to process, {total_remaining} total stale")
+
+    sii_scores = _get_current_sii_scores()
+    indexed = 0
+    scored = 0
+    errors = 0
+
+    async def _scan_and_score():
+        nonlocal indexed, scored, errors
+        async with httpx.AsyncClient() as client:
+            all_holdings, failures, _ = await batch_scan_all_holdings(
+                client, wallet_list, api_key, sii_scores
+            )
+
+            for addr in wallet_list:
+                try:
+                    addr_lower = addr.lower()
+                    holdings = all_holdings.get(addr_lower, [])
+
+                    if not holdings:
+                        _update_wallet_summary(addr, 0, "retail")
+                        indexed += 1
+                        continue
+
+                    risk = compute_wallet_risk(holdings)
+                    if not risk:
+                        _update_wallet_summary(addr, 0, "retail")
+                        indexed += 1
+                        continue
+
+                    _store_holdings(addr, holdings)
+                    _store_risk_score(addr, risk)
+                    _update_wallet_summary(addr, risk["total_stablecoin_value"], risk["size_tier"])
+                    _track_unscored_holdings(holdings)
+                    indexed += 1
+                    scored += 1
+                except Exception as e:
+                    logger.warning(f"Batch error for {addr}: {e}")
+                    errors += 1
+
+    asyncio.run(_scan_and_score())
+
+    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+    logger.info(
+        f"Batch complete: {indexed} indexed, {scored} scored, "
+        f"{errors} errors in {elapsed:.0f}s"
+    )
+
+    return {
+        "processed": indexed,
+        "scored": scored,
+        "errors": errors,
+        "remaining": total_remaining - indexed,
+        "elapsed_seconds": round(elapsed, 1),
+    }
+
+
 async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False) -> dict:
     """
     Full pipeline run: seed → scan → score → store → backlog update.
