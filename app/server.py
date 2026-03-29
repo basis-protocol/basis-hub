@@ -8,6 +8,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import time
 import uuid as uuid_mod
 from datetime import datetime, timezone, timedelta
@@ -2834,7 +2835,262 @@ async def trigger_daily_cycle(request: Request):
 
 
 # =============================================================================
-# SPA Catch-All — registered at end of startup so dynamic routes take priority
+# SPA Catch-All + SSR helpers for bot / AI visibility
+# =============================================================================
+
+CANONICAL_BASE_URL = os.environ.get("CANONICAL_BASE_URL", "https://basisprotocol.xyz").rstrip("/")
+
+class _DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super().default(obj)
+
+BOT_UA_PATTERN = re.compile(
+    r"(bot|crawl|spider|slurp|Googlebot|Bingbot|DuckDuckBot|Baiduspider|YandexBot"
+    r"|facebookexternalhit|Twitterbot|LinkedInBot|Discordbot"
+    r"|ChatGPT|GPTBot|Claude|ClaudeBot|Anthropic|PerplexityBot|Perplexity"
+    r"|Cohere|cohere-ai|Google-Extended|CCBot|amazonbot"
+    r"|python-requests|httpx|axios|curl|wget|fetch|Go-http-client"
+    r"|Applebot|ia_archiver|archive\.org_bot)",
+    re.IGNORECASE
+)
+
+def _is_bot(request) -> bool:
+    ua = request.headers.get("user-agent", "")
+    if BOT_UA_PATTERN.search(ua):
+        return True
+    if not ua or len(ua) < 10:
+        return True
+    accept = request.headers.get("accept", "")
+    if "application/json" in accept and "text/html" not in accept:
+        return True
+    return False
+
+def _render_rankings_html() -> str:
+    """Server-rendered rankings page for bots and AI assistants."""
+    rows = fetch_all("""
+        SELECT s.*, st.name, st.symbol, st.issuer
+        FROM scores s
+        JOIN stablecoins st ON st.id = s.stablecoin_id
+        ORDER BY s.overall_score DESC
+    """)
+
+    json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": "Basis Protocol — Stablecoin Integrity Index",
+        "description": "Standardized risk scores for on-chain stablecoins. SII measures 102 data points across 7 categories.",
+        "url": f"{CANONICAL_BASE_URL}/",
+        "dateModified": datetime.now(timezone.utc).isoformat(),
+        "creator": {"@type": "Organization", "name": "Basis Protocol", "url": CANONICAL_BASE_URL},
+        "hasPart": []
+    }
+
+    score_rows_html = ""
+    for row in rows:
+        symbol = (row.get("symbol") or row.get("stablecoin_id", "")).upper()
+        name = row.get("name") or row.get("issuer") or symbol
+        issuer = row.get("issuer") or ""
+        score = row.get("overall_score", 0)
+        grade = row.get("grade", "—")
+        price = row.get("current_price")
+        price_str = f"${float(price):.4f}" if price else "—"
+        peg = row.get("peg_score") or "—"
+        liq = row.get("liquidity_score") or "—"
+        flow = row.get("mint_burn_score") or "—"
+        dist = row.get("distribution_score") or "—"
+        struct = row.get("structural_score") or "—"
+
+        score_rows_html += f"""
+        <tr>
+            <td><strong>{symbol}</strong><br><span class="sub">{issuer}</span></td>
+            <td class="num">{float(score):.1f}</td>
+            <td class="grade">{grade}</td>
+            <td class="num">{price_str}</td>
+            <td class="num">{peg}</td>
+            <td class="num">{liq}</td>
+            <td class="num">{flow}</td>
+            <td class="num">{dist}</td>
+            <td class="num">{struct}</td>
+        </tr>"""
+
+        json_ld["hasPart"].append({
+            "@type": "FinancialProduct",
+            "name": f"{symbol} Stablecoin Integrity Index",
+            "additionalProperty": [
+                {"@type": "PropertyValue", "name": "sii_score", "value": float(score)},
+                {"@type": "PropertyValue", "name": "grade", "value": grade},
+            ]
+        })
+
+    json_ld_str = json.dumps(json_ld, cls=_DecimalEncoder)
+    count = len(rows)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Basis Protocol — Stablecoin Integrity Index</title>
+    <meta name="description" content="Standardized risk scores for {count} on-chain stablecoins. Updated hourly. SII measures 102 data points across 7 categories.">
+    <meta property="og:title" content="Basis Protocol — Stablecoin Integrity Index">
+    <meta property="og:description" content="Live SII scores for {count} stablecoins. Deterministic methodology. Updated hourly.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{CANONICAL_BASE_URL}/">
+    <link rel="canonical" href="{CANONICAL_BASE_URL}/">
+    <link rel="alternate" type="application/json" href="{CANONICAL_BASE_URL}/api/scores">
+    <script type="application/ld+json">{json_ld_str}</script>
+    <style>
+        body {{ font-family: 'Georgia', serif; max-width: 960px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+        h1 {{ font-size: 1.6rem; font-weight: 400; margin-bottom: 4px; }}
+        .meta {{ font-family: monospace; font-size: 0.75rem; color: #6a6a6a; margin-bottom: 24px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+        th {{ text-align: left; padding: 8px; border-bottom: 2px solid #0B090A; font-family: monospace; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #6a6a6a; }}
+        td {{ padding: 8px; border-bottom: 1px dotted #ccc; }}
+        .num {{ font-family: monospace; text-align: right; }}
+        .grade {{ font-weight: 700; font-size: 1rem; }}
+        .sub {{ font-size: 0.75rem; color: #6a6a6a; }}
+        nav {{ margin-bottom: 24px; font-family: monospace; font-size: 0.8rem; }}
+        nav a {{ color: #0B090A; margin-right: 16px; text-decoration: none; }}
+        footer {{ margin-top: 32px; font-family: monospace; font-size: 0.75rem; color: #6a6a6a; border-top: 1px solid #ccc; padding-top: 12px; }}
+    </style>
+</head>
+<body>
+    <h1>Basis Protocol</h1>
+    <p class="meta">Stablecoin Integrity Index · {count} stablecoins · Updated hourly · {ts}</p>
+    <nav>
+        <a href="/">Rankings</a>
+        <a href="/witness">Witness</a>
+        <a href="/developers">API</a>
+    </nav>
+    <table>
+        <thead>
+            <tr>
+                <th>Stablecoin</th>
+                <th class="num">SII</th>
+                <th>Grade</th>
+                <th class="num">Price</th>
+                <th class="num">Peg</th>
+                <th class="num">Liq</th>
+                <th class="num">Flow</th>
+                <th class="num">Dist</th>
+                <th class="num">Struct</th>
+            </tr>
+        </thead>
+        <tbody>
+            {score_rows_html}
+        </tbody>
+    </table>
+    <footer>
+        <p>Basis Protocol · basisprotocol.xyz · SII v1.0.0 · Methodology: deterministic, version-controlled, open</p>
+        <p>API: <a href="/api/scores">/api/scores</a> · <a href="/api/cda/issuers">/api/cda/issuers</a> · <a href="/developers">Developer docs</a></p>
+    </footer>
+</body>
+</html>"""
+
+def _render_witness_html() -> str:
+    """Server-rendered witness page for bots and AI assistants."""
+    rows = fetch_all("""
+        SELECT r.asset_symbol, r.issuer_name, r.transparency_url,
+               r.collection_method, r.created_at,
+               (
+                   SELECT MAX(e.extracted_at)
+                   FROM cda_vendor_extractions e
+                   WHERE e.asset_symbol = r.asset_symbol
+               ) AS last_attestation
+        FROM cda_issuer_registry r
+        WHERE r.is_active = TRUE
+        ORDER BY last_attestation DESC NULLS LAST, r.asset_symbol
+    """)
+
+    total_attestations = fetch_one("SELECT COUNT(*) as cnt FROM cda_vendor_extractions")
+    att_count = total_attestations["cnt"] if total_attestations else 0
+
+    json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": "Basis Witness — Stablecoin Issuer Disclosure Archive",
+        "description": f"Structured, timestamped, hash-verified archive of stablecoin issuer disclosures. {len(rows)} issuers tracked. {att_count} attestations archived.",
+        "url": f"{CANONICAL_BASE_URL}/witness",
+        "dateModified": datetime.now(timezone.utc).isoformat(),
+        "creator": {"@type": "Organization", "name": "Basis Protocol", "url": CANONICAL_BASE_URL},
+    }
+    json_ld_str = json.dumps(json_ld, cls=_DecimalEncoder)
+
+    issuer_rows_html = ""
+    for r in rows:
+        symbol = r.get("asset_symbol", "")
+        issuer = r.get("issuer_name", "")
+        method = r.get("collection_method", "")
+        method_display = "on-chain" if method == "nav_oracle" else method
+        last = r["last_attestation"].strftime("%Y-%m-%d %H:%M UTC") if r.get("last_attestation") else "—"
+
+        issuer_rows_html += f"""
+        <tr>
+            <td><strong>{issuer}</strong> <span class="sub">{symbol}</span></td>
+            <td class="num">{last}</td>
+            <td>{method_display}</td>
+        </tr>"""
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Basis Witness — Stablecoin Disclosure Archive | Basis Protocol</title>
+    <meta name="description" content="Structured, timestamped, hash-verified archive of stablecoin issuer disclosures. {len(rows)} issuers tracked. {att_count} attestations archived.">
+    <meta property="og:title" content="Basis Witness — Stablecoin Disclosure Archive">
+    <meta property="og:description" content="{len(rows)} issuers tracked. {att_count} attestations archived. Updated daily.">
+    <meta property="og:type" content="website">
+    <link rel="canonical" href="{CANONICAL_BASE_URL}/witness">
+    <link rel="alternate" type="application/json" href="{CANONICAL_BASE_URL}/api/cda/issuers">
+    <script type="application/ld+json">{json_ld_str}</script>
+    <style>
+        body {{ font-family: 'Georgia', serif; max-width: 960px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+        h1 {{ font-size: 1.6rem; font-weight: 400; margin-bottom: 4px; }}
+        .meta {{ font-family: monospace; font-size: 0.75rem; color: #6a6a6a; margin-bottom: 24px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+        th {{ text-align: left; padding: 8px; border-bottom: 2px solid #0B090A; font-family: monospace; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #6a6a6a; }}
+        td {{ padding: 8px; border-bottom: 1px dotted #ccc; }}
+        .num {{ font-family: monospace; }}
+        .sub {{ font-size: 0.75rem; color: #6a6a6a; }}
+        nav {{ margin-bottom: 24px; font-family: monospace; font-size: 0.8rem; }}
+        nav a {{ color: #0B090A; margin-right: 16px; text-decoration: none; }}
+        footer {{ margin-top: 32px; font-family: monospace; font-size: 0.75rem; color: #6a6a6a; border-top: 1px solid #ccc; padding-top: 12px; }}
+    </style>
+</head>
+<body>
+    <h1>Basis Witness</h1>
+    <p class="meta">Stablecoin Issuer Disclosure Archive · {len(rows)} issuers · {att_count} attestations · Updated daily · {ts}</p>
+    <nav>
+        <a href="/">Rankings</a>
+        <a href="/witness">Witness</a>
+        <a href="/developers">API</a>
+    </nav>
+    <p>Structured, timestamped, hash-verified archive of stablecoin issuer disclosures. Basis does not modify source documents.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Issuer</th>
+                <th class="num">Last Attestation</th>
+                <th>Method</th>
+            </tr>
+        </thead>
+        <tbody>
+            {issuer_rows_html}
+        </tbody>
+    </table>
+    <footer>
+        <p>Basis Protocol · basisprotocol.xyz · Witness is the disclosure primitive in the Basis Protocol stack.</p>
+        <p>API: <a href="/api/cda/issuers">/api/cda/issuers</a> · <a href="/api/cda/coverage">/api/cda/coverage</a> · <a href="/developers">Developer docs</a></p>
+    </footer>
+</body>
+</html>"""
+
 # =============================================================================
 
 def _register_spa_catch_all(app_instance):
@@ -2843,6 +3099,24 @@ def _register_spa_catch_all(app_instance):
     async def serve_spa(request: Request, full_path: str):
         if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi") or full_path.startswith("admin") or full_path.startswith("developers"):
             raise HTTPException(status_code=404, detail="Not found")
+
+        # Serve server-rendered HTML for bots/AI on key routes
+        if _is_bot(request):
+            try:
+                if full_path in ("", "/"):
+                    return HTMLResponse(
+                        content=_render_rankings_html(),
+                        headers={"Cache-Control": "public, max-age=300", "Basis-URL-Stability": "permanent"}
+                    )
+                elif full_path == "witness":
+                    return HTMLResponse(
+                        content=_render_witness_html(),
+                        headers={"Cache-Control": "public, max-age=300", "Basis-URL-Stability": "permanent"}
+                    )
+            except Exception as e:
+                logger.warning(f"SSR render failed for /{full_path}: {e}")
+                # Fall through to SPA
+
         index_path = os.path.join(FRONTEND_DIR, "index.html")
         if os.path.exists(index_path):
             return FileResponse(index_path, headers={"Cache-Control": "no-cache"})

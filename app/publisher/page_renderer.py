@@ -233,7 +233,10 @@ def register_page_routes(app: FastAPI) -> None:
     @app.get("/sitemap.xml")
     async def sitemap_xml():
         """Dynamic XML sitemap of all published entities."""
-        urls = []
+        urls = [
+            f"{CANONICAL_BASE_URL}/",
+            f"{CANONICAL_BASE_URL}/witness",
+        ]
 
         # Active stablecoins
         try:
@@ -294,6 +297,8 @@ def register_page_routes(app: FastAPI) -> None:
         """Robots.txt with sitemap reference."""
         content = (
             "User-agent: *\n"
+            "Allow: /\n"
+            "Allow: /witness\n"
             "Allow: /wallet/\n"
             "Allow: /asset/\n"
             "Allow: /assessment/\n"

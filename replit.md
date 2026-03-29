@@ -95,6 +95,14 @@ API endpoints remain at `/api/*`. No CORS issues since same domain.
 Command: `python main.py`
 
 ## Recent Changes
+- 2026-03-29: SSR for AI/bot visibility (H4)
+  - Added `_is_bot()` helper in server.py — detects GPTBot, Googlebot, Perplexity, Claude, curl, etc. by UA pattern, missing UA, or JSON-only Accept header
+  - Added `_render_rankings_html()` — full HTML page with live SII scores + Schema.org Dataset JSON-LD (14 stablecoins, grade, sub-scores)
+  - Added `_render_witness_html()` — full HTML page with issuer disclosure archive + Schema.org Dataset JSON-LD (14 issuers, 80 attestations)
+  - Modified `_register_spa_catch_all` to serve SSR HTML to bots on `/` and `/witness`; browsers still get React SPA
+  - Updated robots.txt: added `Allow: /` and `Allow: /witness` before wallet/asset rules
+  - Updated sitemap.xml: root and witness URLs prepended to URL list
+  - `CANONICAL_BASE_URL` and `_DecimalEncoder` added to server.py
 - 2026-03-10: Complete frontend redesign — "regulatory disclosure document" aesthetic
   - Replaced dark theme with warm off-white (#f5f2ec) paper background
   - Typography: IBM Plex Mono (numbers/scores) + IBM Plex Sans (prose/headers)
