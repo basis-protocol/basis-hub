@@ -1798,7 +1798,7 @@ function PulseView({ mobile }) {
         }}>
           {[
             { label: "Tracked", value: fmtB(net.total_tracked_usd) },
-            { label: "Wallets", value: net.wallets_indexed != null ? net.wallets_indexed.toLocaleString() : "—" },
+            { label: "Wallets", value: net.wallets_active != null ? net.wallets_active.toLocaleString() : (net.wallets_scored != null ? net.wallets_scored.toLocaleString() : "—") },
             { label: "Avg Risk", value: net.avg_risk_score != null ? fmt(net.avg_risk_score, 1) : "—" },
             { label: "Stablecoins", value: net.stablecoins_scored || scores.length || "—" },
             { label: "Events 24h", value: events.total || 0 },
