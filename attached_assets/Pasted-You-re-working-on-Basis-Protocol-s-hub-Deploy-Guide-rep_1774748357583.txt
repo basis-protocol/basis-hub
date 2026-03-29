@@ -1,0 +1,121 @@
+You're working on Basis Protocol's hub (Deploy-Guide repo). Read AGENTS.md and CLAUDE.md first.
+
+PROBLEM
+
+The Daily Pulse page at basisprotocol.xyz/pulse shows incorrect data:
+
+1. AVG RISK displays 0.0
+2. WALLETS displays 44,697 (total ever discovered, not actively scored)
+3. EVENTS 24H shows 200 events, all classified as "silent"
+
+ROOT CAUSE ANALYSIS
+
+Bug 1: AVG RISK = 0.0
+
+The pulse generator (app/pulse_generator.py, lines 71-77) runs:
+
+SELECT COUNT(DISTINCT wallet_address) as wallets_scored,
+       COALESCE(AVG(risk_score), 0) as avg_risk_score
+FROM wallet_graph.wallet_risk_scores
+WHERE computed_at > NOW() - INTERVAL '48 hours'
+
+The risk_score column is NULL when a wallet has zero scored holdings (app/indexer/scorer.py, lines 47-56). If is_scored is false for all holdings, risk_score stays NULL. AVG of all NULLs = NULL, then COALESCE(NULL, 0) = 0.
+
+DIAGNOSTIC — RUN THESE FIRST:
+
+SELECT is_scored, COUNT(*) FROM wallet_graph.wallet_holdings GROUP BY is_scored;
+
+SELECT COUNT(*) as total, COUNT(risk_score) as non_null, COUNT(*) - COUNT(risk_score) as null_scores
+FROM wallet_graph.wallet_risk_scores
+WHERE computed_at > NOW() - INTERVAL '48 hours';
+
+SELECT stablecoin_id, symbol, contract FROM stablecoins WHERE contract IS NOT NULL AND contract != '';
+
+SELECT COUNT(*), MIN(computed_at), MAX(computed_at) FROM wallet_graph.wallet_risk_scores;
+
+Two possible scenarios:
+
+Scenario A — rows exist but risk_score is NULL: The scanner finds holdings and marks is_scored=true, but sii_score is NULL even when is_scored=true. This means the scores table stablecoin_id values don't match what get_all_known_contracts() returns. Check app/indexer/config.py line 21 — it keys by contract address, and the stablecoin_id comes from STABLECOIN_REGISTRY. Then in scanner.py line 142-143, it does sii_scores.get(sid) where sii_scores comes from _get_current_sii_scores() which keys by stablecoin_id from the scores table. If those IDs don't match, sii_score stays None even though is_scored is True.
+
+Scenario B — no recent rows at all: The re-indexing pipeline in main.py (lines 146-156) runs app/indexer/pipeline.run_pipeline() every 24h. Check Replit logs for "Scheduled wallet re-indexing" messages. If it's erroring silently, wallet_risk_scores never gets populated.
+
+FIX for app/pulse_generator.py
+
+Replace the wallet stats section (lines 70-85) with:
+
+    wallet_stats = fetch_one("""
+        SELECT
+            COUNT(*) as wallets_scored,
+            AVG(risk_score) as avg_risk_score
+        FROM (
+            SELECT DISTINCT ON (wallet_address) wallet_address, risk_score
+            FROM wallet_graph.wallet_risk_scores
+            WHERE risk_score IS NOT NULL
+            ORDER BY wallet_address, computed_at DESC
+        ) latest
+    """)
+
+    wallets_total = fetch_one("SELECT COUNT(*) as count FROM wallet_graph.wallets")
+
+    wallets_active = fetch_one("""
+        SELECT COUNT(DISTINCT wallet_address) as count
+        FROM wallet_graph.wallet_risk_scores
+        WHERE risk_score IS NOT NULL AND computed_at > NOW() - INTERVAL '7 days'
+    """)
+
+    wallet_value = fetch_one("""
+        SELECT COALESCE(SUM(total_stablecoin_value), 0) as total_tracked
+        FROM wallet_graph.wallets
+        WHERE total_stablecoin_value > 0
+    """)
+
+Then update the network_state assembly (around line 153):
+
+    "network_state": {
+        "wallets_indexed": wallets_total.get("count", 0) if wallets_total else 0,
+        "wallets_scored": wallet_stats.get("wallets_scored", 0) if wallet_stats else 0,
+        "wallets_active": wallets_active.get("count", 0) if wallets_active else 0,
+        "total_tracked_usd": float(wallet_value.get("total_tracked", 0)) if wallet_value else 0,
+        "avg_risk_score": round(float(wallet_stats.get("avg_risk_score", 0)), 2) if wallet_stats and wallet_stats.get("avg_risk_score") else 0,
+        "stablecoins_scored": len(scores_list),
+        "protocols_scored": len(psi_summary),
+    },
+
+Bug 2: WALLETS count misleading
+
+The frontend (frontend/src/App.jsx, around line 1801) displays net.wallets_indexed which is COUNT(*) FROM wallet_graph.wallets — total ever discovered.
+
+Fix in App.jsx: Find the Pulse tab rendering (around line 1800) and change the Wallets stat to prefer wallets_active:
+
+    { label: "Wallets", value: net.wallets_active != null ? net.wallets_active.toLocaleString() : (net.wallets_scored != null ? net.wallets_scored.toLocaleString() : "—") },
+
+Bug 3: All events silent
+
+Run this diagnostic:
+
+    SELECT trigger_type, severity, COUNT(*)
+    FROM assessment_events
+    WHERE created_at > NOW() - INTERVAL '48 hours'
+    GROUP BY trigger_type, severity
+    ORDER BY COUNT(*) DESC;
+
+    SELECT wallet_address, COUNT(*) as assessments
+    FROM assessment_events
+    GROUP BY wallet_address
+    HAVING COUNT(*) > 1
+    LIMIT 10;
+
+If all events are trigger_type = 'daily_cycle' with only 1 assessment per wallet, this is expected cold-start — the classifier in app/agent/classifier.py (line 88-90) computes score_delta from current vs previous wallet_risk_score, and with no previous assessment everything falls to silent. The second daily cycle should produce deltas.
+
+If wallets DO have history but events are still all silent, check whether wallet_risk_score is NULL in the assessments (same root cause as Bug 1 — if risk_score is NULL, score_delta = 0, everything is silent).
+
+AFTER FIXING
+
+1. Trigger a manual pulse regeneration via admin endpoint or by restarting the worker
+2. Verify basisprotocol.xyz/pulse shows non-zero avg_risk and accurate wallet counts
+3. Check Replit logs for errors during the next worker cycle
+
+FILES TO TOUCH
+- app/pulse_generator.py — fix wallet stats queries (primary fix)
+- frontend/src/App.jsx — display wallets_active instead of wallets_indexed
+- Run diagnostics first to determine if root cause is data (no scored holdings) or query (wrong time window / NULL handling)
