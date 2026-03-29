@@ -922,6 +922,8 @@ function RankingsView({ scores, loading, onSelect, ts, mobile }) {
 
       <div style={{ height: mobile ? 16 : 32 }} />
 
+      <PulseSummarySection mobile={mobile} />
+
       {mobile ? (
         <div>
           <div style={{ borderBottom: `3px solid ${T.ink}`, padding: "8px 12px", fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight }}>
@@ -1022,8 +1024,6 @@ function Footnotes({ mobile }) {
         </p>
       </div>
 
-      {/* Daily State Commitment */}
-      <PulseSummarySection mobile={mobile} />
     </div>
   );
 }
@@ -1205,7 +1205,7 @@ function MethodologyView({ mobile }) {
   const dataSources = indicesData?.data_sources || [];
 
   return (
-    <div style={{ padding: mobile ? "16px 0 32px" : "24px 0 64px", maxWidth: 780 }}>
+    <div style={{ padding: mobile ? "16px 0 32px" : "24px 0 64px" }}>
 
       <TabHeader
         title={<><span style={{ fontWeight: 700 }}>Scoring</span> Methodology</>}
@@ -2283,6 +2283,8 @@ function WitnessView({ mobile, onSelectIssuer }) {
           `${totalAttestations} ATTESTATIONS ARCHIVED`,
           "UPDATED DAILY",
         ]}
+        formulaLine="Structured, timestamped, hash-verified archive of stablecoin issuer disclosures"
+        versionLabel="CDA v1.0.0"
         accent="#A8C4A0"
         mobile={mobile}
         showOnChain={false}
