@@ -254,56 +254,72 @@ def aggregate_legacy_to_v1(
 # Maps component_id → normalization config
 # Used by collectors to normalize raw values before storing
 COMPONENT_NORMALIZATIONS = {
-    # Peg Stability
+    # =========================================================================
+    # Peg Stability (6 components, weights sum to 1.0)
+    # =========================================================================
     "peg_current_deviation": {
         "fn": normalize_inverse_linear,
         "params": {"perfect": 0, "threshold": 5},
         "category": "peg_stability",
-        "weight": 0.35,
+        "weight": 0.25,
     },
     "peg_24h_max_deviation": {
         "fn": normalize_inverse_linear,
         "params": {"perfect": 0, "threshold": 10},
         "category": "peg_stability",
-        "weight": 0.25,
+        "weight": 0.20,
     },
     "peg_7d_stddev": {
         "fn": normalize_inverse_linear,
         "params": {"perfect": 0, "threshold": 0.02},
         "category": "peg_stability",
-        "weight": 0.25,
+        "weight": 0.20,
     },
     "peg_30d_stability": {
         "fn": normalize_direct,
         "params": {},
         "category": "peg_stability",
+        "weight": 0.10,
+    },
+    "depeg_events_30d": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 0, "threshold": 5},
+        "category": "peg_stability",
         "weight": 0.15,
     },
-    
-    # Liquidity
+    "max_drawdown_30d": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 0, "threshold": 5},
+        "category": "peg_stability",
+        "weight": 0.10,
+    },
+
+    # =========================================================================
+    # Liquidity (8 components, weights sum to 1.0)
+    # =========================================================================
     "market_cap": {
         "fn": normalize_log,
         "params": {"thresholds": {1e6: 10, 1e8: 40, 1e9: 60, 1e10: 80, 1e11: 100}},
         "category": "liquidity",
-        "weight": 0.30,
+        "weight": 0.20,
     },
     "volume_24h": {
         "fn": normalize_log,
         "params": {"thresholds": {1e6: 20, 1e7: 40, 1e8: 60, 1e9: 80, 1e10: 100}},
         "category": "liquidity",
-        "weight": 0.25,
+        "weight": 0.15,
     },
     "volume_mcap_ratio": {
         "fn": normalize_linear,
         "params": {"min_val": 0.01, "max_val": 0.15},
         "category": "liquidity",
-        "weight": 0.20,
+        "weight": 0.15,
     },
     "dex_liquidity_tvl": {
         "fn": normalize_log,
         "params": {"thresholds": {1e6: 20, 1e7: 40, 1e8: 60, 5e8: 80, 1e9: 100}},
         "category": "liquidity",
-        "weight": 0.15,
+        "weight": 0.10,
     },
     "curve_3pool_balance": {
         "fn": normalize_centered,
@@ -311,28 +327,56 @@ COMPONENT_NORMALIZATIONS = {
         "category": "liquidity",
         "weight": 0.10,
     },
-    
-    # Transparency / Reserves (→ structural)
+    "cex_listing_count": {
+        "fn": normalize_linear,
+        "params": {"min_val": 5, "max_val": 50},
+        "category": "liquidity",
+        "weight": 0.10,
+    },
+    "dex_pool_count": {
+        "fn": normalize_linear,
+        "params": {"min_val": 3, "max_val": 20},
+        "category": "liquidity",
+        "weight": 0.10,
+    },
+    "lending_tvl": {
+        "fn": normalize_log,
+        "params": {"thresholds": {1e6: 10, 1e7: 30, 1e8: 50, 1e9: 80, 5e9: 100}},
+        "category": "liquidity",
+        "weight": 0.10,
+    },
+
+    # =========================================================================
+    # Transparency / Reserves (→ structural) (4 components, weights sum to 1.0)
+    # =========================================================================
     "reserve_to_supply_ratio": {
         "fn": normalize_linear,
         "params": {"min_val": 0.98, "max_val": 1.02},
         "category": "transparency",
-        "weight": 0.25,
+        "weight": 0.30,
     },
     "cash_equivalents_pct": {
         "fn": normalize_direct,
         "params": {},
         "category": "transparency",
-        "weight": 0.20,
+        "weight": 0.25,
     },
     "attestation_freshness": {
         "fn": normalize_inverse_linear,
         "params": {"perfect": 0, "threshold": 90},
         "category": "transparency",
+        "weight": 0.25,
+    },
+    "auditor_quality": {
+        "fn": normalize_direct,
+        "params": {},
+        "category": "transparency",
         "weight": 0.20,
     },
-    
-    # Holder Distribution
+
+    # =========================================================================
+    # Holder Distribution (4 components, weights sum to 1.0)
+    # =========================================================================
     "top_10_concentration": {
         "fn": normalize_inverse_linear,
         "params": {"perfect": 10, "threshold": 80},
@@ -350,6 +394,22 @@ COMPONENT_NORMALIZATIONS = {
         "params": {"center": 30, "tolerance": 15, "extreme": 40},
         "category": "holder_distribution",
         "weight": 0.20,
+    },
+    "stablecoin_market_share": {
+        "fn": normalize_linear,
+        "params": {"min_val": 0.1, "max_val": 30},
+        "category": "holder_distribution",
+        "weight": 0.25,
+    },
+
+    # =========================================================================
+    # Network / Chain Risk (→ structural)
+    # =========================================================================
+    "chain_count": {
+        "fn": normalize_linear,
+        "params": {"min_val": 1, "max_val": 50},
+        "category": "network",
+        "weight": 1.0,
     },
 }
 
