@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -2122,13 +2122,12 @@ async def cda_attestations(asset_symbol: str):
 
 
 @app.post("/api/admin/reindex")
-async def admin_reindex_batch(request: Request, batch_size: int = Query(default=500)):
+async def admin_reindex_batch(request: Request, background_tasks: BackgroundTasks, batch_size: int = Query(default=500)):
     """Run one batch of wallet re-indexing. Call externally via cron."""
     _check_admin_key(request)
-    import asyncio as _asyncio
     from app.indexer.pipeline import run_pipeline_batch
-    result = await _asyncio.to_thread(run_pipeline_batch, batch_size)
-    return result
+    background_tasks.add_task(run_pipeline_batch, batch_size)
+    return {"status": "started", "batch_size": batch_size}
 
 
 @app.post("/api/admin/collect-cda")
