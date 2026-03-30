@@ -633,6 +633,116 @@ async def get_score_history(
 
 
 # =============================================================================
+# 4b. Temporal reconstruction — historical score reconstruction
+# =============================================================================
+
+@app.get("/api/scores/{coin}/at/{target_date}")
+async def score_at_date(coin: str, target_date: str):
+    """Reconstruct SII score at a specific historical date."""
+    from app.services.temporal_engine import reconstruct_score
+    try:
+        td = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    if td > datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=400, detail="Cannot reconstruct future dates.")
+
+    result = await reconstruct_score(coin, td)
+    return result
+
+
+@app.get("/api/scores/{coin}/range")
+async def score_range(
+    coin: str,
+    start: str = Query(alias="from", description="Start date YYYY-MM-DD"),
+    end: str = Query(alias="to", description="End date YYYY-MM-DD"),
+):
+    """Reconstruct SII scores for a date range (max 365 days)."""
+    from app.services.temporal_engine import reconstruct_range
+    try:
+        from_date = datetime.strptime(start, "%Y-%m-%d").date()
+        to_date = datetime.strptime(end, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    if to_date > datetime.now(timezone.utc).date():
+        to_date = datetime.now(timezone.utc).date()
+
+    if (to_date - from_date).days > 365:
+        raise HTTPException(status_code=400, detail="Max 365 days per request.")
+
+    results = await reconstruct_range(coin, from_date, to_date)
+    return {
+        "stablecoin": coin,
+        "from": from_date.isoformat(),
+        "to": to_date.isoformat(),
+        "scores": results,
+        "count": len(results),
+    }
+
+
+@app.get("/api/backtest/{coin}")
+async def backtest_event(
+    coin: str,
+    event: str = Query(description="Named crisis event ID"),
+):
+    """Reconstruct scores across a named crisis event window."""
+    from app.services.temporal_engine import reconstruct_range, CRISIS_EVENTS
+
+    if event not in CRISIS_EVENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown event '{event}'. Available: {list(CRISIS_EVENTS.keys())}",
+        )
+
+    ev = CRISIS_EVENTS[event]
+    from_date = datetime.strptime(ev["from"], "%Y-%m-%d").date()
+    to_date = datetime.strptime(ev["to"], "%Y-%m-%d").date()
+
+    results = await reconstruct_range(coin, from_date, to_date)
+    return {
+        "stablecoin": coin,
+        "event": event,
+        "event_name": ev["name"],
+        "event_description": ev["description"],
+        "from": ev["from"],
+        "to": ev["to"],
+        "scores": results,
+        "count": len(results),
+    }
+
+
+@app.post("/api/admin/backfill")
+async def admin_backfill(request: Request):
+    """Trigger historical price backfill from CoinGecko. Admin-key protected."""
+    _check_admin_key(request)
+    body = await request.json()
+
+    from app.services.historical_backfill import backfill_coin, backfill_all
+
+    if body.get("all"):
+        from_date = body.get("from", "2020-01-01")
+        to_date = body.get("to")
+        result = await backfill_all(from_date, to_date)
+        return {"status": "completed", **result}
+
+    stablecoin_id = body.get("stablecoin_id")
+    if not stablecoin_id:
+        raise HTTPException(status_code=400, detail="Provide stablecoin_id or all=true")
+
+    # Resolve to coingecko_id
+    from app.config import STABLECOIN_REGISTRY
+    cfg = STABLECOIN_REGISTRY.get(stablecoin_id)
+    coingecko_id = cfg["coingecko_id"] if cfg else stablecoin_id
+
+    from_date = body.get("from", "2020-01-01")
+    to_date = body.get("to")
+    count = await backfill_coin(coingecko_id, from_date, to_date)
+    return {"status": "completed", "coingecko_id": coingecko_id, "records": count}
+
+
+# =============================================================================
 # 5. GET /api/compare — Compare stablecoins side by side
 # =============================================================================
 
