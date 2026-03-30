@@ -57,18 +57,112 @@ BRSS_ATTESTATION_SCHEMA = {
 }
 
 
-async def parse_pdf(pdf_url: str, schema: dict = None) -> dict:
+# Schema for synthetic/derivative-backed stablecoins (e.g., Ethena USDe)
+SYNTHETIC_ATTESTATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "issuer_name": {"type": "string", "description": "Name of the issuer or protocol"},
+        "asset_name": {"type": "string", "description": "Name of the token"},
+        "attestation_date": {"type": "string", "description": "As-of date of the report"},
+        "total_supply": {"type": "number", "description": "Total tokens in circulation"},
+        "backing_assets": {
+            "type": "object",
+            "description": "What backs the token",
+            "properties": {
+                "total_value_usd": {"type": "number"},
+                "staked_eth_usd": {"type": "number"},
+                "derivatives_notional_usd": {"type": "number"},
+                "other_usd": {"type": "number"},
+            }
+        },
+        "custodians": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "assets_held_usd": {"type": "number"},
+                    "percentage": {"type": "number"},
+                }
+            },
+            "description": "Custodians holding backing assets"
+        },
+        "open_interest": {"type": "number", "description": "Total short perpetual futures position notional"},
+        "collateral_ratio": {"type": "number", "description": "Total backing value / total supply"},
+        "funding_rate": {"type": "number", "description": "Current aggregate funding rate"},
+        "report_type": {"type": "string"},
+        "auditor_name": {"type": "string"},
+    }
+}
+
+# Schema for RWA-tokenized assets (e.g., USDY, BUIDL)
+RWA_ATTESTATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "issuer_name": {"type": "string"},
+        "asset_name": {"type": "string"},
+        "attestation_date": {"type": "string", "description": "As-of date of the report"},
+        "nav_per_token": {"type": "number", "description": "Net asset value per token"},
+        "total_supply": {"type": "number"},
+        "total_assets_usd": {"type": "number", "description": "Total assets under management"},
+        "underlying_holdings": {
+            "type": "object",
+            "properties": {
+                "us_treasuries_pct": {"type": "number"},
+                "bank_deposits_pct": {"type": "number"},
+                "money_market_pct": {"type": "number"},
+                "corporate_bonds_pct": {"type": "number"},
+                "other_pct": {"type": "number"},
+            }
+        },
+        "yield_rate": {"type": "number", "description": "Current yield or APY"},
+        "weighted_avg_maturity_days": {"type": "number"},
+        "auditor_name": {"type": "string"},
+        "report_type": {"type": "string"},
+    }
+}
+
+# System prompts per disclosure type
+SYSTEM_PROMPTS = {
+    "fiat-reserve": "This is a stablecoin reserve attestation report from an accounting firm. Extract reserve composition, total reserves, supply, and auditor details.",
+    "synthetic-derivative": "This is a custodian attestation or transparency report for a synthetic/derivative-backed stablecoin. Extract custodian holdings, open interest, collateral ratios, and backing asset composition. Do NOT look for traditional reserve categories like Treasury Bills — this is backed by derivatives positions.",
+    "rwa-tokenized": "This is a fund report or NAV attestation for a tokenized real-world asset. Extract NAV per token, total AUM, underlying holdings composition, yield, and maturity.",
+    "overcollateralized": "This is a report about an overcollateralized stablecoin. Extract collateral ratio, total collateral value, vault information, and liquidation parameters.",
+    "algorithmic": "This is a report about an algorithmic or hybrid stablecoin. Extract collateral ratio, protocol-owned liquidity, AMO balances, and mechanism parameters.",
+}
+
+# Map disclosure_type to schema
+SCHEMAS_BY_TYPE = {
+    "fiat-reserve": BRSS_ATTESTATION_SCHEMA,
+    "synthetic-derivative": SYNTHETIC_ATTESTATION_SCHEMA,
+    "rwa-tokenized": RWA_ATTESTATION_SCHEMA,
+}
+
+
+def get_schema_for_type(disclosure_type: str) -> tuple[dict, str]:
+    """Return (schema, system_prompt) for a given disclosure type."""
+    schema = SCHEMAS_BY_TYPE.get(disclosure_type, BRSS_ATTESTATION_SCHEMA)
+    prompt = SYSTEM_PROMPTS.get(disclosure_type, SYSTEM_PROMPTS["fiat-reserve"])
+    return schema, prompt
+
+
+async def parse_pdf(pdf_url: str, schema: dict = None, disclosure_type: str = None) -> dict:
     """
     Parse a PDF and extract structured data matching schema.
-    Uses Reducto's /extract endpoint with JSON schema.
-    Returns extracted fields with confidence scores per field.
+    If disclosure_type is provided and no explicit schema, uses the type-specific schema.
     """
     if not _get_key():
         logger.warning("REDUCTO_API_KEY not set, skipping PDF parse")
         return {"error": "no_api_key"}
 
     if schema is None:
-        schema = BRSS_ATTESTATION_SCHEMA
+        if disclosure_type and disclosure_type in SCHEMAS_BY_TYPE:
+            schema, system_prompt = get_schema_for_type(disclosure_type)
+        else:
+            schema = BRSS_ATTESTATION_SCHEMA
+            system_prompt = SYSTEM_PROMPTS["fiat-reserve"]
+    else:
+        system_prompt = SYSTEM_PROMPTS.get(disclosure_type, SYSTEM_PROMPTS["fiat-reserve"])
 
     async with httpx.AsyncClient(timeout=180) as client:
         try:
@@ -79,7 +173,7 @@ async def parse_pdf(pdf_url: str, schema: dict = None) -> dict:
                     "input": pdf_url,
                     "instructions": {
                         "schema": schema,
-                        "system_prompt": "This is a stablecoin reserve attestation report from an accounting firm.",
+                        "system_prompt": system_prompt,
                     },
                     "settings": {
                         "citations": {"enabled": True},

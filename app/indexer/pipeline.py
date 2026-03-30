@@ -561,6 +561,48 @@ async def index_wallet(
     }
 
 
+_reindex_status = {
+    "last_reindex_started": None,
+    "last_reindex_completed": None,
+    "wallets_queued": 0,
+    "wallets_processed": 0,
+    "balances_updated": 0,
+    "errors": 0,
+    "last_error": None,
+    "batch_size": 0,
+    "batch_failures": 0,
+}
+
+reindex_logger = logging.getLogger("basis.reindex")
+
+
+def get_reindex_status() -> dict:
+    """Return current reindex run metadata plus DB freshness."""
+    status = dict(_reindex_status)
+    status["provider"] = BLOCK_EXPLORER_PROVIDER
+
+    # Latest wallet_holdings row timestamp
+    try:
+        row = fetch_one("""
+            SELECT MAX(indexed_at) AS latest
+            FROM wallet_graph.wallet_holdings
+        """)
+        status["wallet_holdings_latest"] = (
+            row["latest"].isoformat() if row and row["latest"] else None
+        )
+    except Exception:
+        status["wallet_holdings_latest"] = None
+
+    # Active wallet count
+    try:
+        row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallets")
+        status["active_wallet_count"] = row["cnt"] if row else 0
+    except Exception:
+        status["active_wallet_count"] = 0
+
+    return status
+
+
 def run_pipeline_batch(batch_size: int = 500) -> dict:
     """
     Incremental batch re-indexing: scan + score the oldest `batch_size` wallets.
@@ -573,28 +615,59 @@ def run_pipeline_batch(batch_size: int = 500) -> dict:
     Returns:
         Summary dict with processed/remaining counts.
     """
+    import traceback
+
+    _reindex_status["last_reindex_started"] = datetime.now(timezone.utc).isoformat()
+    _reindex_status["last_reindex_completed"] = None
+    _reindex_status["wallets_processed"] = 0
+    _reindex_status["balances_updated"] = 0
+    _reindex_status["errors"] = 0
+    _reindex_status["last_error"] = None
+    _reindex_status["batch_size"] = batch_size
+    _reindex_status["batch_failures"] = 0
+
+    # Resolve API key — Blockscout is free (no key needed), Etherscan requires one
     if BLOCK_EXPLORER_PROVIDER == "etherscan":
         api_key = os.environ.get("ETHERSCAN_API_KEY", "")
+        if not api_key:
+            msg = "ETHERSCAN_API_KEY not set but BLOCK_EXPLORER_PROVIDER=etherscan"
+            reindex_logger.error(msg)
+            _reindex_status["last_error"] = msg
+            _reindex_status["last_reindex_completed"] = datetime.now(timezone.utc).isoformat()
+            return {"error": msg, "processed": 0}
     else:
-        api_key = os.environ.get("BLOCKSCOUT_API_KEY", "")
-
-    if not api_key:
-        return {"error": "API key not set", "processed": 0}
+        # Blockscout primary — no key required.  Etherscan key used only for fallback.
+        api_key = os.environ.get("ETHERSCAN_API_KEY", "")
 
     started_at = datetime.now(timezone.utc)
-    logger.info(f"=== Wallet Batch Re-index Starting (batch_size={batch_size}) ===")
+    reindex_logger.info(
+        f"=== Wallet Batch Re-index Starting === "
+        f"batch_size={batch_size}, provider={BLOCK_EXPLORER_PROVIDER}, "
+        f"etherscan_key={'set (' + api_key[:6] + '...)' if api_key else 'not set (fallback disabled)'}"
+    )
 
     # Find the oldest wallets (not indexed in last 24h)
-    stale_rows = fetch_all("""
-        SELECT address FROM wallet_graph.wallets
-        WHERE last_indexed_at IS NULL
-           OR last_indexed_at < NOW() - INTERVAL '24 hours'
-        ORDER BY last_indexed_at ASC NULLS FIRST
-        LIMIT %s
-    """, (batch_size,))
+    try:
+        stale_rows = fetch_all("""
+            SELECT address FROM wallet_graph.wallets
+            WHERE last_indexed_at IS NULL
+               OR last_indexed_at < NOW() - INTERVAL '24 hours'
+            ORDER BY last_indexed_at ASC NULLS FIRST
+            LIMIT %s
+        """, (batch_size,))
+    except Exception as e:
+        msg = f"Failed to query stale wallets: {e}"
+        reindex_logger.error(msg, exc_info=True)
+        _reindex_status["last_error"] = msg
+        _reindex_status["last_reindex_completed"] = datetime.now(timezone.utc).isoformat()
+        return {"error": msg, "processed": 0}
+
     wallet_list = [r["address"] for r in stale_rows]
+    _reindex_status["wallets_queued"] = len(wallet_list)
 
     if not wallet_list:
+        reindex_logger.info("All wallets fresh — nothing to reindex")
+        _reindex_status["last_reindex_completed"] = datetime.now(timezone.utc).isoformat()
         return {"processed": 0, "remaining": 0, "message": "All wallets fresh"}
 
     # Count total remaining for reporting
@@ -605,19 +678,33 @@ def run_pipeline_batch(batch_size: int = 500) -> dict:
     """)
     total_remaining = remaining_row["cnt"] if remaining_row else 0
 
-    logger.info(f"Batch: {len(wallet_list)} wallets to process, {total_remaining} total stale")
+    reindex_logger.info(f"Batch: {len(wallet_list)} wallets queued, {total_remaining} total stale")
 
     sii_scores = _get_current_sii_scores()
     indexed = 0
     scored = 0
     errors = 0
+    balances_updated = 0
 
     async def _scan_and_score():
-        nonlocal indexed, scored, errors
+        nonlocal indexed, scored, errors, balances_updated
         async with httpx.AsyncClient() as client:
-            all_holdings, failures, _ = await batch_scan_all_holdings(
+            reindex_logger.info("Starting batch_scan_all_holdings...")
+            all_holdings, failures, api_calls = await batch_scan_all_holdings(
                 client, wallet_list, api_key, sii_scores
             )
+            _reindex_status["batch_failures"] = failures
+
+            reindex_logger.info(
+                f"Scan complete: {len(all_holdings)} wallets with holdings, "
+                f"{failures} batch failures, {api_calls} API calls"
+            )
+
+            if failures > 0 and len(all_holdings) == 0:
+                reindex_logger.error(
+                    f"ALL batches failed ({failures} failures, 0 holdings). "
+                    f"Likely API key or provider misconfiguration."
+                )
 
             for addr in wallet_list:
                 try:
@@ -636,27 +723,48 @@ def run_pipeline_batch(batch_size: int = 500) -> dict:
                         continue
 
                     _store_holdings(addr, holdings)
+                    balances_updated += len(holdings)
                     _store_risk_score(addr, risk)
                     _update_wallet_summary(addr, risk["total_stablecoin_value"], risk["size_tier"])
                     _track_unscored_holdings(holdings)
                     indexed += 1
                     scored += 1
                 except Exception as e:
-                    logger.warning(f"Batch error for {addr}: {e}")
+                    reindex_logger.error(
+                        f"Batch error for {addr}: {type(e).__name__}: {e}",
+                        exc_info=True,
+                    )
+                    _reindex_status["last_error"] = f"{addr}: {type(e).__name__}: {e}"
                     errors += 1
 
-    asyncio.run(_scan_and_score())
+    try:
+        asyncio.run(_scan_and_score())
+    except Exception as e:
+        msg = f"asyncio.run(_scan_and_score) crashed: {type(e).__name__}: {e}"
+        reindex_logger.error(msg, exc_info=True)
+        _reindex_status["last_error"] = msg
+        errors += 1
 
     elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
-    logger.info(
-        f"Batch complete: {indexed} indexed, {scored} scored, "
-        f"{errors} errors in {elapsed:.0f}s"
+
+    _reindex_status["wallets_processed"] = indexed
+    _reindex_status["balances_updated"] = balances_updated
+    _reindex_status["errors"] = errors
+    _reindex_status["last_reindex_completed"] = datetime.now(timezone.utc).isoformat()
+
+    reindex_logger.info(
+        f"=== Batch Re-index Complete === "
+        f"indexed={indexed}, scored={scored}, balances_updated={balances_updated}, "
+        f"errors={errors}, batch_failures={_reindex_status['batch_failures']}, "
+        f"elapsed={elapsed:.0f}s, remaining={total_remaining - indexed}"
     )
 
     return {
         "processed": indexed,
         "scored": scored,
+        "balances_updated": balances_updated,
         "errors": errors,
+        "batch_failures": _reindex_status["batch_failures"],
         "remaining": total_remaining - indexed,
         "elapsed_seconds": round(elapsed, 1),
     }
@@ -683,16 +791,15 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
             holders_per_coin = 5000
 
     # Provider-sensitive API key selection
+    # Blockscout is free (no key needed); Etherscan requires a key
     if BLOCK_EXPLORER_PROVIDER == "etherscan":
         api_key = os.environ.get("ETHERSCAN_API_KEY", "")
-        api_key_name = "ETHERSCAN_API_KEY"
+        if not api_key:
+            logger.error("ETHERSCAN_API_KEY not set — cannot run wallet indexer with etherscan provider")
+            return {"error": "ETHERSCAN_API_KEY not set", "wallets_indexed": 0}
     else:
-        api_key = os.environ.get("BLOCKSCOUT_API_KEY", "")
-        api_key_name = "BLOCKSCOUT_API_KEY"
-
-    if not api_key:
-        logger.error(f"{api_key_name} not set — cannot run wallet indexer")
-        return {"error": f"{api_key_name} not set", "wallets_indexed": 0}
+        # Blockscout primary — Etherscan key used for fallback only
+        api_key = os.environ.get("ETHERSCAN_API_KEY", "")
 
     started_at = datetime.now(timezone.utc)
     logger.info("=== Wallet Indexer Pipeline Starting ===")

@@ -349,7 +349,7 @@ def _extract_reserve_data_from_markdown(markdown: str) -> dict | None:
 # Reducto PDF parsing helper
 # =============================================================================
 
-async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str) -> tuple[bool, str]:
+async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str, disclosure_type: str = None) -> tuple[bool, str]:
     """
     Try to parse a PDF with Reducto and store the result.
     Returns (success: bool, method_label: str).
@@ -360,7 +360,7 @@ async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str) -> tuple[bool
 
     await asyncio.sleep(2)
     logger.info(f"{prefix} — Reducto parsing: {pdf_url[:80]}...")
-    reducto_result = await reducto_client.parse_pdf(pdf_url)
+    reducto_result = await reducto_client.parse_pdf(pdf_url, disclosure_type=disclosure_type)
 
     if "error" in reducto_result:
         logger.warning(f"{prefix} — Reducto failed: {reducto_result['error']}")
@@ -383,6 +383,18 @@ async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str) -> tuple[bool
         structured_data=structured,
         confidence_score=confidence,
     )
+
+    # Run validation
+    try:
+        from app.services.cda_validator import validate_extraction
+        last_ext = fetch_one(
+            "SELECT id FROM cda_vendor_extractions WHERE asset_symbol = %s ORDER BY extracted_at DESC LIMIT 1",
+            (symbol,)
+        )
+        if last_ext and structured:
+            validate_extraction(last_ext["id"], symbol, structured, disclosure_type or "fiat-reserve")
+    except Exception as ve:
+        logger.warning(f"{prefix} — validation error: {ve}")
 
     return True, "reducto_pdf"
 
@@ -445,7 +457,7 @@ async def _step_parallel_extract(issuer: dict, prefix: str) -> dict | None:
         pdf_urls = _filter_attestation_pdfs(pdf_urls)
         best = _pick_most_recent_pdf(pdf_urls)
         if best:
-            ok, method = await _try_reducto_pdf(symbol, best, prefix)
+            ok, method = await _try_reducto_pdf(symbol, best, prefix, disclosure_type=issuer.get("disclosure_type"))
             if ok:
                 return {"status": "success", "method": "parallel_extract+reducto"}
 
@@ -531,7 +543,7 @@ async def _step_parallel_search(issuer: dict, prefix: str) -> dict | None:
 
     best = _pick_most_recent_pdf(pdf_urls)
     if best:
-        ok, method = await _try_reducto_pdf(symbol, best, prefix)
+        ok, method = await _try_reducto_pdf(symbol, best, prefix, disclosure_type=issuer.get("disclosure_type"))
         if ok:
             return {"status": "success", "method": "parallel_search+reducto"}
 
@@ -561,7 +573,7 @@ async def _step_firecrawl_js(issuer: dict, prefix: str) -> dict | None:
         if pdf_links:
             best = _pick_most_recent_pdf(pdf_links)
             if best:
-                ok, method = await _try_reducto_pdf(symbol, best, prefix)
+                ok, method = await _try_reducto_pdf(symbol, best, prefix, disclosure_type=issuer.get("disclosure_type"))
                 if ok:
                     return {"status": "success", "method": "firecrawl_js+reducto"}
 
@@ -586,7 +598,7 @@ async def _step_firecrawl_js(issuer: dict, prefix: str) -> dict | None:
         if framer_pdfs:
             best = firecrawl_client.identify_most_recent_attestation(framer_pdfs)
             if best:
-                ok, method = await _try_reducto_pdf(symbol, best, prefix)
+                ok, method = await _try_reducto_pdf(symbol, best, prefix, disclosure_type=issuer.get("disclosure_type"))
                 if ok:
                     return {"status": "success", "method": "firecrawl_framer+reducto"}
 
@@ -597,7 +609,7 @@ async def _step_firecrawl_js(issuer: dict, prefix: str) -> dict | None:
 
 
 async def _step_firecrawl_json(issuer: dict, prefix: str) -> dict | None:
-    """Step 4: Firecrawl JSON extraction with BRSS schema."""
+    """Step 4: Firecrawl JSON extraction with type-aware schema."""
     url = issuer.get("transparency_url")
     if not url:
         return None
@@ -607,43 +619,16 @@ async def _step_firecrawl_json(issuer: dict, prefix: str) -> dict | None:
     logger.info(f"{prefix} — [Step 4] Firecrawl JSON extract")
 
     try:
+        from app.services.reducto_client import get_schema_for_type
+        disc_type = issuer.get("disclosure_type", "fiat-reserve")
+        schema, _ = get_schema_for_type(disc_type)
+
         client = firecrawl_client.get_client()
 
         result = client.scrape(
             url,
             formats=["extract"],
-            extract={
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "attestation_date": {
-                            "type": "string",
-                            "description": "Date of the latest attestation report",
-                        },
-                        "total_reserves_usd": {
-                            "type": "number",
-                            "description": "Total reserves backing the stablecoin in USD",
-                        },
-                        "total_supply": {
-                            "type": "number",
-                            "description": "Total tokens in circulation",
-                        },
-                        "auditor": {
-                            "type": "string",
-                            "description": "Name of attestation firm",
-                        },
-                        "reserve_composition": {
-                            "type": "object",
-                            "properties": {
-                                "cash_pct": {"type": "number"},
-                                "tbills_pct": {"type": "number"},
-                                "repo_pct": {"type": "number"},
-                                "other_pct": {"type": "number"},
-                            },
-                        },
-                    },
-                }
-            },
+            extract={"schema": schema},
             actions=[{"type": "wait", "milliseconds": 8000}],
         )
 
@@ -651,8 +636,9 @@ async def _step_firecrawl_json(issuer: dict, prefix: str) -> dict | None:
         if not extract_data:
             return None
 
-        if isinstance(extract_data, dict) and (
-            extract_data.get("total_reserves_usd") or extract_data.get("attestation_date")
+        # Type-agnostic success check: any non-empty extracted field counts
+        if isinstance(extract_data, dict) and any(
+            v for v in extract_data.values() if v is not None and v != "" and v != 0
         ):
             _store_extraction(
                 asset_symbol=symbol,
@@ -664,6 +650,19 @@ async def _step_firecrawl_json(issuer: dict, prefix: str) -> dict | None:
                 structured_data=extract_data,
                 confidence_score=0.80,
             )
+
+            # Run validation
+            try:
+                from app.services.cda_validator import validate_extraction
+                last_ext = fetch_one(
+                    "SELECT id FROM cda_vendor_extractions WHERE asset_symbol = %s ORDER BY extracted_at DESC LIMIT 1",
+                    (symbol,)
+                )
+                if last_ext and extract_data:
+                    validate_extraction(last_ext["id"], symbol, extract_data, disc_type)
+            except Exception as ve:
+                logger.warning(f"{prefix} — validation error: {ve}")
+
             return {"status": "success", "method": "firecrawl_json"}
 
     except Exception as e:
@@ -679,19 +678,50 @@ async def _step_parallel_task(issuer: dict, prefix: str) -> dict | None:
 
     logger.info(f"{prefix} — [Step 5] Parallel Task deep research")
 
-    task_result = await parallel_client.task(
-        question=(
+    disc_type = issuer.get("disclosure_type", "fiat-reserve")
+    if disc_type == "synthetic-derivative":
+        research_q = (
+            f"Research the synthetic stablecoin {symbol} issued by {issuer_name}. "
+            f"Find: latest custodian attestation report URL (PDF), report date, "
+            f"total backing assets, custodian names, open interest, collateral ratio."
+        )
+        research_fields = {
+            "pdf_url": "Direct URL to most recent custodian attestation PDF",
+            "attestation_date": "Date of most recent report",
+            "total_backing_usd": "Total backing assets in USD (number)",
+            "custodians": "Names of custodians holding assets",
+            "collateral_ratio": "Ratio of backing assets to supply",
+        }
+    elif disc_type == "rwa-tokenized":
+        research_q = (
+            f"Research the tokenized asset {symbol} issued by {issuer_name}. "
+            f"Find: latest NAV report URL (PDF), report date, NAV per token, "
+            f"total AUM, underlying holdings, yield rate."
+        )
+        research_fields = {
+            "pdf_url": "Direct URL to most recent NAV report PDF",
+            "attestation_date": "Date of most recent report",
+            "nav_per_token": "Net asset value per token",
+            "total_assets_usd": "Total assets under management (number)",
+            "yield_rate": "Current yield or APY",
+        }
+    else:
+        research_q = (
             f"Research the stablecoin {symbol} issued by {issuer_name}. "
             f"Find: latest attestation report URL (PDF), attestation date, "
             f"total reserves, reserve composition, auditor name."
-        ),
-        fields={
+        )
+        research_fields = {
             "pdf_url": "Direct URL to most recent attestation PDF",
             "attestation_date": "Date of most recent attestation",
             "total_reserves_usd": "Total reserves in USD (number)",
             "auditor_name": "Auditing/attestation firm name",
             "reserve_description": "Description of reserve composition",
-        },
+        }
+
+    task_result = await parallel_client.task(
+        question=research_q,
+        fields=research_fields,
         processor="core",
     )
 
@@ -703,7 +733,7 @@ async def _step_parallel_task(issuer: dict, prefix: str) -> dict | None:
     # If we got a PDF URL, try Reducto
     pdf_url = fields.get("pdf_url")
     if pdf_url and pdf_url.lower().endswith(".pdf"):
-        ok, method = await _try_reducto_pdf(symbol, pdf_url, prefix)
+        ok, method = await _try_reducto_pdf(symbol, pdf_url, prefix, disclosure_type=issuer.get("disclosure_type"))
         if ok:
             return {"status": "success", "method": "parallel_task+reducto"}
 
@@ -851,7 +881,8 @@ async def run_collection():
     issuers = fetch_all(
         """
         SELECT asset_symbol, issuer_name, transparency_url,
-               collection_method, asset_category, consecutive_failures
+               collection_method, asset_category, consecutive_failures,
+               disclosure_type, expected_fields, verification_rules, source_urls
         FROM cda_issuer_registry
         WHERE is_active = TRUE
         ORDER BY asset_symbol
@@ -909,7 +940,8 @@ async def collect_single_issuer(asset_symbol: str):
     issuer = fetch_one(
         """
         SELECT asset_symbol, issuer_name, transparency_url,
-               collection_method, asset_category, consecutive_failures
+               collection_method, asset_category, consecutive_failures,
+               disclosure_type, expected_fields, verification_rules, source_urls
         FROM cda_issuer_registry
         WHERE asset_symbol = %s AND is_active = TRUE
         """,

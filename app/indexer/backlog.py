@@ -77,8 +77,53 @@ def update_demand_signals() -> int:
     if not rows:
         return 0
 
-    # Rank by total_value_held DESC for scoring priority
-    rows.sort(key=lambda r: r["total_value_held"], reverse=True)
+    # Overlay collateral data from protocol_collateral_exposure
+    collateral_by_symbol = {}
+    try:
+        collateral_rows = fetch_all("""
+            SELECT token_symbol,
+                   SUM(tvl_usd) AS total_collateral_tvl,
+                   COUNT(DISTINCT protocol_slug) AS protocol_count
+            FROM protocol_collateral_exposure
+            WHERE is_stablecoin = TRUE
+              AND is_sii_scored = FALSE
+              AND snapshot_date = CURRENT_DATE
+            GROUP BY token_symbol
+        """)
+        for cr in (collateral_rows or []):
+            collateral_by_symbol[cr["token_symbol"].upper()] = {
+                "total_collateral_tvl": float(cr["total_collateral_tvl"]),
+                "protocol_count": int(cr["protocol_count"]),
+            }
+    except Exception as e:
+        logger.debug(f"Could not fetch collateral data for demand signals: {e}")
+
+    # Look up symbol for each token_address to match collateral data
+    symbol_map = {}
+    if collateral_by_symbol:
+        try:
+            sym_rows = fetch_all("""
+                SELECT token_address, symbol
+                FROM wallet_graph.unscored_assets
+                WHERE symbol IS NOT NULL
+            """)
+            for sr in (sym_rows or []):
+                symbol_map[sr["token_address"]] = sr["symbol"].upper()
+        except Exception:
+            pass
+
+    # Rank by combined signal: wallet holdings + collateral TVL (weighted 2x)
+    for row in rows:
+        addr = row["token_address"]
+        sym = symbol_map.get(addr, "")
+        coll = collateral_by_symbol.get(sym, {})
+        row["_collateral_tvl"] = coll.get("total_collateral_tvl", 0)
+        row["_protocol_count"] = coll.get("protocol_count", 0)
+
+    rows.sort(
+        key=lambda r: r["total_value_held"] + (r.get("_collateral_tvl", 0) * 2),
+        reverse=True,
+    )
 
     for rank, row in enumerate(rows, start=1):
         execute(
@@ -88,6 +133,8 @@ def update_demand_signals() -> int:
                 total_value_held = %s,
                 avg_holding_value = %s,
                 max_single_holding = %s,
+                protocol_collateral_tvl = GREATEST(COALESCE(protocol_collateral_tvl, 0), %s),
+                protocol_count = GREATEST(COALESCE(protocol_count, 0), %s),
                 scoring_priority = %s,
                 updated_at = NOW()
             WHERE token_address = %s
@@ -97,12 +144,14 @@ def update_demand_signals() -> int:
                 row["total_value_held"],
                 row["avg_holding_value"],
                 row["max_single_holding"],
+                row["_collateral_tvl"],
+                row["_protocol_count"],
                 rank,
                 row["token_address"],
             ),
         )
 
-    logger.info(f"Updated demand signals for {len(rows)} unscored assets")
+    logger.info(f"Updated demand signals for {len(rows)} unscored assets (with collateral overlay)")
     return len(rows)
 
 
@@ -113,9 +162,11 @@ def get_backlog(limit: int = 50) -> list[dict]:
         SELECT token_address, symbol, name, decimals, coingecko_id,
                wallets_holding, total_value_held, avg_holding_value,
                max_single_holding, scoring_status, scoring_priority, notes,
+               COALESCE(protocol_collateral_tvl, 0) AS protocol_collateral_tvl,
+               COALESCE(protocol_count, 0) AS protocol_count,
                first_seen_at, last_seen_at
         FROM wallet_graph.unscored_assets
-        ORDER BY total_value_held DESC
+        ORDER BY (total_value_held + COALESCE(protocol_collateral_tvl, 0) * 2) DESC
         LIMIT %s
         """,
         (limit,),
@@ -214,18 +265,22 @@ def promote_eligible_assets() -> int:
     Returns number of assets newly promoted.
     """
     threshold = float(os.environ.get("BACKLOG_PROMOTE_THRESHOLD", "1000000"))
+    collateral_threshold = float(os.environ.get("BACKLOG_COLLATERAL_THRESHOLD", "500000"))
 
     eligible = fetch_all(
         """
-        SELECT token_address, symbol, name, decimals, coingecko_id, total_value_held
+        SELECT token_address, symbol, name, decimals, coingecko_id,
+               total_value_held,
+               COALESCE(protocol_collateral_tvl, 0) AS protocol_collateral_tvl,
+               COALESCE(protocol_count, 0) AS protocol_count
         FROM wallet_graph.unscored_assets
-        WHERE total_value_held >= %s
+        WHERE (total_value_held >= %s OR COALESCE(protocol_collateral_tvl, 0) >= %s)
           AND scoring_status = 'unscored'
           AND coingecko_id IS NOT NULL
           AND token_type = 'stablecoin'
-        ORDER BY total_value_held DESC
+        ORDER BY (total_value_held + COALESCE(protocol_collateral_tvl, 0) * 2) DESC
         """,
-        (threshold,),
+        (threshold, collateral_threshold),
     )
 
     if not eligible:
@@ -261,10 +316,17 @@ def promote_eligible_assets() -> int:
                 (asset["token_address"],),
             )
             promoted += 1
-            logger.info(
-                f"Promoted {asset['symbol']} ({asset['coingecko_id']}) "
-                f"to scoring queue — ${asset['total_value_held']:,.0f} held"
-            )
+            if asset.get("protocol_collateral_tvl", 0) > 0:
+                logger.info(
+                    f"AUTO-PROMOTE via collateral exposure: {asset['symbol']} — "
+                    f"${asset['protocol_collateral_tvl']:,.0f} in {asset.get('protocol_count', 0)} protocol(s), "
+                    f"${asset['total_value_held']:,.0f} in wallet holdings"
+                )
+            else:
+                logger.info(
+                    f"Promoted {asset['symbol']} ({asset['coingecko_id']}) "
+                    f"to scoring queue — ${asset['total_value_held']:,.0f} held"
+                )
             # Register new issuer in CDA pipeline for disclosure collection
             try:
                 import asyncio

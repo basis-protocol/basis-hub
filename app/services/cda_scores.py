@@ -167,3 +167,118 @@ def get_cda_components(stablecoin_id: str) -> list[dict]:
         )
 
     return components
+
+
+def get_cda_components_typed(stablecoin_id: str, disclosure_type: str = None) -> list[dict]:
+    """Type-aware CDA component extraction.
+    Routes to the appropriate extraction logic based on disclosure type.
+    Falls back to the original fiat-reserve extraction if type is unknown."""
+    if not disclosure_type or disclosure_type == "fiat-reserve":
+        return get_cda_components(stablecoin_id)
+
+    if disclosure_type in ("overcollateralized", "algorithmic"):
+        return []
+
+    latest = fetch_one(
+        """
+        SELECT structured_data, confidence_score, extracted_at, extraction_method, source_type
+        FROM cda_vendor_extractions
+        WHERE LOWER(asset_symbol) = %s
+          AND confidence_score > 0.3
+          AND structured_data IS NOT NULL
+        ORDER BY
+            CASE WHEN source_type = 'pdf_attestation' THEN 0 ELSE 1 END,
+            extracted_at DESC
+        LIMIT 1
+        """,
+        (stablecoin_id.lower(),),
+    )
+
+    if not latest or not latest.get("structured_data"):
+        return []
+
+    data = _unwrap_citations(latest["structured_data"])
+    confidence = latest.get("confidence_score", 0.5)
+    method = latest.get("extraction_method", "unknown")
+
+    if confidence < 0.5:
+        return []
+
+    components = []
+    source = f"cda_{method}"
+
+    if disclosure_type == "synthetic-derivative":
+        components.extend(_extract_synthetic_components(data, source))
+    elif disclosure_type == "rwa-tokenized":
+        components.extend(_extract_rwa_components(data, source))
+
+    # Attestation freshness (applies to all types)
+    att_date_str = data.get("attestation_date")
+    if att_date_str:
+        try:
+            att_date = _parse_date(str(att_date_str))
+            days_old = (datetime.now(timezone.utc) - att_date).days
+            freshness_score = normalize_inverse_linear(days_old, 0, 180)
+            components.append({
+                "component_id": "attestation_freshness",
+                "category": "transparency",
+                "raw_value": days_old,
+                "normalized_score": round(freshness_score, 2),
+                "data_source": source,
+            })
+        except (ValueError, TypeError):
+            pass
+
+    if components:
+        logger.info(
+            f"CDA typed: {stablecoin_id} ({disclosure_type}) — {len(components)} components"
+        )
+
+    return components
+
+
+def _extract_synthetic_components(data: dict, source: str) -> list[dict]:
+    """Extract scoring components from synthetic/derivative attestation data."""
+    components = []
+
+    cr = data.get("collateral_ratio")
+    if cr and isinstance(cr, (int, float)) and cr > 0:
+        cr_score = normalize_linear(cr, 0.95, 1.10)
+        components.append({
+            "component_id": "synthetic_collateral_ratio",
+            "category": "transparency",
+            "raw_value": round(cr, 4),
+            "normalized_score": round(cr_score, 2),
+            "data_source": source,
+        })
+
+    custodians = data.get("custodians", [])
+    if isinstance(custodians, list) and len(custodians) > 0:
+        custodian_score = min(len(custodians) * 25, 100)
+        components.append({
+            "component_id": "custodian_diversification",
+            "category": "transparency",
+            "raw_value": len(custodians),
+            "normalized_score": custodian_score,
+            "data_source": source,
+        })
+
+    return components
+
+
+def _extract_rwa_components(data: dict, source: str) -> list[dict]:
+    """Extract scoring components from RWA/tokenized asset attestation data."""
+    components = []
+
+    nav = data.get("nav_per_token")
+    if nav and isinstance(nav, (int, float)) and nav > 0:
+        nav_score = normalize_linear(nav, 0.98, 1.02)
+        components.append({
+            "component_id": "nav_per_token",
+            "category": "transparency",
+            "raw_value": round(nav, 4),
+            "normalized_score": round(nav_score, 2),
+            "data_source": source,
+        })
+
+    return components

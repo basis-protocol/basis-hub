@@ -43,7 +43,10 @@
       "Bash(head -c 200 /home/runner/workspace/frontend/dist/assets/*.js)",
       "Bash(git -C /home/runner/workspace log --oneline -5 -- frontend/dist/assets/index-BptLoetl.js)",
       "Bash(git ls-tree:*)",
-      "Bash(find /home/runner/workspace -name *mcp* -type f)"
+      "Bash(find /home/runner/workspace -name *mcp* -type f)",
+      "Bash(npx -y acorn --ecma2020 --module --allow-import-export-everywhere frontend/src/App.jsx)",
+      "Bash(node -e \"try { require\\(''fs''\\).readFileSync\\(''frontend/src/App.jsx'',''utf8''\\); console.log\\(''File readable''\\) } catch\\(e\\) { console.log\\(e.message\\) }\")",
+      "Bash(node:*)"
     ]
   }
 }

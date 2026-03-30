@@ -102,6 +102,37 @@ async def _run_psi_phase(budget: ApiBudgetManager):
     except Exception as e:
         logger.error(f"PSI scoring cycle failed: {e}")
 
+    # Collect collateral exposure after PSI scoring (one HTTP call, no API key needed)
+    try:
+        from app.collectors.psi_collector import collect_collateral_exposure
+        logger.info("Collecting protocol collateral exposure...")
+        collect_collateral_exposure()
+    except Exception as e:
+        logger.error(f"Collateral exposure collection failed: {e}")
+
+    # Sync collateral exposure data to auto-promote backlog
+    try:
+        from app.collectors.psi_collector import sync_collateral_to_backlog
+        synced = sync_collateral_to_backlog()
+        logger.info(f"Synced {synced} unscored collateral stablecoins to backlog")
+    except Exception as e:
+        logger.error(f"Collateral-to-backlog sync failed: {e}")
+
+    # Discover, enrich, and promote protocol candidates
+    try:
+        from app.collectors.psi_collector import (
+            discover_protocols, enrich_protocol_backlog, promote_eligible_protocols,
+        )
+        discovered = discover_protocols()
+        enriched = enrich_protocol_backlog()
+        promoted = promote_eligible_protocols()
+        logger.info(
+            f"Protocol backlog: {discovered} discovered, "
+            f"{enriched} enriched, {promoted} promoted"
+        )
+    except Exception as e:
+        logger.error(f"Protocol backlog cycle failed: {e}")
+
     budget.mark_completed("psi")
 
 

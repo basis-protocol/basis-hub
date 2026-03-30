@@ -102,6 +102,8 @@ else:
     EXPLORER_RATE_LIMIT_DELAY = 0.22  # ~4.5 req/sec (Blockscout Free: 5/sec)
     # Bump to 0.07 (~14 req/sec) if on Blockscout Builder ($49/mo, 15 RPS)
 
+BLOCKSCOUT_CONCURRENCY = int(os.environ.get("BLOCKSCOUT_CONCURRENCY", "10"))
+
 
 # =============================================================================
 # Multi-chain configuration — Blockscout instances + stablecoin contracts

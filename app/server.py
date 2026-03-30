@@ -165,23 +165,31 @@ def _seed_cda_issuer_registry():
     """Ensure cda_issuer_registry has entries for all known stablecoins."""
     from app.database import execute
     ON_CHAIN_AUDITORS = {"N/A (on-chain)", "N/A (algorithmic)", "N/A"}
+    DISCLOSURE_TYPE_MAP = {
+        "usde": "synthetic-derivative",
+        "dai": "overcollateralized",
+        "frax": "algorithmic",
+        "usdy": "rwa-tokenized",
+    }
     seeded = 0
     for sid, cfg in STABLECOIN_REGISTRY.items():
         auditor = cfg.get("attestation", {}).get("auditor", "")
         category = "crypto-backed" if auditor in ON_CHAIN_AUDITORS else "fiat-backed"
         method = "nav_oracle" if category == "crypto-backed" else "web_extract"
         url = cfg.get("attestation", {}).get("transparency_url")
+        disc_type = DISCLOSURE_TYPE_MAP.get(sid, "fiat-reserve" if category == "fiat-backed" else "unknown")
         try:
             execute(
                 """
                 INSERT INTO cda_issuer_registry
                     (asset_symbol, issuer_name, coingecko_id, transparency_url,
-                     collection_method, asset_category)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (asset_symbol) DO NOTHING
+                     collection_method, asset_category, disclosure_type)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (asset_symbol) DO UPDATE SET
+                    disclosure_type = EXCLUDED.disclosure_type
                 """,
                 (cfg["symbol"], cfg.get("issuer", "Unknown"), cfg.get("coingecko_id"),
-                 url, method, category),
+                 url, method, category, disc_type),
             )
             seeded += 1
         except Exception as e:
@@ -2134,8 +2142,32 @@ async def admin_reindex_batch(request: Request, background_tasks: BackgroundTask
     """Run one batch of wallet re-indexing. Call externally via cron."""
     _check_admin_key(request)
     from app.indexer.pipeline import run_pipeline_batch
+
+    # Count wallets that will be queued
+    stale_row = fetch_one("""
+        SELECT COUNT(*) AS cnt FROM wallet_graph.wallets
+        WHERE last_indexed_at IS NULL
+           OR last_indexed_at < NOW() - INTERVAL '24 hours'
+    """)
+    wallets_stale = stale_row["cnt"] if stale_row else 0
+    wallets_queued = min(wallets_stale, batch_size)
+
     background_tasks.add_task(run_pipeline_batch, batch_size)
-    return {"status": "started", "batch_size": batch_size}
+    return {
+        "status": "started",
+        "batch_size": batch_size,
+        "wallets_queued": wallets_queued,
+        "wallets_stale_total": wallets_stale,
+        "message": "Reindex started. Check GET /api/admin/reindex-status for progress.",
+    }
+
+
+@app.get("/api/admin/reindex-status")
+async def admin_reindex_status(request: Request):
+    """Return current/last reindex run metadata and DB freshness."""
+    _check_admin_key(request)
+    from app.indexer.pipeline import get_reindex_status
+    return get_reindex_status()
 
 
 @app.post("/api/admin/rebuild-profiles")
@@ -2271,7 +2303,7 @@ async def cda_issuers():
     """List all CDA-tracked issuers with last attestation date."""
     rows = fetch_all("""
         SELECT r.asset_symbol, r.issuer_name, r.transparency_url,
-               r.collection_method, r.created_at,
+               r.collection_method, r.disclosure_type, r.created_at,
                (
                    SELECT MAX(e.extracted_at)
                    FROM cda_vendor_extractions e
@@ -2288,6 +2320,7 @@ async def cda_issuers():
             "issuer_name": r["issuer_name"],
             "transparency_url": r["transparency_url"],
             "collection_method": r["collection_method"],
+            "disclosure_type": r.get("disclosure_type", "fiat-reserve"),
             "last_attestation": r["last_attestation"].isoformat() if r.get("last_attestation") else None,
         })
     return {"issuers": issuers, "count": len(issuers)}
@@ -2303,8 +2336,9 @@ def _extract_value(val):
     return val
 
 
-def _classify_attestation_quality(att: dict) -> dict:
-    """Add human-readable quality classification to an attestation."""
+def _classify_attestation_quality(att: dict, disclosure_type: str = None) -> dict:
+    """Add human-readable quality classification to an attestation.
+    Type-aware: different disclosure types have different expected fields."""
     sd = att.get("structured_data")
     if not sd:
         att["quality"] = "empty"
@@ -2322,6 +2356,37 @@ def _classify_attestation_quality(att: dict) -> dict:
             att["display_fields"] = []
             return att
 
+    # Unwrap Reducto citation wrappers
+    def _unwrap(obj):
+        if isinstance(obj, dict):
+            if "value" in obj and "citations" in obj:
+                return _unwrap(obj["value"])
+            return {k: _unwrap(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_unwrap(item) for item in obj]
+        return obj
+    sd = _unwrap(sd)
+
+    dtype = disclosure_type or "fiat-reserve"
+
+    if dtype == "synthetic-derivative":
+        display, quality, quality_label = _classify_synthetic(sd)
+    elif dtype == "rwa-tokenized":
+        display, quality, quality_label = _classify_rwa(sd)
+    elif dtype in ("overcollateralized", "algorithmic"):
+        display, quality, quality_label = _classify_onchain(sd, dtype)
+    else:
+        display, quality, quality_label = _classify_fiat_reserve(sd)
+
+    att["quality"] = quality
+    att["quality_label"] = quality_label
+    att["display_fields"] = display
+    att["disclosure_type"] = dtype
+    return att
+
+
+def _classify_fiat_reserve(sd: dict) -> tuple:
+    """Original fiat-reserve classification logic."""
     has_reserves = sd.get("total_reserves_usd") is not None
     has_supply = sd.get("total_supply") is not None
     has_date = sd.get("attestation_date") is not None
@@ -2350,26 +2415,144 @@ def _classify_attestation_quality(att: dict) -> dict:
         if isinstance(comp, dict):
             for k, v in comp.items():
                 if v is not None:
-                    label = k.replace("_pct", "").replace("_", " ").title()
                     extracted = _extract_value(v)
-                    if extracted is not None:
+                    if extracted is not None and extracted != 0 and extracted != "0":
+                        label = k.replace("_pct", "").replace("_", " ").title()
                         display.append({"label": label, "value": extracted, "type": "percent"})
 
     if has_reserves or (has_date and has_auditor):
-        att["quality"] = "full"
-        att["quality_label"] = "Reserve attestation"
+        return display, "full", "Reserve attestation"
     elif has_date or has_auditor:
-        att["quality"] = "partial"
-        att["quality_label"] = "Partial data"
+        return display, "partial", "Partial data"
     elif sd.get("content_length") or sd.get("excerpt_count"):
-        att["quality"] = "metadata"
-        att["quality_label"] = "Page scraped — no reserve data extracted"
+        return display, "metadata", "Page scraped — no reserve data extracted"
     else:
-        att["quality"] = "minimal"
-        att["quality_label"] = "Minimal data"
+        return display, "minimal", "Minimal data"
 
-    att["display_fields"] = display
-    return att
+
+def _classify_synthetic(sd: dict) -> tuple:
+    """Classification for synthetic/derivative-backed stablecoins."""
+    display = []
+    has_data = False
+
+    supply = sd.get("total_supply")
+    if supply:
+        display.append({"label": "Total Supply", "value": _extract_value(supply), "type": "number"})
+        has_data = True
+
+    backing = sd.get("backing_assets", {})
+    if isinstance(backing, dict):
+        total_backing = backing.get("total_value_usd")
+        if total_backing:
+            display.append({"label": "Total Backing", "value": _extract_value(total_backing), "type": "currency"})
+            has_data = True
+        for k in ("staked_eth_usd", "derivatives_notional_usd", "other_usd"):
+            v = backing.get(k)
+            if v and _extract_value(v):
+                label = k.replace("_usd", "").replace("_", " ").title()
+                display.append({"label": label, "value": _extract_value(v), "type": "currency"})
+
+    cr = sd.get("collateral_ratio")
+    if cr:
+        display.append({"label": "Collateral Ratio", "value": _extract_value(cr), "type": "ratio"})
+        has_data = True
+
+    oi = sd.get("open_interest")
+    if oi:
+        display.append({"label": "Open Interest", "value": _extract_value(oi), "type": "currency"})
+        has_data = True
+
+    fr = sd.get("funding_rate")
+    if fr:
+        display.append({"label": "Funding Rate", "value": _extract_value(fr), "type": "percent"})
+
+    custodians = sd.get("custodians", [])
+    if isinstance(custodians, list) and custodians:
+        for c in custodians:
+            if isinstance(c, dict) and c.get("name"):
+                label = f"Custodian: {c['name']}"
+                val = c.get("assets_held_usd") or c.get("percentage")
+                ctype = "currency" if c.get("assets_held_usd") else "percent"
+                if val:
+                    display.append({"label": label, "value": _extract_value(val), "type": ctype})
+            elif isinstance(c, str):
+                display.append({"label": "Custodian", "value": c, "type": "text"})
+        has_data = True
+
+    att_date = sd.get("attestation_date")
+    if att_date:
+        display.append({"label": "Report Date", "value": _extract_value(att_date), "type": "text"})
+        has_data = True
+
+    auditor = sd.get("auditor_name") or sd.get("auditor")
+    if auditor:
+        display.append({"label": "Attestor", "value": _extract_value(auditor), "type": "text"})
+
+    if has_data and len(display) >= 3:
+        return display, "full", "Custodian attestation"
+    elif has_data:
+        return display, "partial", "Partial custodian data"
+    elif sd.get("content_length") or sd.get("excerpt_count"):
+        return display, "metadata", "Page scraped — no custodian data extracted"
+    else:
+        return display, "empty", "No data extracted"
+
+
+def _classify_rwa(sd: dict) -> tuple:
+    """Classification for RWA/tokenized asset attestations."""
+    display = []
+    has_data = False
+
+    nav = sd.get("nav_per_token")
+    if nav:
+        display.append({"label": "NAV / Token", "value": _extract_value(nav), "type": "currency"})
+        has_data = True
+
+    total = sd.get("total_assets_usd")
+    if total:
+        display.append({"label": "Total AUM", "value": _extract_value(total), "type": "currency"})
+        has_data = True
+
+    supply = sd.get("total_supply")
+    if supply:
+        display.append({"label": "Total Supply", "value": _extract_value(supply), "type": "number"})
+
+    yld = sd.get("yield_rate")
+    if yld:
+        display.append({"label": "Yield / APY", "value": _extract_value(yld), "type": "percent"})
+
+    wam = sd.get("weighted_avg_maturity_days")
+    if wam:
+        display.append({"label": "Avg Maturity", "value": f"{_extract_value(wam)} days", "type": "text"})
+
+    holdings = sd.get("underlying_holdings", {})
+    if isinstance(holdings, dict):
+        for k, v in holdings.items():
+            if v and _extract_value(v):
+                label = k.replace("_pct", "").replace("_", " ").title()
+                display.append({"label": label, "value": _extract_value(v), "type": "percent"})
+
+    att_date = sd.get("attestation_date")
+    if att_date:
+        display.append({"label": "Report Date", "value": _extract_value(att_date), "type": "text"})
+        has_data = True
+
+    auditor = sd.get("auditor_name")
+    if auditor:
+        display.append({"label": "Auditor", "value": _extract_value(auditor), "type": "text"})
+
+    if has_data and len(display) >= 3:
+        return display, "full", "NAV attestation"
+    elif has_data:
+        return display, "partial", "Partial NAV data"
+    else:
+        return display, "empty", "No data extracted"
+
+
+def _classify_onchain(sd: dict, dtype: str) -> tuple:
+    """Classification for on-chain verified assets (DAI, FRAX)."""
+    label = "Overcollateralized vault" if dtype == "overcollateralized" else "Algorithmic"
+    return [], "not_applicable", f"{label} — verified on-chain"
 
 
 async def cda_issuer_latest(symbol: str):
@@ -2378,13 +2561,15 @@ async def cda_issuer_latest(symbol: str):
     import json as _json
 
     row = fetch_one("""
-        SELECT id, asset_symbol, source_url, source_type, extraction_method,
-               extraction_vendor, structured_data, confidence_score,
-               extraction_warnings, extracted_at
-        FROM cda_vendor_extractions
-        WHERE UPPER(asset_symbol) = %s
-          AND structured_data IS NOT NULL
-        ORDER BY extracted_at DESC
+        SELECT e.id, e.asset_symbol, e.source_url, e.source_type, e.extraction_method,
+               e.extraction_vendor, e.structured_data, e.confidence_score,
+               e.extraction_warnings, e.extracted_at,
+               r.disclosure_type, r.issuer_name
+        FROM cda_vendor_extractions e
+        LEFT JOIN cda_issuer_registry r ON UPPER(r.asset_symbol) = UPPER(e.asset_symbol)
+        WHERE UPPER(e.asset_symbol) = %s
+          AND e.structured_data IS NOT NULL
+        ORDER BY e.extracted_at DESC
         LIMIT 1
     """, (symbol.upper(),))
 
@@ -2402,18 +2587,26 @@ async def cda_issuer_latest(symbol: str):
         "confidence_score": float(row["confidence_score"]) if row.get("confidence_score") else None,
         "extraction_warnings": row.get("extraction_warnings"),
         "extracted_at": row["extracted_at"].isoformat() if row.get("extracted_at") else None,
+        "issuer_name": row.get("issuer_name"),
     }
 
     raw_data = _json.dumps(attestation, sort_keys=True, separators=(',', ':'), default=str)
     evidence_hash = '0x' + hashlib.sha256(raw_data.encode()).hexdigest()
     attestation["evidence_hash"] = evidence_hash
 
-    return _classify_attestation_quality(attestation)
+    disclosure_type = row.get("disclosure_type", "fiat-reserve")
+    return _classify_attestation_quality(attestation, disclosure_type=disclosure_type)
 
 
 @app.get("/api/cda/issuers/{symbol}/history")
 async def cda_issuer_history(symbol: str, days: int = Query(default=90, ge=1, le=365)):
     """Attestation history for a specific issuer."""
+    reg = fetch_one(
+        "SELECT disclosure_type FROM cda_issuer_registry WHERE UPPER(asset_symbol) = %s",
+        (symbol.upper(),)
+    )
+    disc_type = reg.get("disclosure_type", "fiat-reserve") if reg else "fiat-reserve"
+
     rows = fetch_all("""
         SELECT id, asset_symbol, source_url, source_type, extraction_method,
                extraction_vendor, structured_data, confidence_score,
@@ -2439,13 +2632,14 @@ async def cda_issuer_history(symbol: str, days: int = Query(default=90, ge=1, le
             "extracted_at": r["extracted_at"].isoformat() if r.get("extracted_at") else None,
         })
 
-    attestations = [_classify_attestation_quality(a) for a in attestations]
+    attestations = [_classify_attestation_quality(a, disclosure_type=disc_type) for a in attestations]
 
     return {
         "asset": symbol.upper(),
         "days": days,
         "attestations": attestations,
         "count": len(attestations),
+        "disclosure_type": disc_type,
     }
 
 
@@ -2854,6 +3048,515 @@ async def psi_definition():
     """Return the full PSI v0.1 index definition."""
     from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
     return PSI_V01_DEFINITION
+
+
+# =============================================================================
+# Treasury Exposure — cross-reference protocol holdings with SII scores
+# =============================================================================
+
+def _build_protocol_treasury(rows_by_slug):
+    """Build treasury response for a set of holdings grouped by protocol slug."""
+    protocols = []
+    total_stable_usd = 0.0
+    covered_usd = 0.0
+    uncovered_usd = 0.0
+    unscored_symbols = set()
+
+    for slug, rows in rows_by_slug.items():
+        # Get PSI score for this protocol
+        psi_row = fetch_one("""
+            SELECT protocol_name, overall_score FROM psi_scores
+            WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1
+        """, (slug,))
+        psi_name = psi_row["protocol_name"] if psi_row else slug
+        psi_score = float(psi_row["overall_score"]) if psi_row and psi_row.get("overall_score") else None
+
+        treasury_total = sum(r["usd_value"] for r in rows)
+        stablecoin_rows = [r for r in rows if r["is_stablecoin"]]
+        scored = [r for r in stablecoin_rows if r["sii_score"] is not None]
+        unscored = [r for r in stablecoin_rows if r["sii_score"] is None]
+
+        # Aggregate by symbol (may appear on multiple chains)
+        def _agg(subset):
+            by_sym = {}
+            for r in subset:
+                sym = r["token_symbol"]
+                if sym not in by_sym:
+                    by_sym[sym] = {"symbol": sym, "usd_value": 0.0, "sii_score": r.get("sii_score")}
+                by_sym[sym]["usd_value"] += r["usd_value"]
+            for v in by_sym.values():
+                v["pct_of_treasury"] = round((v["usd_value"] / treasury_total) * 100, 2) if treasury_total else 0
+                if v["sii_score"] is not None:
+                    v["sii_score"] = round(float(v["sii_score"]), 1)
+                    v["sii_grade"] = score_to_grade(v["sii_score"])
+            return sorted(by_sym.values(), key=lambda x: x["usd_value"], reverse=True)
+
+        scored_agg = _agg(scored)
+        unscored_agg = _agg(unscored)
+
+        # Weighted avg SII
+        total_scored_usd = sum(s["usd_value"] for s in scored_agg)
+        weighted_sii = None
+        if total_scored_usd > 0:
+            weighted_sii = round(
+                sum(s["usd_value"] * s["sii_score"] for s in scored_agg) / total_scored_usd, 1
+            )
+
+        lowest = min(scored_agg, key=lambda x: x["sii_score"]) if scored_agg else None
+        stablecoin_pct = round(
+            sum(r["usd_value"] for r in stablecoin_rows) / treasury_total * 100, 2
+        ) if treasury_total else 0
+
+        protocols.append({
+            "slug": slug,
+            "name": psi_name,
+            "psi_score": round(psi_score, 1) if psi_score else None,
+            "treasury_total_usd": round(treasury_total, 2),
+            "stablecoin_holdings": scored_agg,
+            "unscored_stablecoins": [{"symbol": u["symbol"], "usd_value": u["usd_value"], "pct_of_treasury": u["pct_of_treasury"]} for u in unscored_agg],
+            "stablecoin_pct": stablecoin_pct,
+            "weighted_avg_sii": weighted_sii,
+            "lowest_sii_held": {"symbol": lowest["symbol"], "sii_score": lowest["sii_score"]} if lowest else None,
+        })
+
+        total_stable_usd += sum(r["usd_value"] for r in stablecoin_rows)
+        covered_usd += sum(r["usd_value"] for r in scored)
+        uncovered_usd += sum(r["usd_value"] for r in unscored)
+        for u in unscored_agg:
+            unscored_symbols.add(u["symbol"])
+
+    return protocols, {
+        "total_stablecoin_exposure_usd": round(total_stable_usd, 2),
+        "pct_covered_by_sii": round(covered_usd / total_stable_usd * 100, 1) if total_stable_usd else 0,
+        "pct_uncovered": round(uncovered_usd / total_stable_usd * 100, 1) if total_stable_usd else 0,
+        "unscored_stablecoins": sorted(unscored_symbols),
+    }
+
+
+@app.get("/api/protocols/treasury-exposure")
+async def treasury_exposure():
+    """All protocols' stablecoin holdings with SII cross-reference."""
+    rows = fetch_all("""
+        SELECT protocol_slug, token_name, token_symbol, chain, usd_value,
+               is_stablecoin, sii_score
+        FROM protocol_treasury_holdings
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM protocol_treasury_holdings)
+        ORDER BY protocol_slug, usd_value DESC
+    """)
+    if not rows:
+        return {"protocols": [], "coverage_summary": {}}
+
+    rows_by_slug = {}
+    for r in rows:
+        rows_by_slug.setdefault(r["protocol_slug"], []).append(r)
+
+    protocols, coverage = _build_protocol_treasury(rows_by_slug)
+    protocols.sort(key=lambda p: p["treasury_total_usd"], reverse=True)
+
+    return {"protocols": protocols, "coverage_summary": coverage}
+
+
+@app.get("/api/protocols/{slug}/treasury")
+async def protocol_treasury(slug: str):
+    """Single protocol treasury breakdown with SII cross-reference."""
+    rows = fetch_all("""
+        SELECT token_name, token_symbol, chain, usd_value, is_stablecoin, sii_score
+        FROM protocol_treasury_holdings
+        WHERE protocol_slug = %s
+          AND snapshot_date = (
+              SELECT MAX(snapshot_date) FROM protocol_treasury_holdings WHERE protocol_slug = %s
+          )
+        ORDER BY usd_value DESC
+    """, (slug, slug))
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No treasury data for '{slug}'")
+
+    protocols, coverage = _build_protocol_treasury({slug: rows})
+    return protocols[0] if protocols else {}
+
+
+@app.get("/api/stablecoins/{symbol}/protocol-exposure")
+async def stablecoin_protocol_exposure(symbol: str):
+    """Reverse lookup — which protocols hold this stablecoin?"""
+    sym_upper = symbol.upper()
+    rows = fetch_all("""
+        SELECT h.protocol_slug, h.usd_value, h.sii_score,
+               p.protocol_name, p.overall_score as psi_score
+        FROM protocol_treasury_holdings h
+        LEFT JOIN LATERAL (
+            SELECT protocol_name, overall_score
+            FROM psi_scores
+            WHERE protocol_slug = h.protocol_slug
+            ORDER BY computed_at DESC LIMIT 1
+        ) p ON true
+        WHERE UPPER(h.token_symbol) = %s
+          AND h.is_stablecoin = TRUE
+          AND h.snapshot_date = (SELECT MAX(snapshot_date) FROM protocol_treasury_holdings)
+        ORDER BY h.usd_value DESC
+    """, (sym_upper,))
+
+    # Get SII score for this stablecoin
+    sii_row = fetch_one("""
+        SELECT s.overall_score FROM scores s
+        JOIN stablecoins st ON st.id = s.stablecoin_id
+        WHERE UPPER(st.symbol) = %s
+    """, (sym_upper,))
+    sii_score = round(float(sii_row["overall_score"]), 1) if sii_row and sii_row.get("overall_score") else None
+
+    held_by = []
+    total_exposure = 0.0
+    for r in rows:
+        usd = float(r["usd_value"])
+        held_by.append({
+            "protocol": r["protocol_slug"],
+            "protocol_name": r.get("protocol_name"),
+            "psi_score": round(float(r["psi_score"]), 1) if r.get("psi_score") else None,
+            "usd_value": round(usd, 2),
+        })
+        total_exposure += usd
+
+    return {
+        "symbol": sym_upper,
+        "sii_score": sii_score,
+        "held_by": held_by,
+        "total_protocol_exposure_usd": round(total_exposure, 2),
+    }
+
+
+# =============================================================================
+# Collateral Exposure — what stablecoins protocols accept from users
+# =============================================================================
+
+def _build_collateral_protocol(rows):
+    """Build collateral exposure response for a single protocol's rows."""
+    if not rows:
+        return None
+
+    slug = rows[0]["protocol_slug"]
+    psi_row = fetch_one("""
+        SELECT protocol_name, overall_score FROM psi_scores
+        WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1
+    """, (slug,))
+    psi_name = psi_row["protocol_name"] if psi_row else slug
+    psi_score = round(float(psi_row["overall_score"]), 1) if psi_row and psi_row.get("overall_score") else None
+
+    total_stable_usd = sum(float(r["tvl_usd"]) for r in rows)
+    exposure_list = []
+    unscored_usd = 0.0
+
+    for r in sorted(rows, key=lambda x: x["tvl_usd"], reverse=True):
+        tvl = float(r["tvl_usd"])
+        sii = round(float(r["sii_score"]), 1) if r.get("sii_score") is not None else None
+        entry = {
+            "symbol": r["token_symbol"],
+            "tvl_usd": round(tvl, 2),
+            "sii_score": sii,
+            "is_sii_scored": r["is_sii_scored"],
+            "pct_of_total": round(tvl / total_stable_usd * 100, 2) if total_stable_usd else 0,
+        }
+        if sii is not None:
+            entry["sii_grade"] = score_to_grade(sii)
+        exposure_list.append(entry)
+        if not r["is_sii_scored"]:
+            unscored_usd += tvl
+
+    # Weighted avg SII across scored holdings
+    scored = [e for e in exposure_list if e["sii_score"] is not None]
+    scored_usd = sum(e["tvl_usd"] for e in scored)
+    weighted_sii = round(
+        sum(e["tvl_usd"] * e["sii_score"] for e in scored) / scored_usd, 1
+    ) if scored_usd > 0 else None
+
+    return {
+        "slug": slug,
+        "name": psi_name,
+        "psi_score": psi_score,
+        "total_stablecoin_collateral_usd": round(total_stable_usd, 2),
+        "stablecoin_exposure": exposure_list,
+        "unscored_exposure_usd": round(unscored_usd, 2),
+        "unscored_exposure_pct": round(unscored_usd / total_stable_usd * 100, 2) if total_stable_usd else 0,
+        "weighted_avg_sii": weighted_sii,
+    }
+
+
+@app.get("/api/protocols/backlog")
+async def protocol_backlog():
+    """Protocol discovery backlog — candidates for PSI scoring."""
+    try:
+        rows = fetch_all("""
+            SELECT slug, name, category, tvl_usd,
+                   stablecoin_exposure_usd, unscored_stablecoin_exposure_usd,
+                   unscored_stablecoins,
+                   enrichment_status, components_available, components_total,
+                   coverage_pct, first_seen_at
+            FROM protocol_backlog
+            ORDER BY stablecoin_exposure_usd DESC
+        """)
+    except Exception:
+        return {"protocols": [], "summary": {}}
+
+    protocols = []
+    status_counts = {"discovered": 0, "enriching": 0, "ready": 0, "promoted": 0, "scored": 0}
+
+    for r in rows:
+        status = r.get("enrichment_status", "discovered")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        protocols.append({
+            "slug": r["slug"],
+            "name": r.get("name"),
+            "category": r.get("category"),
+            "tvl_usd": round(float(r.get("tvl_usd") or 0), 2),
+            "stablecoin_exposure_usd": round(float(r.get("stablecoin_exposure_usd") or 0), 2),
+            "unscored_stablecoin_exposure_usd": round(float(r.get("unscored_stablecoin_exposure_usd") or 0), 2),
+            "unscored_stablecoins": r.get("unscored_stablecoins") or [],
+            "enrichment_status": status,
+            "components_available": r.get("components_available") or 0,
+            "coverage_pct": round(float(r.get("coverage_pct") or 0), 1),
+            "first_seen_at": str(r["first_seen_at"]) if r.get("first_seen_at") else None,
+        })
+
+    from app.index_definitions.psi_v01 import TARGET_PROTOCOLS
+    status_counts["scored"] += len(TARGET_PROTOCOLS)  # hardcoded protocols are always scored
+
+    return {"protocols": protocols, "summary": status_counts}
+
+
+@app.get("/api/protocols/collateral-exposure")
+async def collateral_exposure():
+    """All protocols' stablecoin collateral exposure with SII cross-reference."""
+    rows = fetch_all("""
+        SELECT protocol_slug, pool_id, token_symbol, chain, tvl_usd,
+               is_stablecoin, is_sii_scored, sii_score, pool_type
+        FROM protocol_collateral_exposure
+        WHERE is_stablecoin = TRUE
+          AND snapshot_date = (SELECT MAX(snapshot_date) FROM protocol_collateral_exposure)
+        ORDER BY protocol_slug, tvl_usd DESC
+    """)
+    if not rows:
+        return {"protocols": [], "totals": {}}
+
+    # Group by protocol
+    by_slug = {}
+    for r in rows:
+        by_slug.setdefault(r["protocol_slug"], []).append(r)
+
+    protocols = []
+    total_exposure = 0.0
+    covered_usd = 0.0
+    uncovered_usd = 0.0
+    unscored_agg = {}  # symbol -> {total_usd, protocol_count}
+
+    for slug, proto_rows in by_slug.items():
+        proto = _build_collateral_protocol(proto_rows)
+        if proto:
+            protocols.append(proto)
+            total_exposure += proto["total_stablecoin_collateral_usd"]
+            covered_usd += proto["total_stablecoin_collateral_usd"] - proto["unscored_exposure_usd"]
+            uncovered_usd += proto["unscored_exposure_usd"]
+            for e in proto["stablecoin_exposure"]:
+                if not e["is_sii_scored"]:
+                    sym = e["symbol"]
+                    if sym not in unscored_agg:
+                        unscored_agg[sym] = {"symbol": sym, "total_exposure_usd": 0.0, "protocol_count": 0}
+                    unscored_agg[sym]["total_exposure_usd"] += e["tvl_usd"]
+                    unscored_agg[sym]["protocol_count"] += 1
+
+    protocols.sort(key=lambda p: p["total_stablecoin_collateral_usd"], reverse=True)
+
+    unscored_list = sorted(unscored_agg.values(), key=lambda x: x["total_exposure_usd"], reverse=True)
+    for u in unscored_list:
+        u["total_exposure_usd"] = round(u["total_exposure_usd"], 2)
+
+    return {
+        "protocols": protocols,
+        "totals": {
+            "total_stablecoin_exposure_usd": round(total_exposure, 2),
+            "covered_by_sii_usd": round(covered_usd, 2),
+            "uncovered_usd": round(uncovered_usd, 2),
+            "coverage_pct": round(covered_usd / total_exposure * 100, 1) if total_exposure else 0,
+            "unscored_stablecoins": unscored_list,
+        },
+    }
+
+
+@app.get("/api/protocols/{slug}/collateral-exposure")
+async def protocol_collateral_exposure(slug: str):
+    """Single protocol's stablecoin collateral exposure."""
+    rows = fetch_all("""
+        SELECT protocol_slug, pool_id, token_symbol, chain, tvl_usd,
+               is_stablecoin, is_sii_scored, sii_score, pool_type
+        FROM protocol_collateral_exposure
+        WHERE protocol_slug = %s AND is_stablecoin = TRUE
+          AND snapshot_date = (
+              SELECT MAX(snapshot_date) FROM protocol_collateral_exposure WHERE protocol_slug = %s
+          )
+        ORDER BY tvl_usd DESC
+    """, (slug, slug))
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No collateral data for '{slug}'")
+    return _build_collateral_protocol(rows)
+
+
+@app.get("/api/stablecoins/{symbol}/collateral-exposure")
+async def stablecoin_collateral_exposure(symbol: str):
+    """Reverse lookup — which protocols accept this stablecoin as collateral?"""
+    sym_upper = symbol.upper()
+    rows = fetch_all("""
+        SELECT ce.protocol_slug, ce.tvl_usd, ce.is_sii_scored, ce.sii_score,
+               p.protocol_name, p.overall_score as psi_score
+        FROM protocol_collateral_exposure ce
+        LEFT JOIN LATERAL (
+            SELECT protocol_name, overall_score
+            FROM psi_scores
+            WHERE protocol_slug = ce.protocol_slug
+            ORDER BY computed_at DESC LIMIT 1
+        ) p ON true
+        WHERE UPPER(ce.token_symbol) = %s
+          AND ce.is_stablecoin = TRUE
+          AND ce.snapshot_date = (SELECT MAX(snapshot_date) FROM protocol_collateral_exposure)
+        ORDER BY ce.tvl_usd DESC
+    """, (sym_upper,))
+
+    # Get SII score
+    sii_row = fetch_one("""
+        SELECT s.overall_score FROM scores s
+        JOIN stablecoins st ON st.id = s.stablecoin_id
+        WHERE UPPER(st.symbol) = %s
+    """, (sym_upper,))
+    sii_score = round(float(sii_row["overall_score"]), 1) if sii_row and sii_row.get("overall_score") else None
+    is_sii_scored = sii_score is not None
+
+    accepted_by = []
+    total_exposure = 0.0
+    for r in rows:
+        tvl = float(r["tvl_usd"])
+        accepted_by.append({
+            "protocol": r["protocol_slug"],
+            "protocol_name": r.get("protocol_name"),
+            "psi_score": round(float(r["psi_score"]), 1) if r.get("psi_score") else None,
+            "tvl_usd": round(tvl, 2),
+        })
+        total_exposure += tvl
+
+    result = {
+        "symbol": sym_upper,
+        "is_sii_scored": is_sii_scored,
+        "sii_score": sii_score,
+        "accepted_by": accepted_by,
+        "total_collateral_exposure_usd": round(total_exposure, 2),
+    }
+    if not is_sii_scored and accepted_by:
+        result["risk_note"] = (
+            f"This stablecoin is accepted as collateral by {len(accepted_by)} "
+            f"protocol{'s' if len(accepted_by) != 1 else ''} but has no SII score."
+        )
+    return result
+
+
+# =============================================================================
+# Full Exposure — combined treasury + collateral for a single protocol
+# =============================================================================
+
+@app.get("/api/protocols/{slug}/full-exposure")
+async def protocol_full_exposure(slug: str):
+    """Combined treasury holdings + collateral exposure for one protocol."""
+    # PSI score
+    psi_row = fetch_one("""
+        SELECT protocol_name, overall_score FROM psi_scores
+        WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1
+    """, (slug,))
+    if not psi_row:
+        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in PSI scores")
+    psi_score = round(float(psi_row["overall_score"]), 1) if psi_row.get("overall_score") else None
+
+    # Treasury holdings (from session 026)
+    treasury_rows = fetch_all("""
+        SELECT token_name, token_symbol, chain, usd_value, is_stablecoin, sii_score
+        FROM protocol_treasury_holdings
+        WHERE protocol_slug = %s AND is_stablecoin = TRUE
+          AND snapshot_date = (
+              SELECT MAX(snapshot_date) FROM protocol_treasury_holdings WHERE protocol_slug = %s
+          )
+        ORDER BY usd_value DESC
+    """, (slug, slug))
+
+    treasury_exposure = {}
+    treasury_total = 0.0
+    for r in treasury_rows:
+        sym = r["token_symbol"]
+        if sym not in treasury_exposure:
+            treasury_exposure[sym] = {"symbol": sym, "usd_value": 0.0, "sii_score": None}
+        treasury_exposure[sym]["usd_value"] += float(r["usd_value"])
+        if r.get("sii_score") is not None:
+            treasury_exposure[sym]["sii_score"] = round(float(r["sii_score"]), 1)
+        treasury_total += float(r["usd_value"])
+
+    # Collateral exposure (from this session)
+    collateral_rows = fetch_all("""
+        SELECT token_symbol, tvl_usd, is_sii_scored, sii_score
+        FROM protocol_collateral_exposure
+        WHERE protocol_slug = %s AND is_stablecoin = TRUE
+          AND snapshot_date = (
+              SELECT MAX(snapshot_date) FROM protocol_collateral_exposure WHERE protocol_slug = %s
+          )
+        ORDER BY tvl_usd DESC
+    """, (slug, slug))
+
+    collateral_exposure = {}
+    collateral_total = 0.0
+    for r in collateral_rows:
+        sym = r["token_symbol"]
+        tvl = float(r["tvl_usd"])
+        collateral_exposure[sym] = {
+            "symbol": sym,
+            "tvl_usd": round(tvl, 2),
+            "is_sii_scored": r["is_sii_scored"],
+            "sii_score": round(float(r["sii_score"]), 1) if r.get("sii_score") is not None else None,
+        }
+        collateral_total += tvl
+
+    # Combined unscored stablecoins
+    all_syms = set(treasury_exposure.keys()) | set(collateral_exposure.keys())
+    unscored = sorted(
+        sym for sym in all_syms
+        if (treasury_exposure.get(sym, {}).get("sii_score") is None
+            and collateral_exposure.get(sym, {}).get("sii_score") is None)
+    )
+
+    # Risk summary
+    combined_total = treasury_total + collateral_total
+    scored_total = 0.0
+    lowest_sii = None
+    largest_unscored = None
+
+    for sym in all_syms:
+        t_usd = treasury_exposure.get(sym, {}).get("usd_value", 0)
+        c_usd = collateral_exposure.get(sym, {}).get("tvl_usd", 0)
+        sii = (treasury_exposure.get(sym, {}).get("sii_score")
+               or collateral_exposure.get(sym, {}).get("sii_score"))
+        if sii is not None:
+            scored_total += t_usd + c_usd
+            if lowest_sii is None or sii < lowest_sii.get("sii_score", 999):
+                lowest_sii = {"symbol": sym, "sii_score": sii, "tvl_usd": round(c_usd, 2)}
+        else:
+            total_sym = t_usd + c_usd
+            if largest_unscored is None or total_sym > largest_unscored.get("tvl_usd", 0):
+                largest_unscored = {"symbol": sym, "tvl_usd": round(total_sym, 2)}
+
+    return {
+        "slug": slug,
+        "name": psi_row["protocol_name"],
+        "psi_score": psi_score,
+        "treasury_stablecoin_exposure": sorted(treasury_exposure.values(), key=lambda x: x["usd_value"], reverse=True),
+        "collateral_stablecoin_exposure": sorted(collateral_exposure.values(), key=lambda x: x["tvl_usd"], reverse=True),
+        "combined_unscored_stablecoins": unscored,
+        "risk_summary": {
+            "total_stablecoin_exposure_usd": round(combined_total, 2),
+            "sii_coverage_pct": round(scored_total / combined_total * 100, 1) if combined_total else 0,
+            "lowest_sii_in_collateral": lowest_sii,
+            "largest_unscored": largest_unscored,
+        },
+    }
 
 
 @app.get("/api/indices")

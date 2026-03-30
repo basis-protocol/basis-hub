@@ -2422,7 +2422,14 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
 
   const renderDisplayFields = (fields) => {
     if (!fields || fields.length === 0) return null;
-    return fields.map((f, i) => (
+    const meaningful = fields.filter(f => {
+      const v = typeof f.value === "object" && f.value !== null ? (f.value.value ?? f.value.amount ?? null) : f.value;
+      if (v === null || v === undefined || v === "—" || v === "") return false;
+      if ((v === 0 || v === "0" || v === "0%") && f.type !== "ratio") return false;
+      return true;
+    });
+    if (meaningful.length === 0) return null;
+    return meaningful.map((f, i) => (
       <div key={i} style={{
         display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "2px 8px",
         padding: "6px 0", borderBottom: `1px dotted ${T.ruleLight}`, fontSize: 12,
@@ -2504,7 +2511,11 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
         )}
         {attestations.length === 0 && (
           <div style={{ padding: 24, textAlign: "center", color: T.inkFaint, fontSize: 12, fontFamily: T.sans, lineHeight: 1.7 }}>
-            No structured reserve data extracted yet.
+            {latest?.disclosure_type === "overcollateralized" || latest?.disclosure_type === "algorithmic"
+              ? "This asset is verified on-chain. No off-chain attestation required."
+              : latest?.disclosure_type === "synthetic-derivative"
+              ? "No structured custodian data extracted yet."
+              : "No structured reserve data extracted yet."}
             {transparencyUrl && (
               <>
                 {" "}
@@ -2561,6 +2572,19 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
                 }}>
                   {mobile && <span style={{ fontSize: 10, color: T.inkLight, marginRight: 6 }}>QUALITY:</span>}
                   {att.quality_label || "—"}
+                  {att.disclosure_type && att.disclosure_type !== "fiat-reserve" && (
+                    <span style={{
+                      fontFamily: T.mono, fontSize: 9, color: T.inkFaint,
+                      padding: "1px 4px", border: `1px solid ${T.ruleLight}`,
+                      marginLeft: 6,
+                    }}>
+                      {att.disclosure_type === "synthetic-derivative" ? "SYNTHETIC" :
+                       att.disclosure_type === "rwa-tokenized" ? "RWA" :
+                       att.disclosure_type === "overcollateralized" ? "VAULT" :
+                       att.disclosure_type === "algorithmic" ? "ALGO" :
+                       att.disclosure_type.toUpperCase()}
+                    </span>
+                  )}
                 </span>
               </div>
               {isExpanded && (
@@ -2569,10 +2593,13 @@ function WitnessDetailView({ symbol, onBack, mobile }) {
                   background: T.paperWarm,
                   borderBottom: i < attestations.length - 1 ? `1px dotted ${T.ruleMid}` : "none",
                 }}>
-                  {att.display_fields && att.display_fields.length > 0 && (
+                  {att.display_fields && att.display_fields.length > 0 && renderDisplayFields(att.display_fields) && (
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8, fontFamily: T.mono }}>
-                        RESERVE DATA
+                        {att.disclosure_type === "synthetic-derivative" ? "BACKING DATA" :
+                         att.disclosure_type === "rwa-tokenized" ? "NAV DATA" :
+                         att.disclosure_type === "overcollateralized" ? "COLLATERAL DATA" :
+                         "RESERVE DATA"}
                       </div>
                       <div style={{ border: `1px solid ${T.ruleLight}`, padding: "8px 12px" }}>
                         {renderDisplayFields(att.display_fields)}
