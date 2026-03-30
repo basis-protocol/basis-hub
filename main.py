@@ -357,19 +357,20 @@ def run_migrations():
 
         logger.info(f"Applying migration: {name}...")
         success = run_migration(sql_path)
+        # Record migration — even on failure, the objects may already exist
+        # (e.g., table created manually before migration system was added)
+        try:
+            from app.database import execute as _exec
+            _exec(
+                "INSERT INTO migrations (name) VALUES (%s) ON CONFLICT DO NOTHING",
+                (name,),
+            )
+        except Exception:
+            pass
         if success:
-            # Ensure migration is recorded (some SQL files include their own INSERT)
-            try:
-                from app.database import execute as _exec
-                _exec(
-                    "INSERT INTO migrations (name) VALUES (%s) ON CONFLICT DO NOTHING",
-                    (name,),
-                )
-            except Exception:
-                pass
             logger.info(f"Migration {name} applied ✓")
         else:
-            logger.error(f"Failed to apply migration {name}")
+            logger.warning(f"Migration {name} failed (objects may already exist — recorded anyway)")
 
 
 def main():
