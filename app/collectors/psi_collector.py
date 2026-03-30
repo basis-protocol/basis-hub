@@ -70,6 +70,47 @@ def fetch_fees_data(slug):
     return None
 
 
+def fetch_treasury_data(slug):
+    """Fetch protocol treasury data from DeFiLlama."""
+    time.sleep(1)
+    try:
+        resp = requests.get(f"{DEFILLAMA_BASE}/treasury/{slug}", timeout=15)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception as e:
+        logger.debug(f"Treasury fetch failed for {slug}: {e}")
+    return None
+
+
+# Known bad debt events (static config — updated manually)
+KNOWN_BAD_DEBT = {
+    "aave": 0,
+    "lido": 0,
+    "eigenlayer": 0,
+    "sky": 0,  # historically had some, long resolved
+    "compound-finance": 0,
+    "uniswap": 0,
+    "curve-finance": 0,
+    "morpho": 0,
+    "spark": 0,
+    "convex-finance": 0,
+}
+
+# Protocol main contract addresses for admin key analysis
+PROTOCOL_CONTRACTS = {
+    "aave": "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9",        # AAVE token
+    "lido": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",        # stETH
+    "eigenlayer": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A",   # Strategy Manager
+    "sky": "0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2",         # MKR token
+    "compound-finance": "0xc0Da02939E1441F497fd74F78cE7Decb17B66529", # Governance
+    "uniswap": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",     # UNI token
+    "curve-finance": "0xD533a949740bb3306d119CC777fa900bA034cd52",  # CRV token
+    "morpho": "0x9994E35Db50125E0DF82e4c2dde62496CE330999",       # Morpho token
+    "spark": None,
+    "convex-finance": "0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B", # CVX token
+}
+
+
 def fetch_coingecko_token(gecko_id):
     """Fetch governance token data from CoinGecko for holder count and volume."""
     if not gecko_id:
@@ -129,7 +170,7 @@ def fetch_snapshot_proposals(space_id):
     return None
 
 
-def extract_raw_values(protocol_data, fees_data):
+def extract_raw_values(protocol_data, fees_data, treasury_data=None):
     """Extract raw component values from DeFiLlama data."""
     raw = {}
 
@@ -232,6 +273,29 @@ def extract_raw_values(protocol_data, fees_data):
         if raw.get("fees_30d") and raw.get("tvl") and raw["tvl"] > 0:
             raw["fees_tvl_ratio"] = (raw["fees_30d"] * 12) / raw["tvl"]  # annualized
 
+        # Revenue efficiency — revenue / TVL annualized
+        if raw.get("revenue_30d") and raw.get("tvl") and raw["tvl"] > 0:
+            raw["fees_tvl_efficiency"] = (raw["revenue_30d"] * 12) / raw["tvl"]
+
+    # Treasury data
+    if treasury_data:
+        chain_tvls = treasury_data.get("chainTvls", {})
+        treasury_total = 0
+        stablecoin_total = 0
+
+        for chain_name, chain_data in chain_tvls.items():
+            if isinstance(chain_data, dict):
+                tvl_list = chain_data.get("tvl", [])
+                if tvl_list:
+                    last = tvl_list[-1]
+                    if isinstance(last, dict):
+                        treasury_total += last.get("totalLiquidityUSD", 0)
+
+        if treasury_total > 0:
+            raw["treasury_total_usd"] = treasury_total
+            # Estimate stablecoin portion — conservative 20% if we can't parse token breakdown
+            raw["treasury_stablecoin_pct"] = 20.0  # default
+
     return raw
 
 
@@ -243,10 +307,20 @@ def score_protocol(slug):
     if not protocol_data:
         return None
 
-    raw_values = extract_raw_values(protocol_data, fees_data)
+    treasury_data = fetch_treasury_data(slug)
+    raw_values = extract_raw_values(protocol_data, fees_data, treasury_data)
+
+    # Bad debt (static config)
+    bad_debt = KNOWN_BAD_DEBT.get(slug, 0)
+    tvl = raw_values.get("tvl", 0)
+    if tvl > 0:
+        raw_values["bad_debt_ratio"] = (bad_debt / tvl) * 100  # as percentage of TVL
+    else:
+        raw_values["bad_debt_ratio"] = 0
 
     # Governance token data from CoinGecko
     gecko_id = PROTOCOL_GOVERNANCE_TOKENS.get(slug)
+    token_data = None
     if gecko_id:
         token_data = fetch_coingecko_token(gecko_id)
         if token_data:
@@ -255,8 +329,15 @@ def score_protocol(slug):
             vol = market.get("total_volume", {}).get("usd")
             if vol:
                 raw_values["token_volume_24h"] = vol
-            # governance_token_holders (community data if available)
-            # CoinGecko doesn't always have holder count; use market cap rank as proxy
+            # token_liquidity_depth — volume/mcap ratio
+            mcap = market.get("market_cap", {}).get("usd")
+            if vol and mcap and mcap > 0:
+                raw_values["token_liquidity_depth"] = vol / mcap
+            # token_price_volatility_30d — use 30d price change as proxy
+            pct_30d = market.get("price_change_percentage_30d")
+            if pct_30d is not None:
+                raw_values["token_price_volatility_30d"] = abs(pct_30d)
+            # governance_token_holders
             holders = token_data.get("community_data", {}).get("token_holders")
             if holders and holders > 0:
                 raw_values["governance_token_holders"] = holders
@@ -268,12 +349,39 @@ def score_protocol(slug):
         if proposal_count is not None:
             raw_values["governance_proposals_90d"] = proposal_count
 
+    # Protocol admin key risk — reuse SII smart contract analyzer config
+    from app.collectors.smart_contract import ADMIN_KEY_RISK
+    contract = PROTOCOL_CONTRACTS.get(slug)
+    if contract:
+        # Use SII admin key scores if protocol has a matching stablecoin entry
+        # Otherwise use a reasonable default based on protocol type
+        admin_score = ADMIN_KEY_RISK.get(slug)
+        if admin_score is None:
+            # Map protocols to admin risk based on known governance structure
+            admin_score = _PROTOCOL_ADMIN_SCORES.get(slug, 50)
+        raw_values["protocol_admin_key_risk"] = admin_score
+
     result = score_entity(PSI_V01_DEFINITION, raw_values)
     result["protocol_slug"] = slug
     result["protocol_name"] = protocol_data.get("name", slug)
     result["raw_values"] = raw_values
 
     return result
+
+
+# Protocol admin risk scores (separate from stablecoin scores)
+_PROTOCOL_ADMIN_SCORES = {
+    "aave": 90,        # Aave Gov V3 — on-chain governance
+    "lido": 85,        # LidoDAO — on-chain governance + multisig
+    "eigenlayer": 60,   # Early stage, team-controlled
+    "sky": 90,         # MakerDAO — on-chain governance (DSChief)
+    "compound-finance": 85,  # Compound Governor Bravo
+    "uniswap": 85,     # Uniswap Governance — on-chain
+    "curve-finance": 85, # veCRV governance
+    "morpho": 65,      # Newer protocol, multisig governance
+    "spark": 70,       # Sub-DAO of MakerDAO
+    "convex-finance": 75, # Multisig + veCVX governance
+}
 
 
 def run_psi_scoring():
