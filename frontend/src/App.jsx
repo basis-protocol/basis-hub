@@ -1031,6 +1031,7 @@ function Footnotes({ mobile }) {
 function DetailView({ coinId, onBack, mobile }) {
   const { data: coin, loading: detailLoading } = useCoinDetail(coinId);
   const { data: history, loading: histLoading } = useCoinHistory(coinId, 90);
+  const [expandedCats, setExpandedCats] = useState({});
 
   if (detailLoading || !coin) {
     return (
@@ -1129,61 +1130,106 @@ function DetailView({ coinId, onBack, mobile }) {
         </div>
       </div>
 
-      {coin.components && coin.components.length > 0 && (
-        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "16px 20px" }}>
-          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12, fontFamily: T.mono }}>
-            Component Readings · {coin.components.length} active
-          </div>
+      {coin.components && coin.components.length > 0 && (() => {
+        const grouped = coin.components.reduce((acc, c) => {
+          const cat = c.category || "other";
+          if (!acc[cat]) acc[cat] = [];
+          acc[cat].push(c);
+          return acc;
+        }, {});
 
-          <div style={{ maxHeight: 400, overflowY: "auto" }}>
-            {Object.entries(
-              coin.components.reduce((acc, c) => {
-                const cat = c.category || "other";
-                if (!acc[cat]) acc[cat] = [];
-                acc[cat].push(c);
-                return acc;
-              }, {})
-            )
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([category, components]) => (
-                <div key={category} style={{ marginBottom: 16 }}>
-                  <div style={{
-                    fontSize: 10, fontWeight: 600, color: T.inkMid,
-                    textTransform: "uppercase", letterSpacing: 1,
-                    marginBottom: 6, fontFamily: T.mono,
-                  }}>
-                    {category.replace(/_/g, " ")}
-                  </div>
-                  {components.sort((a, b) => (b.normalized_score || 0) - (a.normalized_score || 0)).map((comp) => (
+        const catOrder = [
+          "peg_stability", "liquidity_depth", "mint_burn", "flows",
+          "holder_distribution", "market_activity", "network",
+          "smart_contract", "transparency", "regulatory", "governance"
+        ];
+        const sortedCats = Object.keys(grouped).sort((a, b) => {
+          const ai = catOrder.indexOf(a), bi = catOrder.indexOf(b);
+          if (ai !== -1 && bi !== -1) return ai - bi;
+          if (ai !== -1) return -1;
+          if (bi !== -1) return 1;
+          return a.localeCompare(b);
+        });
+
+        const fmtRaw = (v) => {
+          if (v == null) return "—";
+          const n = Number(v);
+          if (isNaN(n)) return String(v);
+          if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + "B";
+          if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + "M";
+          if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + "K";
+          if (n === 0) return "0";
+          if (Math.abs(n) < 1) return n.toFixed(4);
+          if (n >= 0 && n <= 100 && n % 1 !== 0) return n.toFixed(1);
+          return n.toFixed(2);
+        };
+
+        const fmtName = (id) => (id || "").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+        return (
+          <div style={{ border: `1px solid ${T.ruleMid}`, padding: "16px 20px" }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12, fontFamily: T.mono }}>
+              Component Readings · {coin.components.length} unique
+            </div>
+            <div style={{ maxHeight: 400, overflowY: "auto" }}>
+              {sortedCats.map(cat => {
+                const comps = grouped[cat].sort((a, b) => (a.normalized_score || 0) - (b.normalized_score || 0));
+                const avg = comps.reduce((s, c) => s + (c.normalized_score || 0), 0) / comps.length;
+                const isOpen = expandedCats[cat];
+                return (
+                  <div key={cat} style={{ marginBottom: 8 }}>
                     <div
-                      key={comp.id}
+                      onClick={() => setExpandedCats(prev => ({ ...prev, [cat]: !prev[cat] }))}
                       style={{
-                        display: "flex", justifyContent: "space-between",
-                        padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`,
-                        fontSize: 11,
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "6px 0", cursor: "pointer", userSelect: "none",
+                        borderBottom: `1px solid ${T.ruleLight}`,
                       }}
                     >
-                      <span style={{ color: T.inkLight, fontFamily: T.sans }}>
-                        {(comp.id || "").replace(/_/g, " ")}
-                      </span>
-                      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-                        <span style={{ color: T.inkFaint, fontFamily: T.mono, fontSize: 10 }}>
-                          {comp.raw_value != null ? (typeof comp.raw_value === "number" ? comp.raw_value.toFixed(4) : comp.raw_value) : "—"}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 10, color: T.inkFaint, fontFamily: T.mono }}>{isOpen ? "▾" : "▸"}</span>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: T.inkMid, textTransform: "uppercase", letterSpacing: 1, fontFamily: T.mono }}>
+                          {cat.replace(/_/g, " ")}
                         </span>
-                        <span style={{
-                          color: subScoreColor(comp.normalized_score),
-                          fontFamily: T.mono, fontWeight: 600, minWidth: 36, textAlign: "right",
-                        }}>
-                          {fmt(comp.normalized_score, 1)}
+                        <span style={{ fontSize: 9, color: T.inkFaint, fontFamily: T.mono }}>{comps.length}</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{ width: 40, height: 3, background: T.ruleLight, borderRadius: 1 }}>
+                          <div style={{ width: `${Math.min(avg, 100)}%`, height: 3, background: subScoreColor(avg), borderRadius: 1 }} />
+                        </div>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: subScoreColor(avg), fontFamily: T.mono, minWidth: 28, textAlign: "right" }}>
+                          {fmt(avg, 1)}
                         </span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              ))}
+                    {isOpen && comps.map((comp, i) => (
+                      <div
+                        key={`${comp.id}-${i}`}
+                        style={{
+                          display: "flex", justifyContent: "space-between", alignItems: "center",
+                          padding: "4px 0 4px 20px", borderBottom: `1px solid ${T.ruleLight}`,
+                          fontSize: 11,
+                        }}
+                      >
+                        <span style={{ color: T.inkLight, fontFamily: T.sans }}>{fmtName(comp.id)}</span>
+                        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                          <span style={{ color: T.inkFaint, fontFamily: T.mono, fontSize: 10 }}>{fmtRaw(comp.raw_value)}</span>
+                          <div style={{ width: 40, height: 3, background: T.ruleLight, borderRadius: 1 }}>
+                            <div style={{ width: `${Math.min(comp.normalized_score || 0, 100)}%`, height: 3, background: subScoreColor(comp.normalized_score), borderRadius: 1 }} />
+                          </div>
+                          <span style={{ color: subScoreColor(comp.normalized_score), fontFamily: T.mono, fontWeight: 600, minWidth: 36, textAlign: "right" }}>
+                            {fmt(comp.normalized_score, 1)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

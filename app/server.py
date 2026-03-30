@@ -533,13 +533,14 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
             raise HTTPException(status_code=404, detail=f"Stablecoin '{coin}' exists but has no scores yet")
         raise HTTPException(status_code=404, detail=f"Stablecoin '{coin}' not found")
     
-    # Get latest component readings
+    # Get latest component readings (deduplicated — one per component)
     components = fetch_all("""
-        SELECT component_id, category, raw_value, normalized_score, data_source, collected_at
+        SELECT DISTINCT ON (component_id)
+          component_id, category, raw_value, normalized_score, data_source, collected_at
         FROM component_readings
         WHERE stablecoin_id = %s
           AND collected_at > NOW() - INTERVAL '48 hours'
-        ORDER BY category, component_id
+        ORDER BY component_id, collected_at DESC
     """, (coin,))
     
     return {
