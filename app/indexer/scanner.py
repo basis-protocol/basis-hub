@@ -144,7 +144,7 @@ class BlockscoutFetcher:
 
                     for item in data:
                         token = item.get("token", {})
-                        token_addr = (token.get("address") or "").lower()
+                        token_addr = (token.get("address_hash") or token.get("address") or "").lower()
                         if not token_addr:
                             continue
 
