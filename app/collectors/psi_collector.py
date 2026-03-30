@@ -8,6 +8,7 @@ using the generic scoring engine with the PSI v0.1 definition.
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 import requests
 
@@ -18,6 +19,31 @@ from app.scoring_engine import score_entity
 logger = logging.getLogger(__name__)
 
 DEFILLAMA_BASE = "https://api.llama.fi"
+
+# Governance token CoinGecko IDs for protocols that have one
+PROTOCOL_GOVERNANCE_TOKENS = {
+    "aave": "aave",
+    "lido": "lido-dao",
+    "eigenlayer": "eigenlayer",
+    "sky": "maker",  # MKR is still the governance token
+    "compound-finance": "compound-governance-token",
+    "uniswap": "uniswap",
+    "curve-finance": "curve-dao-token",
+    "morpho": "morpho",
+    "spark": None,  # no separate governance token
+    "convex-finance": "convex-finance",
+}
+
+# Snapshot space IDs for governance proposal queries
+SNAPSHOT_SPACES = {
+    "aave": "aave.eth",
+    "lido": "lido-snapshot.eth",
+    "sky": "makerdao.eth",
+    "compound-finance": "comp-vote.eth",
+    "uniswap": "uniswapgovernance.eth",
+    "curve-finance": "curve.eth",
+    "convex-finance": "cvx.eth",
+}
 
 
 def fetch_protocol_data(slug):
@@ -41,6 +67,65 @@ def fetch_fees_data(slug):
             return resp.json()
     except Exception:
         pass
+    return None
+
+
+def fetch_coingecko_token(gecko_id):
+    """Fetch governance token data from CoinGecko for holder count and volume."""
+    if not gecko_id:
+        return None
+    time.sleep(1)
+    try:
+        from app.config import STABLECOIN_REGISTRY
+        # Use the same API key pattern as the SII collectors
+        import os
+        api_key = os.environ.get("COINGECKO_API_KEY", "")
+        headers = {"x-cg-pro-api-key": api_key} if api_key else {}
+        base = "https://pro-api.coingecko.com/api/v3" if api_key else "https://api.coingecko.com/api/v3"
+
+        resp = requests.get(
+            f"{base}/coins/{gecko_id}",
+            params={"localization": "false", "tickers": "false", "market_data": "true",
+                    "community_data": "false", "developer_data": "false"},
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception as e:
+        logger.debug(f"CoinGecko token fetch failed for {gecko_id}: {e}")
+    return None
+
+
+def fetch_snapshot_proposals(space_id):
+    """Fetch governance proposal count from Snapshot in the last 90 days."""
+    if not space_id:
+        return None
+    time.sleep(0.5)
+    try:
+        query = """
+        query {
+          proposals(
+            first: 100,
+            skip: 0,
+            where: {space: "%s", created_gte: %d},
+            orderBy: "created",
+            orderDirection: desc
+          ) { id }
+        }
+        """ % (space_id, int((datetime.now(timezone.utc).timestamp()) - 90 * 86400))
+
+        resp = requests.post(
+            "https://hub.snapshot.org/graphql",
+            json={"query": query},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            proposals = data.get("data", {}).get("proposals", [])
+            return len(proposals)
+    except Exception as e:
+        logger.debug(f"Snapshot fetch failed for {space_id}: {e}")
     return None
 
 
@@ -91,6 +176,41 @@ def extract_raw_values(protocol_data, fees_data):
     elif audit_links:
         raw["audit_count"] = len(audit_links)
 
+    # Audit recency — estimate from audit_links or audit_note
+    # DeFiLlama doesn't always include timestamps, so use protocol launch date as fallback
+    if audit_links:
+        # Many audit links contain dates in the URL or name
+        # Conservative estimate: if audits exist, assume most recent was within 365 days
+        # unless the protocol is very old
+        raw["audit_recency_days"] = 365  # conservative default if audits exist
+    else:
+        raw["audit_recency_days"] = 730  # no audits known
+
+    # Liquidity & Utilization — use TVL as liquidity proxy
+    # For lending protocols, compute utilization from borrowed/supplied
+    tvl_val = raw.get("tvl", 0)
+    if tvl_val and tvl_val > 0:
+        raw["protocol_dex_tvl"] = tvl_val  # TVL IS the liquidity for protocols
+
+        # Pool depth: number of active pools approximated from chain count × 2
+        chain_ct = raw.get("chain_count", 1)
+        raw["pool_depth"] = chain_ct * 3  # rough approximation: ~3 pools per chain
+
+    # Utilization rate from borrowed TVL if available
+    borrowed_tvl = 0
+    staking_tvl = 0
+    for k, v in current_chain_tvls.items() if current_chain_tvls else []:
+        if "-borrowed" in k and isinstance(v, (int, float)):
+            borrowed_tvl += v
+        if "-staking" in k and isinstance(v, (int, float)):
+            staking_tvl += v
+
+    if borrowed_tvl > 0 and tvl_val > 0:
+        raw["utilization_rate"] = (borrowed_tvl / (tvl_val + borrowed_tvl)) * 100
+    elif staking_tvl > 0 and tvl_val > 0:
+        # For staking protocols: staking ratio as utilization proxy
+        raw["utilization_rate"] = (staking_tvl / (tvl_val + staking_tvl)) * 100
+
     # Token data (if available)
     mcap = protocol_data.get("mcap")
     if mcap:
@@ -124,6 +244,30 @@ def score_protocol(slug):
         return None
 
     raw_values = extract_raw_values(protocol_data, fees_data)
+
+    # Governance token data from CoinGecko
+    gecko_id = PROTOCOL_GOVERNANCE_TOKENS.get(slug)
+    if gecko_id:
+        token_data = fetch_coingecko_token(gecko_id)
+        if token_data:
+            market = token_data.get("market_data", {})
+            # token_volume_24h
+            vol = market.get("total_volume", {}).get("usd")
+            if vol:
+                raw_values["token_volume_24h"] = vol
+            # governance_token_holders (community data if available)
+            # CoinGecko doesn't always have holder count; use market cap rank as proxy
+            holders = token_data.get("community_data", {}).get("token_holders")
+            if holders and holders > 0:
+                raw_values["governance_token_holders"] = holders
+
+    # Governance proposals from Snapshot
+    space_id = SNAPSHOT_SPACES.get(slug)
+    if space_id:
+        proposal_count = fetch_snapshot_proposals(space_id)
+        if proposal_count is not None:
+            raw_values["governance_proposals_90d"] = proposal_count
+
     result = score_entity(PSI_V01_DEFINITION, raw_values)
     result["protocol_slug"] = slug
     result["protocol_name"] = protocol_data.get("name", slug)

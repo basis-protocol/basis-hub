@@ -77,6 +77,27 @@ PSI_V01_DEFINITION = {
             "normalization": {"function": "linear", "params": {"min_val": 0.001, "max_val": 0.10}},
             "data_source": "calculated"
         },
+        "protocol_dex_tvl": {
+            "name": "Protocol Liquidity (TVL)",
+            "category": "liquidity",
+            "weight": 0.40,
+            "normalization": {"function": "log", "params": {"thresholds": {1000000: 10, 10000000: 30, 100000000: 50, 1000000000: 70, 5000000000: 85, 10000000000: 100}}},
+            "data_source": "defillama"
+        },
+        "utilization_rate": {
+            "name": "Utilization Rate (%)",
+            "category": "liquidity",
+            "weight": 0.35,
+            "normalization": {"function": "centered", "params": {"center": 55, "tolerance": 15, "extreme": 45}},
+            "data_source": "defillama"
+        },
+        "pool_depth": {
+            "name": "Pool / Market Depth",
+            "category": "liquidity",
+            "weight": 0.25,
+            "normalization": {"function": "log", "params": {"thresholds": {3: 20, 5: 40, 10: 60, 20: 80, 50: 100}}},
+            "data_source": "defillama"
+        },
         "audit_count": {
             "name": "Number of Security Audits",
             "category": "security",
