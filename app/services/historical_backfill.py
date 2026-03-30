@@ -5,6 +5,7 @@ Populates historical_prices from CoinGecko /coins/{id}/market_chart/range.
 Daily granularity, idempotent. Used by the temporal reconstruction engine.
 """
 
+import json as _json
 import os
 import time
 import logging
@@ -12,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 
-from app.database import execute, fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all, get_conn
 from app.config import STABLECOIN_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -37,40 +38,67 @@ def _store_chunk(coingecko_id, data):
     mcaps = data.get("market_caps", [])
     volumes = data.get("total_volumes", [])
 
-    mcap_by_date = {}
+    mcap_by_ts = {}
     for ts_ms, val in mcaps:
-        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
-        mcap_by_date[d] = val
+        mcap_by_ts[ts_ms // 3600000 * 3600000] = val  # round to hour
 
-    vol_by_date = {}
+    vol_by_ts = {}
     for ts_ms, val in volumes:
-        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
-        vol_by_date[d] = val
+        vol_by_ts[ts_ms // 3600000 * 3600000] = val
 
-    inserted = 0
+    rows = []
+    seen_dates = set()
     for ts_ms, price in prices:
         ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
         d = ts.date()
-        mcap = mcap_by_date.get(d)
-        vol = vol_by_date.get(d)
+        if d in seen_dates:
+            continue  # one per day
+        seen_dates.add(d)
 
-        try:
-            execute(
-                """
-                INSERT INTO historical_prices
-                    (coingecko_id, "timestamp", price, market_cap, volume_24h)
-                SELECT %s, %s, %s, %s, %s
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM historical_prices
-                    WHERE coingecko_id = %s
-                      AND "timestamp"::date = %s::date
+        hour_key = ts_ms // 3600000 * 3600000
+        mcap = mcap_by_ts.get(hour_key)
+        vol = vol_by_ts.get(hour_key)
+        rows.append((coingecko_id, ts, price, mcap, vol))
+
+    if not rows:
+        return 0
+
+    inserted = 0
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TEMP TABLE _hp_stage (
+                        coingecko_id VARCHAR(50),
+                        ts TIMESTAMPTZ,
+                        price DOUBLE PRECISION,
+                        market_cap DOUBLE PRECISION,
+                        volume_24h DOUBLE PRECISION
+                    ) ON COMMIT DROP
+                """)
+                from psycopg2.extras import execute_values
+                execute_values(
+                    cur,
+                    'INSERT INTO _hp_stage VALUES %s',
+                    rows,
+                    template='(%s, %s, %s, %s, %s)',
+                    page_size=500
                 )
-                """,
-                (coingecko_id, ts, price, mcap, vol, coingecko_id, ts),
-            )
-            inserted += 1
-        except Exception:
-            pass
+                cur.execute("""
+                    INSERT INTO historical_prices (coingecko_id, "timestamp", price, market_cap, volume_24h)
+                    SELECT s.coingecko_id, s.ts, s.price, s.market_cap, s.volume_24h
+                    FROM _hp_stage s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM historical_prices h
+                        WHERE h.coingecko_id = s.coingecko_id
+                          AND h."timestamp"::date = s.ts::date
+                    )
+                """)
+                inserted = cur.rowcount
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Batch insert failed for {coingecko_id}: {e}")
+
     return inserted
 
 
@@ -103,22 +131,34 @@ def backfill_coin_sync(
             from_ts = int(chunk_start.timestamp())
             to_ts = int(chunk_end.timestamp())
 
-            try:
-                resp = client.get(
-                    f"{BASE_URL}/coins/{coingecko_id}/market_chart/range",
-                    params={"vs_currency": "usd", "from": from_ts, "to": to_ts},
-                    headers=_headers(),
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception as e:
-                logger.error(
-                    f"CoinGecko market_chart/range failed for {coingecko_id} "
-                    f"({chunk_start.date()} to {chunk_end.date()}): {e}"
-                )
+            data = None
+            for attempt in range(2):
+                try:
+                    resp = client.get(
+                        f"{BASE_URL}/coins/{coingecko_id}/market_chart/range",
+                        params={"vs_currency": "usd", "from": from_ts, "to": to_ts},
+                        headers=_headers(),
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        logger.warning(
+                            f"Retry {coingecko_id} chunk "
+                            f"({chunk_start.date()} to {chunk_end.date()}) after 30s: {e}"
+                        )
+                        time.sleep(30)
+                    else:
+                        logger.error(
+                            f"Failed twice for {coingecko_id} "
+                            f"({chunk_start.date()} to {chunk_end.date()}): {e}"
+                        )
+
+            if data is None:
                 chunk_start = chunk_end
-                time.sleep(2)
+                time.sleep(5)
                 continue
 
             chunk_inserted = _store_chunk(coingecko_id, data)
@@ -129,7 +169,7 @@ def backfill_coin_sync(
             )
 
             chunk_start = chunk_end
-            time.sleep(2)
+            time.sleep(5)
 
     logger.info(f"Backfilled {coingecko_id}: {from_date} to {to_date}, {total_inserted} records")
     return total_inserted
@@ -137,19 +177,41 @@ def backfill_coin_sync(
 
 def backfill_all_sync(from_date: str = "2020-01-01", to_date: str = None) -> dict:
     """Backfill all scored stablecoins. Synchronous — safe for background tasks."""
+    # Create status row
+    try:
+        execute(
+            "INSERT INTO backfill_status (coins_total, status) VALUES (%s, 'running')",
+            (len(STABLECOIN_REGISTRY),)
+        )
+    except Exception:
+        pass
+
     results = {}
     total = 0
+    completed = 0
 
     for sid, cfg in STABLECOIN_REGISTRY.items():
         gecko_id = cfg.get("coingecko_id")
         if not gecko_id:
             continue
 
+        # Update current coin in status
+        try:
+            execute(
+                """UPDATE backfill_status SET current_coin = %s, coins_completed = %s, records_total = %s
+                   WHERE id = (SELECT MAX(id) FROM backfill_status)""",
+                (gecko_id, completed, total)
+            )
+        except Exception:
+            pass
+
         logger.info(f"Backfilling {cfg['symbol']} ({gecko_id})...")
         count = backfill_coin_sync(gecko_id, from_date, to_date)
         results[gecko_id] = count
         total += count
+        completed += 1
 
+    # Also backfill promoted coins
     try:
         promoted = fetch_all(
             "SELECT coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL"
@@ -157,12 +219,32 @@ def backfill_all_sync(from_date: str = "2020-01-01", to_date: str = None) -> dic
         for row in promoted:
             gecko_id = row["coingecko_id"]
             if gecko_id not in results:
+                try:
+                    execute(
+                        """UPDATE backfill_status SET current_coin = %s
+                           WHERE id = (SELECT MAX(id) FROM backfill_status)""",
+                        (gecko_id,)
+                    )
+                except Exception:
+                    pass
                 logger.info(f"Backfilling promoted coin {gecko_id}...")
                 count = backfill_coin_sync(gecko_id, from_date, to_date)
                 results[gecko_id] = count
                 total += count
+                completed += 1
     except Exception as e:
         logger.debug(f"Could not fetch promoted stablecoins: {e}")
+
+    # Mark complete
+    try:
+        execute(
+            """UPDATE backfill_status SET status = 'completed', finished_at = NOW(),
+                      coins_completed = %s, records_total = %s, details = %s
+               WHERE id = (SELECT MAX(id) FROM backfill_status)""",
+            (completed, total, _json.dumps(results))
+        )
+    except Exception:
+        pass
 
     logger.info(f"Backfill complete: {len(results)} coins, {total} total records")
     return {"coins": results, "total": total}

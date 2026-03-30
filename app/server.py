@@ -227,6 +227,13 @@ async def startup():
         logger.info("Wallet indexer routes registered")
     except Exception as e:
         logger.warning(f"Wallet indexer not available: {e}")
+    # Clean stale temporal reconstruction cache entries
+    try:
+        from app.database import execute as _exec
+        _exec("DELETE FROM temporal_reconstructions WHERE components_available = 0")
+        logger.info("Cleared stale temporal reconstruction cache entries")
+    except Exception:
+        pass
     # Register verification agent routes
     try:
         from app.agent.api import register_agent_routes
@@ -742,6 +749,24 @@ async def admin_backfill(request: Request, background_tasks: BackgroundTasks):
     to_date = body.get("to")
     background_tasks.add_task(backfill_coin_sync, coingecko_id, from_date, to_date)
     return {"status": "started", "coingecko_id": coingecko_id, "from": from_date, "to": to_date or "today"}
+
+
+@app.get("/api/admin/backfill/status")
+def backfill_status(request: Request):
+    """Check backfill progress."""
+    _check_admin_key(request)
+    row = fetch_one("SELECT * FROM backfill_status ORDER BY id DESC LIMIT 1")
+    if not row:
+        return {"status": "never_run"}
+    return {
+        "status": row["status"],
+        "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+        "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
+        "coins_total": row["coins_total"],
+        "coins_completed": row["coins_completed"],
+        "records_total": row["records_total"],
+        "current_coin": row["current_coin"],
+    }
 
 
 # =============================================================================
