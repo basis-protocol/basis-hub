@@ -2499,7 +2499,6 @@ async def cda_issuers():
     return {"issuers": issuers, "count": len(issuers)}
 
 
-@app.get("/api/cda/issuers/{symbol}/latest")
 def _extract_value(val):
     """Extract a simple value from potentially nested structures."""
     if isinstance(val, dict):
@@ -2728,6 +2727,7 @@ def _classify_onchain(sd: dict, dtype: str) -> tuple:
     return [], "not_applicable", f"{label} — verified on-chain"
 
 
+@app.get("/api/cda/issuers/{symbol}/latest")
 async def cda_issuer_latest(symbol: str):
     """Most recent attestation for a specific issuer, with evidence hash."""
     import hashlib
