@@ -38,11 +38,6 @@ CREATE TABLE IF NOT EXISTS temporal_reconstructions (
 CREATE INDEX IF NOT EXISTS idx_tr_stablecoin_date ON temporal_reconstructions(stablecoin_id, target_date DESC);
 CREATE INDEX IF NOT EXISTS idx_tr_confidence ON temporal_reconstructions(confidence);
 
--- Add unique constraint to historical_prices for idempotent upserts
--- Uses public.immutable_date() which is marked IMMUTABLE (required for unique indexes on timestamptz)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_histprices_coin_day
-    ON historical_prices(coingecko_id, immutable_date("timestamp"));
-
 INSERT INTO migrations (name) VALUES ('029_temporal_reconstructions') ON CONFLICT DO NOTHING;
 
 COMMIT;

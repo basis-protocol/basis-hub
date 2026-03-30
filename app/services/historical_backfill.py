@@ -133,10 +133,14 @@ async def backfill_coin(
                         """
                         INSERT INTO historical_prices
                             (coingecko_id, "timestamp", price, market_cap, volume_24h)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (coingecko_id, immutable_date("timestamp")) DO NOTHING
+                        SELECT %s, %s, %s, %s, %s
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM historical_prices
+                            WHERE coingecko_id = %s
+                              AND "timestamp"::date = %s::date
+                        )
                         """,
-                        (coingecko_id, ts, price, mcap, vol),
+                        (coingecko_id, ts, price, mcap, vol, coingecko_id, ts),
                     )
                     chunk_inserted += 1
                 except Exception:
