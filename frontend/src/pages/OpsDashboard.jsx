@@ -113,6 +113,135 @@ function useFlash() {
   return [flash, showFlash];
 }
 
+// ─── Content Item (shared expandable row) ────────────────────────────
+
+const SOURCE_ICONS = {
+  tweet: "\uD83D\uDCAC", blog: "\uD83D\uDCDD", forum: "\uD83D\uDCE2", governance: "\u2696\uFE0F",
+  article: "\uD83D\uDCF0", podcast: "\uD83C\uDFA7", video: "\uD83C\uDFAC", default: "\uD83D\uDD17",
+};
+
+function contentStatusDot(c) {
+  if (c.analyzed && c.bridge_found) return { color: "#27ae60", label: "actionable" };
+  if (c.analyzed && !c.bridge_found) return { color: "#999", label: "no bridge" };
+  return { color: "#f39c12", label: "needs analysis" };
+}
+
+function ContentItem({ item, onDecide, onAnalyze, busy }) {
+  const [open, setOpen] = useState(false);
+  const c = item;
+  const status = contentStatusDot(c);
+  const icon = SOURCE_ICONS[c.source_type] || SOURCE_ICONS.default;
+  const decided = !!c.founder_decision;
+
+  return (
+    <div style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+      {/* Collapsed row */}
+      <div onClick={() => setOpen(!open)} style={{
+        padding: "5px 6px", fontSize: 11, display: "flex", alignItems: "center", gap: 6,
+        cursor: "pointer", background: open ? T.paperWarm : "transparent", transition: "background 0.1s",
+      }}>
+        <span style={{ fontSize: 12, width: 16, textAlign: "center", flexShrink: 0 }}>{icon}</span>
+        <span style={{ flex: 1, color: T.inkMid, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {c.title || c.source_url}
+        </span>
+        {c.target_name && (
+          <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, flexShrink: 0 }}>{c.target_name}</span>
+        )}
+        <span style={{ fontSize: 9, color: T.inkFaint, flexShrink: 0, minWidth: 55, textAlign: "right" }}>
+          {c.scraped_at ? new Date(c.scraped_at).toLocaleDateString() : ""}
+        </span>
+        <span title={status.label} style={{
+          display: "inline-block", width: 8, height: 8, borderRadius: "50%",
+          background: status.color, flexShrink: 0,
+        }} />
+        {decided && (
+          <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, flexShrink: 0 }}>{c.founder_decision}</span>
+        )}
+      </div>
+
+      {/* Expanded detail */}
+      {open && (
+        <div style={{ padding: "6px 10px 10px 28px", fontSize: 11, background: T.paperWarm }}>
+          {/* Source link */}
+          {c.source_url && (
+            <div style={{ marginBottom: 4 }}>
+              <a href={c.source_url} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize: 10, fontFamily: T.mono, color: T.inkLight, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
+                {c.source_url.length > 80 ? c.source_url.substring(0, 80) + "..." : c.source_url}
+              </a>
+            </div>
+          )}
+
+          {/* Analyzed content */}
+          {c.analyzed ? (
+            <>
+              {c.content_summary && (
+                <div style={{ marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, fontWeight: 600, color: T.inkLight, textTransform: "uppercase" }}>Summary </span>
+                  <span style={{ color: T.inkMid }}>{c.content_summary}</span>
+                </div>
+              )}
+              {c.worldview_extract && (
+                <div style={{ marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, fontWeight: 600, color: T.inkLight, textTransform: "uppercase" }}>Worldview </span>
+                  <span style={{ color: T.inkMid }}>{c.worldview_extract}</span>
+                </div>
+              )}
+              <div style={{ marginBottom: 6, fontSize: 10 }}>
+                <span style={{ fontSize: 9, fontWeight: 600, color: T.inkLight, textTransform: "uppercase" }}>Bridge </span>
+                {c.bridge_found
+                  ? <span style={{ color: "#27ae60" }}>Yes — {c.bridge_text}</span>
+                  : <span style={{ color: T.inkFaint }}>No bridge found</span>}
+              </div>
+              {c.draft_comment && (
+                <div style={{ background: T.paper, padding: "6px 8px", border: `1px solid ${T.ruleLight}`, marginBottom: 6, whiteSpace: "pre-wrap" }}>
+                  <div style={{ fontSize: 9, color: T.inkFaint, marginBottom: 2, fontFamily: T.mono }}>
+                    Draft — {c.comment_type || "comment"}
+                  </div>
+                  {c.draft_comment}
+                </div>
+              )}
+              {c.relevance_score != null && (
+                <div style={{ fontSize: 9, fontFamily: T.mono, color: T.inkFaint, marginBottom: 6 }}>
+                  relevance: {c.relevance_score} · action: {c.engagement_action || "pending"}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ color: T.inkFaint, fontStyle: "italic", marginBottom: 6 }}>
+              Not yet analyzed.
+            </div>
+          )}
+
+          {/* Action buttons */}
+          {!decided && (
+            <div style={{ display: "flex", gap: 4 }}>
+              {c.analyzed && c.draft_comment && (
+                <>
+                  <button onClick={() => onDecide && onDecide(c.id, "approved")} disabled={!!busy}
+                    style={btn({ background: "#27ae6022" })}>{busy === `decide-${c.id}` ? "..." : "Approve"}</button>
+                  <button onClick={() => onDecide && onDecide(c.id, "skipped")} disabled={!!busy}
+                    style={btn()}>{busy === `decide-${c.id}` ? "..." : "Skip"}</button>
+                </>
+              )}
+              {!c.analyzed && onAnalyze && (
+                <button onClick={() => onAnalyze(c.id)} disabled={!!busy}
+                  style={btn({ background: "#f39c1222" })}>{busy === `analyze-${c.id}` ? "Analyzing..." : "Analyze"}</button>
+              )}
+            </div>
+          )}
+          {decided && (
+            <div style={{ fontSize: 10, fontFamily: T.mono, color: T.inkFaint }}>
+              Decision: {c.founder_decision}
+              {c.posted_at && ` · posted ${new Date(c.posted_at).toLocaleDateString()}`}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Auth Gate ────────────────────────────────────────────────────────
 
 function AuthGate({ onAuth }) {
@@ -162,31 +291,8 @@ function ActionQueue({ queue, onDecide, decidingId }) {
   return (
     <div>
       {queue.map((item) => (
-        <div key={item.id} style={{ padding: "10px 12px", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontFamily: T.mono, marginBottom: 4 }}>{item.target_name} — {item.source_type}</div>
-              <div style={{ fontWeight: 500, marginBottom: 4 }}>{item.title}</div>
-              {item.bridge_text && <div style={{ color: T.inkMid, fontSize: 11, marginBottom: 4 }}>Bridge: {item.bridge_text}</div>}
-              {item.draft_comment && (
-                <div style={{ background: T.paperWarm, padding: "6px 8px", fontSize: 11, border: `1px solid ${T.ruleLight}`, marginBottom: 6, whiteSpace: "pre-wrap" }}>
-                  {item.draft_comment}
-                </div>
-              )}
-              <div style={{ fontSize: 10, color: T.inkFaint }}>
-                {item.comment_type && <span>type: {item.comment_type} · </span>}
-                {item.relevance_score != null && <span>relevance: {item.relevance_score} · </span>}
-                {item.engagement_action && <span>action: {item.engagement_action}</span>}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 4, marginLeft: 12, flexShrink: 0 }}>
-              <button onClick={() => onDecide(item.id, "approved")} disabled={!!decidingId}
-                style={btn({ background: "#27ae6022" })}>{decidingId === item.id ? "..." : "Approve"}</button>
-              <button onClick={() => onDecide(item.id, "skipped")} disabled={!!decidingId}
-                style={btn()}>{decidingId === item.id ? "..." : "Skip"}</button>
-            </div>
-          </div>
-        </div>
+        <ContentItem key={item.id} item={item} onDecide={onDecide}
+          busy={decidingId ? `decide-${decidingId}` : null} />
       ))}
     </div>
   );
@@ -238,7 +344,8 @@ function TargetRow({ target, onUpdate }) {
       const res = await opsFetch("/api/ops/scrape", {
         method: "POST", body: JSON.stringify({ target_id: t.id, url: scrapeUrl.trim(), source_type: "blog" }),
       });
-      showFlash(`Scraped content #${res.content_id}`);
+      const a = res.analysis;
+      showFlash(a?.bridge_found ? `Scraped + analyzed — bridge found` : `Scraped + analyzed — no bridge`);
       setScrapeUrl("");
       loadDetail();
     } catch (e) { showFlash(e.message, false); }
@@ -317,10 +424,37 @@ function TargetRow({ target, onUpdate }) {
       const res = await opsFetch("/api/ops/backfill", {
         method: "POST", body: JSON.stringify({ target_id: t.id, query: backfillQuery.trim(), max_results: 15 }),
       });
-      showFlash(`Backfill: ${res.scraped} scraped, ${res.analyzed} analyzed of ${res.urls_found} found`);
+      const unanalyzed = res.scraped - res.analyzed;
+      showFlash(`Backfill: ${res.scraped} scraped, ${res.analyzed} analyzed${unanalyzed > 0 ? ` (${unanalyzed} need analysis)` : ""}`);
       setBackfillQuery("");
       loadDetail();
     } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleAnalyzeContent = async (contentId) => {
+    setBusy(`analyze-${contentId}`);
+    try {
+      await opsFetch(`/api/ops/analyze/${contentId}`, { method: "POST" });
+      showFlash("Analysis complete");
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleAnalyzeAll = async () => {
+    const unanalyzed = content.filter((c) => !c.analyzed);
+    if (unanalyzed.length === 0) return;
+    setBusy("analyze-all");
+    let done = 0;
+    for (const c of unanalyzed) {
+      try {
+        await opsFetch(`/api/ops/analyze/${c.id}`, { method: "POST" });
+        done++;
+      } catch (_) {}
+    }
+    showFlash(`Analyzed ${done}/${unanalyzed.length} items`);
+    loadDetail();
     setBusy(null);
   };
 
@@ -543,56 +677,22 @@ function TargetRow({ target, onUpdate }) {
             </div>
           )}
 
-          {/* ── Scraped content with draft comments + approve/skip ── */}
+          {/* ── Scraped content ── */}
           {content.length > 0 && (
             <div style={{ marginBottom: 8 }}>
-              <Lbl>Scraped Content ({content.length})</Lbl>
-              <div style={{ marginTop: 3 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                <Lbl>Scraped Content ({content.length})</Lbl>
+                {content.filter((c) => !c.analyzed).length > 0 && (
+                  <button onClick={handleAnalyzeAll} disabled={!!busy}
+                    style={btn({ fontSize: 9, background: "#f39c1222", opacity: busy === "analyze-all" ? 0.5 : 1 })}>
+                    {busy === "analyze-all" ? "Analyzing..." : `Analyze All (${content.filter((c) => !c.analyzed).length})`}
+                  </button>
+                )}
+              </div>
+              <div>
                 {content.map((c) => (
-                  <div key={c.id} style={{ padding: "5px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11 }}>
-                      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight }}>{c.source_type}</span>
-                      <a href={c.source_url} target="_blank" rel="noopener noreferrer"
-                        style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
-                        {c.title || c.source_url}
-                      </a>
-                      {c.bridge_found != null && (
-                        <span style={{ fontSize: 10, fontFamily: T.mono, color: c.bridge_found ? "#27ae60" : T.inkFaint }}>
-                          bridge: {c.bridge_found ? "YES" : "NO"}
-                        </span>
-                      )}
-                      {c.relevance_score != null && (
-                        <span style={{ fontSize: 10, fontFamily: T.mono, color: T.inkFaint }}>
-                          rel: {c.relevance_score}
-                        </span>
-                      )}
-                    </div>
-                    {c.content_summary && <div style={{ fontSize: 10, color: T.inkLight, marginTop: 2 }}>{c.content_summary}</div>}
-                    {c.bridge_text && <div style={{ fontSize: 10, color: "#27ae60", marginTop: 2 }}>Bridge: {c.bridge_text}</div>}
-                    {c.draft_comment && (
-                      <div style={{ background: T.paperWarm, padding: "5px 7px", fontSize: 11, border: `1px solid ${T.ruleLight}`, marginTop: 4, whiteSpace: "pre-wrap" }}>
-                        <div style={{ fontSize: 9, color: T.inkFaint, marginBottom: 2 }}>
-                          Draft ({c.comment_type || "comment"}) — {c.engagement_action || "pending"}
-                        </div>
-                        {c.draft_comment}
-                      </div>
-                    )}
-                    {/* Approve/skip for undecided content with bridges */}
-                    {c.bridge_found && !c.founder_decision && (
-                      <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-                        <button onClick={() => handleDecideContent(c.id, "approved")} disabled={!!busy}
-                          style={btn({ background: "#27ae6022" })}>{busy === `decide-${c.id}` ? "..." : "Approve"}</button>
-                        <button onClick={() => handleDecideContent(c.id, "skipped")} disabled={!!busy}
-                          style={btn()}>{busy === `decide-${c.id}` ? "..." : "Skip"}</button>
-                      </div>
-                    )}
-                    {c.founder_decision && (
-                      <div style={{ fontSize: 10, fontFamily: T.mono, color: T.inkFaint, marginTop: 3 }}>
-                        Decision: {c.founder_decision}
-                        {c.posted_at && ` · posted ${new Date(c.posted_at).toLocaleDateString()}`}
-                      </div>
-                    )}
-                  </div>
+                  <ContentItem key={c.id} item={c} onDecide={handleDecideContent}
+                    onAnalyze={handleAnalyzeContent} busy={busy} />
                 ))}
               </div>
             </div>
@@ -895,24 +995,13 @@ function FundraisePanel({ data, onUpdate }) {
 
 // ─── Content Feed ─────────────────────────────────────────────────────
 
-function ContentFeed({ feed }) {
+function ContentFeed({ feed, onDecide, onAnalyze, busy }) {
   if (!feed || feed.length === 0) return <div style={{ color: T.inkFaint, fontSize: 12 }}>No content scraped yet.</div>;
   return (
     <div>
-      {feed.slice(0, 20).map((item) => (
-        <div key={item.id} style={{ padding: "6px 10px", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span style={{ fontFamily: T.mono, fontWeight: 500, minWidth: 100 }}>{item.target_name}</span>
-            <span style={{ color: T.inkLight, fontSize: 10 }}>{item.source_type}</span>
-            <span style={{ flex: 1 }}>{item.title || item.source_url}</span>
-            {item.bridge_found != null && (
-              <span style={{ fontSize: 10, color: item.bridge_found ? "#27ae60" : T.inkFaint }}>
-                bridge: {item.bridge_found ? "YES" : "NO"}
-              </span>
-            )}
-          </div>
-          {item.content_summary && <div style={{ color: T.inkMid, fontSize: 10, marginTop: 2 }}>{item.content_summary}</div>}
-        </div>
+      {feed.slice(0, 30).map((item) => (
+        <ContentItem key={item.id} item={item} onDecide={onDecide}
+          onAnalyze={onAnalyze} busy={busy} />
       ))}
     </div>
   );
@@ -1179,34 +1268,73 @@ function NewsPanel() {
   const [news, setNews] = useState(null);
   const [loading, setLoading] = useState(false);
   const [flash, showFlash] = useFlash();
+  const [showAll, setShowAll] = useState(false);
 
   const scan = async () => {
     setLoading(true);
     try {
-      await opsFetch("/api/ops/news/scan", { method: "POST" });
-      const feed = await opsFetch("/api/ops/news/feed?limit=15");
+      const scanResult = await opsFetch("/api/ops/news/scan", { method: "POST" });
+      const feed = await opsFetch(`/api/ops/news/feed?limit=50&relevant_only=${!showAll}`);
       const items = feed.news || [];
       setNews(items);
       const incidents = items.filter((n) => n.incident_detected).length;
-      showFlash(`Found ${items.length} news items${incidents ? ` (${incidents} incidents)` : ""}`);
+      showFlash(`Fetched ${scanResult.fetched || 0}, ${scanResult.stablecoin_relevant || 0} relevant${incidents ? `, ${incidents} incidents` : ""}`);
     } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
+  const loadFeed = async () => {
+    setLoading(true);
+    try {
+      const feed = await opsFetch(`/api/ops/news/feed?limit=50&relevant_only=${!showAll}`);
+      const items = feed.news || [];
+      setNews(items);
+      showFlash(`Loaded ${items.length} news items`);
+    } catch (e) { showFlash(e.message, false); }
+    setLoading(false);
+  };
+
+  const toggleShowAll = () => {
+    setShowAll(!showAll);
+    if (news) {
+      // Reload with new filter
+      setLoading(true);
+      opsFetch(`/api/ops/news/feed?limit=50&relevant_only=${showAll}`)
+        .then((feed) => { setNews(feed.news || []); setLoading(false); })
+        .catch(() => setLoading(false));
+    }
+  };
+
+  const relevant = (news || []).filter((n) => n.stablecoin_relevant);
+  const headerCount = news ? `${relevant.length} relevant / ${news.length} total` : "not loaded";
+
   return (
-    <Section title="COINGECKO NEWS" actions={
-      <button onClick={scan} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
-        {loading ? "Scanning..." : "Scan News"}
-      </button>
+    <Section title={`COINGECKO NEWS — ${headerCount}`} actions={
+      <div style={{ display: "flex", gap: 4 }}>
+        <button onClick={toggleShowAll}
+          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`,
+            background: showAll ? T.paper + "44" : "transparent", color: T.paper, cursor: "pointer" }}>
+          {showAll ? "Relevant Only" : "Show All"}
+        </button>
+        <button onClick={scan} disabled={loading}
+          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`,
+            background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+          {loading ? "Scanning..." : "Scan News"}
+        </button>
+      </div>
     }>
       <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!news && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Scan News" to fetch stablecoin-related news.</div>}
-        {news && news.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No stablecoin-relevant news found.</div>}
+        {news && news.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No news items found.</div>}
         {news && news.map((n) => (
-          <div key={n.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+          <div key={n.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11,
+            opacity: n.stablecoin_relevant ? 1 : 0.5 }}>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {n.incident_detected && <span style={{ color: T.accent, fontWeight: 700, fontSize: 10 }}>INCIDENT</span>}
+              {n.stablecoin_relevant && !n.incident_detected && (
+                <span style={{ color: "#27ae60", fontWeight: 600, fontSize: 9 }}>RELEVANT</span>
+              )}
               <a href={n.url} target="_blank" rel="noopener noreferrer"
                 style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
                 {n.title}
@@ -1270,20 +1398,43 @@ function AlertsPanel() {
 
 // ─── Twitter Panel ──────────────────────────────────────────────────
 
+const SIGNAL_RE = /stablecoin|stable.?coin|risk|governance|treasury|curation|peg|depeg|reserve|audit|collateral/i;
+function tweetIsSignal(tw) {
+  const text = (tw.title || "") + " " + (tw.content || "") + " " + (tw.bridge_text || "");
+  return SIGNAL_RE.test(text) || tw.bridge_found;
+}
+
 function TwitterPanel() {
   const [tweets, setTweets] = useState(null);
   const [loading, setLoading] = useState(false);
   const [flash, showFlash] = useFlash();
+  const [showAll, setShowAll] = useState(false);
+  const [draftingId, setDraftingId] = useState(null);
+  const [drafts, setDrafts] = useState({});
+  const [decidingId, setDecidingId] = useState(null);
+
+  const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+  const allTweets = tweets || [];
+
+  const filtered = allTweets.filter((tw) =>
+    showAll || ((tw.tier === 1) && (!tw.scraped_at || Date.now() - new Date(tw.scraped_at).getTime() < SEVEN_DAYS))
+  );
+  const sorted = [...filtered].sort((a, b) => {
+    const diff = (tweetIsSignal(b) ? 1 : 0) - (tweetIsSignal(a) ? 1 : 0);
+    if (diff !== 0) return diff;
+    return new Date(b.scraped_at || 0) - new Date(a.scraped_at || 0);
+  });
+  const actionableCount = filtered.filter(tweetIsSignal).length;
 
   const scan = async () => {
     setLoading(true);
     try {
       await opsFetch("/api/ops/twitter/scan", { method: "POST" });
-      const res = await opsFetch("/api/ops/twitter/feed?limit=30");
+      const res = await opsFetch("/api/ops/twitter/feed?limit=100");
       const items = res.tweets || [];
       setTweets(items);
-      const bridges = items.filter((t) => t.bridge_found).length;
-      showFlash(`Found ${items.length} tweets${bridges ? ` (${bridges} with bridges)` : ""}`);
+      const hl = items.filter(tweetIsSignal).length;
+      showFlash(`Found ${items.length} tweets (${hl} actionable)`);
     } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
@@ -1291,49 +1442,116 @@ function TwitterPanel() {
   const loadFeed = async () => {
     setLoading(true);
     try {
-      const res = await opsFetch("/api/ops/twitter/feed?limit=30");
+      const res = await opsFetch("/api/ops/twitter/feed?limit=100");
       const items = res.tweets || [];
       setTweets(items);
-      showFlash(`Loaded ${items.length} tweets`);
+      const hl = items.filter(tweetIsSignal).length;
+      showFlash(`Loaded ${items.length} tweets (${hl} actionable)`);
     } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
+  const handleDraftReply = async (tw) => {
+    if (tw.draft_comment && !drafts[tw.id]) {
+      setDrafts((prev) => ({ ...prev, [tw.id]: { draft_comment: tw.draft_comment, comment_type: tw.comment_type } }));
+      return;
+    }
+    setDraftingId(tw.id);
+    try {
+      const res = await opsFetch(`/api/ops/analyze/${tw.id}`, { method: "POST" });
+      setDrafts((prev) => ({ ...prev, [tw.id]: res.analysis }));
+      showFlash("Draft reply generated");
+    } catch (e) { showFlash(e.message, false); }
+    setDraftingId(null);
+  };
+
+  const handleDecideTweet = async (id, decision) => {
+    setDecidingId(id);
+    try {
+      await opsFetch(`/api/ops/content/${id}/decide`, {
+        method: "POST", body: JSON.stringify({ decision }),
+      });
+      setDrafts((prev) => { const n = { ...prev }; delete n[id]; return n; });
+      showFlash(`Reply ${decision}`);
+      await loadFeed();
+    } catch (e) { showFlash(e.message, false); }
+    setDecidingId(null);
+  };
+
+  const sectionBtn = (onClick, label, opts = {}) => (
+    <button onClick={onClick} disabled={opts.disabled || loading}
+      style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`,
+        background: opts.active ? T.paper + "44" : "transparent", color: T.paper, cursor: "pointer",
+        opacity: (opts.disabled || loading) ? 0.5 : 1 }}>
+      {label}
+    </button>
+  );
+
   return (
-    <Section title="TWITTER MONITORING" actions={
+    <Section title={`TWITTER — ${tweets ? `${actionableCount} actionable / ${filtered.length} shown` : "not loaded"}`} actions={
       <div style={{ display: "flex", gap: 4 }}>
-        <button onClick={loadFeed} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
-          {loading ? "Loading..." : "Load"}
-        </button>
-        <button onClick={scan} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
-          {loading ? "Scanning..." : "Scan All"}
-        </button>
+        {sectionBtn(() => setShowAll(!showAll), showAll ? "T1 + 7d" : "Show All", { active: showAll, disabled: false })}
+        {sectionBtn(loadFeed, loading ? "Loading..." : "Load")}
+        {sectionBtn(scan, loading ? "Scanning..." : "Scan All")}
       </div>
     }>
       <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!tweets && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view cached tweets or "Scan All" to fetch new ones.</div>}
-        {tweets && tweets.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No tweets found yet. Run a scan first.</div>}
-        {tweets && tweets.map((tw) => (
-          <div key={tw.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <TierBadge tier={tw.tier || 0} />
-              <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 100 }}>{tw.target_name}</span>
-              <a href={tw.source_url} target="_blank" rel="noopener noreferrer"
-                style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
-                {tw.title || tw.content?.substring(0, 120) || tw.source_url}
-              </a>
-              <span style={{ fontSize: 9, color: T.inkFaint }}>
-                {tw.scraped_at ? new Date(tw.scraped_at).toLocaleDateString() : ""}
-              </span>
-            </div>
-            {tw.bridge_found && (
-              <div style={{ fontSize: 9, color: "#27ae60", fontFamily: T.mono, marginTop: 1, marginLeft: 28 }}>
-                BRIDGE: {tw.bridge_text?.substring(0, 100)}
+        {tweets && sorted.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No tweets match current filter.</div>}
+        {sorted.map((tw) => {
+          const highlighted = tweetIsSignal(tw);
+          const draft = drafts[tw.id];
+          return (
+            <div key={tw.id} style={{ padding: "5px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11,
+              background: highlighted ? "#f39c1208" : "transparent" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <TierBadge tier={tw.tier || 0} />
+                <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 90,
+                  cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: 2 }}
+                  title="View in Target Tracker">{tw.target_name}</span>
+                <a href={tw.source_url} target="_blank" rel="noopener noreferrer"
+                  style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  {tw.title || tw.content?.substring(0, 120) || tw.source_url}
+                </a>
+                {highlighted && !draft && !tw.founder_decision && (
+                  <button onClick={() => handleDraftReply(tw)} disabled={!!draftingId}
+                    style={btn({ background: "#3498db18", fontSize: 9, opacity: draftingId ? 0.5 : 1 })}>
+                    {draftingId === tw.id ? "Drafting..." : "Draft Reply"}
+                  </button>
+                )}
+                {tw.founder_decision && (
+                  <span style={{ fontSize: 9, fontFamily: T.mono, color: T.inkFaint }}>{tw.founder_decision}</span>
+                )}
+                <span style={{ fontSize: 9, color: T.inkFaint, minWidth: 65, textAlign: "right" }}>
+                  {tw.scraped_at ? new Date(tw.scraped_at).toLocaleDateString() : ""}
+                </span>
               </div>
-            )}
-          </div>
-        ))}
+              {tw.bridge_found && !draft && (
+                <div style={{ fontSize: 9, color: "#27ae60", fontFamily: T.mono, marginTop: 2, marginLeft: 28 }}>
+                  BRIDGE: {tw.bridge_text?.substring(0, 100)}
+                </div>
+              )}
+              {draft && (
+                <div style={{ marginTop: 4, marginLeft: 28 }}>
+                  <div style={{ background: T.paperWarm, padding: "6px 8px", fontSize: 11,
+                    border: `1px solid ${T.ruleLight}`, whiteSpace: "pre-wrap" }}>
+                    <div style={{ fontSize: 9, color: T.inkFaint, marginBottom: 2 }}>
+                      Draft reply ({draft.comment_type || "comment"})
+                    </div>
+                    {draft.draft_comment}
+                  </div>
+                  <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                    <button onClick={() => handleDecideTweet(tw.id, "approved")} disabled={!!decidingId}
+                      style={btn({ background: "#27ae6022" })}>{decidingId === tw.id ? "..." : "Approve"}</button>
+                    <button onClick={() => handleDecideTweet(tw.id, "skipped")} disabled={!!decidingId}
+                      style={btn()}>{decidingId === tw.id ? "..." : "Skip"}</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </Section>
   );
@@ -1341,11 +1559,55 @@ function TwitterPanel() {
 
 // ─── Governance Panel ───────────────────────────────────────────────
 
-function GovernancePanel() {
+function GovernancePanel({ targets }) {
   const [proposals, setProposals] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState("all"); // all, stablecoin
   const [flash, showFlash] = useFlash();
+  const [showClosed, setShowClosed] = useState(false);
+  const [showAllTiers, setShowAllTiers] = useState(false);
+  const [draftingId, setDraftingId] = useState(null);
+  const [drafts, setDrafts] = useState({});
+
+  // Build tier lookup from targets prop
+  const tierByName = {};
+  (targets || []).forEach((t) => { tierByName[t.name] = t.tier; });
+
+  const isActive = (p) => {
+    const s = (p.state || "").toLowerCase();
+    return s === "active" || s === "open" || s === "pending";
+  };
+
+  const getRelevance = (p) => {
+    const tier = tierByName[p.target_name] || 3;
+    if (tier <= 1 && p.stablecoin_relevant) return "high";
+    if ((tier <= 2 && p.stablecoin_relevant) || tier <= 1) return "medium";
+    return "low";
+  };
+
+  const relevanceOrder = { high: 0, medium: 1, low: 2 };
+  const relevanceColors = { high: "#27ae60", medium: "#f39c12", low: T.inkFaint };
+
+  const allProposals = proposals || [];
+  const filtered = allProposals.filter((p) => {
+    if (!showClosed && !isActive(p)) return false;
+    if (!showAllTiers) {
+      const tier = tierByName[p.target_name];
+      if (tier && tier > 2) return false;
+    }
+    return true;
+  });
+  const sorted = [...filtered].sort((a, b) => {
+    return (relevanceOrder[getRelevance(a)] || 2) - (relevanceOrder[getRelevance(b)] || 2);
+  });
+  const actionableCount = sorted.filter((p) => p.stablecoin_relevant && isActive(p)).length;
+
+  const stateColor = (state) => {
+    if (!state) return T.inkFaint;
+    const s = state.toLowerCase();
+    if (s === "active" || s === "pending") return "#3498db";
+    if (s === "closed" || s === "executed") return "#27ae60";
+    return T.inkFaint;
+  };
 
   const scan = async () => {
     setLoading(true);
@@ -1357,67 +1619,110 @@ function GovernancePanel() {
   };
 
   const loadFeed = async (scanned = false) => {
-    const stableOnly = filter === "stablecoin";
     try {
-      const res = await opsFetch(`/api/ops/governance/feed?limit=30&stablecoin_only=${stableOnly}`);
+      const res = await opsFetch("/api/ops/governance/feed?limit=60");
       const items = res.proposals || [];
       setProposals(items);
       const stableCount = items.filter((p) => p.stablecoin_relevant).length;
       showFlash(scanned
-        ? `${items.length} proposals scanned${stableCount ? ` (${stableCount} stablecoin-relevant)` : ""}`
+        ? `${items.length} proposals scanned (${stableCount} stablecoin-relevant)`
         : `Loaded ${items.length} proposals`);
     } catch (e) { showFlash(e.message, false); }
   };
 
-  useEffect(() => { if (proposals !== null) loadFeed(); }, [filter]);
-
-  const stateColor = (state) => {
-    if (!state) return T.inkFaint;
-    const s = state.toLowerCase();
-    if (s === "active" || s === "pending") return "#3498db";
-    if (s === "closed" || s === "executed") return "#27ae60";
-    return T.inkFaint;
+  const handleDraftComment = async (p) => {
+    setDraftingId(p.id);
+    try {
+      const res = await opsFetch("/api/ops/draft/forum", {
+        method: "POST",
+        body: JSON.stringify({ forum: (p.platform || "").toLowerCase(), topic: p.title }),
+      });
+      setDrafts((prev) => ({ ...prev, [p.id]: res.draft }));
+      showFlash("Draft comment generated");
+    } catch (e) { showFlash(e.message, false); }
+    setDraftingId(null);
   };
 
+  const sectionBtn = (onClick, label, opts = {}) => (
+    <button onClick={onClick} disabled={opts.disabled || loading}
+      style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`,
+        background: opts.active ? T.paper + "44" : "transparent", color: T.paper, cursor: "pointer",
+        opacity: (opts.disabled || loading) ? 0.5 : 1 }}>
+      {label}
+    </button>
+  );
+
   return (
-    <Section title="GOVERNANCE PROPOSALS" actions={
+    <Section title={`GOVERNANCE — ${proposals ? `${actionableCount} actionable / ${sorted.length} shown` : "not loaded"}`} actions={
       <div style={{ display: "flex", gap: 4 }}>
-        <button onClick={() => setFilter(filter === "all" ? "stablecoin" : "all")}
-          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: filter === "stablecoin" ? T.paper + "44" : "transparent", color: T.paper, cursor: "pointer" }}>
-          {filter === "stablecoin" ? "Stablecoin Only" : "All"}
-        </button>
-        <button onClick={() => { if (!proposals) loadFeed(); else scan(); }} disabled={loading}
-          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
-          {loading ? "Scanning..." : proposals ? "Scan Snapshot/Tally" : "Load"}
-        </button>
+        {sectionBtn(() => setShowClosed(!showClosed), showClosed ? "Hide Closed" : "Show Closed", { active: showClosed, disabled: false })}
+        {sectionBtn(() => setShowAllTiers(!showAllTiers), showAllTiers ? "T1+T2 Only" : "All Tiers", { active: showAllTiers, disabled: false })}
+        {sectionBtn(() => { if (!proposals) loadFeed(); else scan(); },
+          loading ? "Scanning..." : proposals ? "Scan" : "Load")}
       </div>
     }>
       <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!proposals && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view governance proposals or "Scan" to fetch new ones.</div>}
-        {proposals && proposals.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No proposals found. Run a scan first.</div>}
-        {proposals && proposals.map((p) => (
-          <div key={p.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, minWidth: 50 }}>{p.platform}</span>
-              <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 100 }}>{p.target_name}</span>
-              <span style={{ flex: 1, color: T.inkMid }}>{p.title}</span>
-              <span style={{ fontFamily: T.mono, fontSize: 9, color: stateColor(p.state), fontWeight: 600 }}>{p.state}</span>
-              {p.votes_count > 0 && <span style={{ fontSize: 9, color: T.inkFaint }}>{p.votes_count} votes</span>}
-            </div>
-            {p.stablecoin_relevant && (
-              <div style={{ fontSize: 9, marginTop: 1, marginLeft: 58 }}>
-                <span style={{ color: "#27ae60", fontFamily: T.mono, fontWeight: 600 }}>STABLECOIN</span>
-                {p.relevant_coins && p.relevant_coins.length > 0 && (
-                  <span style={{ color: T.inkLight, marginLeft: 6 }}>{p.relevant_coins.join(", ")}</span>
+        {proposals && sorted.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No proposals match current filters.</div>}
+        {sorted.map((p) => {
+          const rel = getRelevance(p);
+          const draft = drafts[p.id];
+          return (
+            <div key={p.id} style={{ padding: "5px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11,
+              background: rel === "high" ? "#27ae6008" : "transparent" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontFamily: T.mono, fontSize: 8, fontWeight: 700, minWidth: 32, textAlign: "center",
+                  color: relevanceColors[rel] }}>{rel.toUpperCase()}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, minWidth: 50 }}>{p.platform}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 90,
+                  cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: 2 }}
+                  title="View in Target Tracker">{p.target_name}</span>
+                <span style={{ flex: 1, color: T.inkMid }}>{p.title}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 9, color: stateColor(p.state), fontWeight: 600 }}>{p.state}</span>
+                {p.stablecoin_relevant && isActive(p) && !draft && (
+                  <button onClick={() => handleDraftComment(p)} disabled={!!draftingId}
+                    style={btn({ background: "#8e44ad18", fontSize: 9, opacity: draftingId ? 0.5 : 1 })}>
+                    {draftingId === p.id ? "Drafting..." : "Draft Comment"}
+                  </button>
                 )}
+                {p.votes_count > 0 && <span style={{ fontSize: 9, color: T.inkFaint }}>{p.votes_count} votes</span>}
               </div>
-            )}
-            {p.space_or_org && (
-              <div style={{ fontSize: 9, color: T.inkFaint, marginLeft: 58 }}>{p.space_or_org}</div>
-            )}
-          </div>
-        ))}
+              {p.stablecoin_relevant && (
+                <div style={{ fontSize: 9, marginTop: 1, marginLeft: 40 }}>
+                  <span style={{ color: "#27ae60", fontFamily: T.mono, fontWeight: 600 }}>STABLECOIN</span>
+                  {p.relevant_coins && p.relevant_coins.length > 0 && (
+                    <span style={{ color: T.inkLight, marginLeft: 6 }}>{p.relevant_coins.join(", ")}</span>
+                  )}
+                </div>
+              )}
+              {p.space_or_org && !draft && (
+                <div style={{ fontSize: 9, color: T.inkFaint, marginLeft: 40 }}>{p.space_or_org}</div>
+              )}
+              {draft && (
+                <div style={{ marginTop: 4, marginLeft: 40 }}>
+                  <div style={{ background: T.paperWarm, padding: "6px 8px", fontSize: 11,
+                    border: `1px solid ${T.ruleLight}` }}>
+                    <div style={{ fontSize: 9, color: T.inkFaint, marginBottom: 2 }}>
+                      Draft comment — {draft.title || "forum post"}
+                    </div>
+                    {draft.tldr && <div style={{ fontWeight: 500, marginBottom: 4 }}>{draft.tldr}</div>}
+                    <div style={{ whiteSpace: "pre-wrap", fontSize: 10, maxHeight: 200, overflow: "auto" }}>{draft.body}</div>
+                    {draft.tags && draft.tags.length > 0 && (
+                      <div style={{ fontSize: 9, color: T.inkFaint, marginTop: 4 }}>tags: {draft.tags.join(", ")}</div>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                    <button onClick={() => { navigator.clipboard.writeText(draft.body || ""); showFlash("Copied to clipboard"); }}
+                      style={btn({ background: "#27ae6022" })}>Copy</button>
+                    <button onClick={() => setDrafts((prev) => { const n = { ...prev }; delete n[p.id]; return n; })}
+                      style={btn()}>Dismiss</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </Section>
   );
@@ -1429,8 +1734,24 @@ function InvestorContentPanel() {
   const [content, setContent] = useState(null);
   const [signals, setSignals] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [analyzingId, setAnalyzingId] = useState(null);
   const [flash, showFlash] = useFlash();
+  const [showAll, setShowAll] = useState(false);
+  const [draftingId, setDraftingId] = useState(null);
+  const [drafts, setDrafts] = useState({});
+
+  const allContent = content || [];
+  const filtered = allContent.filter((c) =>
+    showAll || (c.analyzed && c.alignment_score !== null && c.alignment_score > 0.5)
+  );
+  const sorted = [...filtered].sort((a, b) => {
+    // Timing signals first
+    const aTiming = a.timing_signal ? 1 : 0;
+    const bTiming = b.timing_signal ? 1 : 0;
+    if (aTiming !== bTiming) return bTiming - aTiming;
+    // Then by alignment score
+    return (b.alignment_score || 0) - (a.alignment_score || 0);
+  });
+  const actionableCount = sorted.filter((c) => (c.alignment_score > 0.5) || c.timing_signal).length;
 
   const scan = async () => {
     setLoading(true);
@@ -1444,41 +1765,74 @@ function InvestorContentPanel() {
   const loadFeed = async (scanned = false) => {
     try {
       const [feed, sigs] = await Promise.all([
-        opsFetch("/api/ops/investors/content/feed?limit=20"),
-        opsFetch("/api/ops/investors/content/signals?limit=5"),
+        opsFetch("/api/ops/investors/content/feed?limit=50"),
+        opsFetch("/api/ops/investors/content/signals?limit=10"),
       ]);
       const items = feed.content || [];
       const sigItems = sigs.signals || [];
       setContent(items);
       setSignals(sigItems);
+      const highAlign = items.filter((c) => c.alignment_score > 0.5).length;
       showFlash(scanned
-        ? `Scanned ${items.length} items${sigItems.length ? ` (${sigItems.length} timing signals)` : ""}`
-        : `Loaded ${items.length} items`);
+        ? `Scanned ${items.length} items (${highAlign} high-alignment, ${sigItems.length} timing signals)`
+        : `Loaded ${items.length} items (${highAlign} high-alignment)`);
     } catch (e) { showFlash(e.message, false); }
   };
 
-  const analyzeItem = async (contentId) => {
-    setAnalyzingId(contentId);
+  const handleDraftOutreach = async (c) => {
+    // If already analyzed with outreach angle, show it immediately
+    if (c.analyzed && c.outreach_angle && !drafts[c.id]) {
+      setDrafts((prev) => ({ ...prev, [c.id]: { outreach_angle: c.outreach_angle, timing_notes: c.timing_notes, alignment_notes: c.alignment_notes } }));
+      return;
+    }
+    // Otherwise trigger analysis
+    setDraftingId(c.id);
     try {
-      await opsFetch(`/api/ops/investors/content/${contentId}/analyze`, { method: "POST" });
-      showFlash("Analysis complete");
+      const res = await opsFetch(`/api/ops/investors/content/${c.id}/analyze`, { method: "POST" });
+      const a = res.analysis || {};
+      setDrafts((prev) => ({ ...prev, [c.id]: { outreach_angle: a.outreach_angle, timing_notes: a.timing_notes, alignment_notes: a.alignment_notes } }));
+      showFlash("Outreach draft generated");
       await loadFeed();
     } catch (e) { showFlash(e.message, false); }
-    setAnalyzingId(null);
+    setDraftingId(null);
   };
+
+  const alignmentBar = (score) => {
+    if (score === null || score === undefined) return null;
+    const pct = Math.round(score * 100);
+    const color = pct >= 70 ? "#27ae60" : pct >= 50 ? "#f39c12" : T.inkFaint;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 70 }}>
+        <div style={{ width: 40, height: 4, background: T.ruleLight, borderRadius: 2, overflow: "hidden" }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 2 }} />
+        </div>
+        <span style={{ fontFamily: T.mono, fontSize: 9, color, fontWeight: 600 }}>{pct}%</span>
+      </div>
+    );
+  };
+
+  const sectionBtn = (onClick, label, opts = {}) => (
+    <button onClick={onClick} disabled={opts.disabled || loading}
+      style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`,
+        background: opts.active ? T.paper + "44" : "transparent", color: T.paper, cursor: "pointer",
+        opacity: (opts.disabled || loading) ? 0.5 : 1 }}>
+      {label}
+    </button>
+  );
 
   return (
     <>
       {signals && signals.length > 0 && (
-        <Section title="TIMING SIGNALS">
+        <Section title={`TIMING SIGNALS (${signals.length})`}>
           <div style={{ padding: "0 10px" }}>
             {signals.map((s) => (
-              <div key={s.id} style={{ padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+              <div key={s.id} style={{ padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11,
+                background: "#e74c3c08" }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span style={{ fontFamily: T.mono, fontSize: 10, color: "#e74c3c", fontWeight: 700 }}>TIMING</span>
                   <span style={{ fontWeight: 600 }}>{s.investor_name}</span>
-                  <span style={{ color: T.inkLight }}>{s.title || s.source_type}</span>
-                  {s.alignment_score && <span style={{ fontFamily: T.mono, fontSize: 9, color: "#27ae60" }}>align: {(s.alignment_score * 100).toFixed(0)}%</span>}
+                  <span style={{ color: T.inkLight, flex: 1 }}>{s.title || s.source_type}</span>
+                  {s.alignment_score && alignmentBar(s.alignment_score)}
                 </div>
                 {s.timing_notes && <div style={{ fontSize: 10, color: T.inkMid, marginTop: 2, marginLeft: 8 }}>{s.timing_notes}</div>}
                 {s.outreach_angle && <div style={{ fontSize: 10, color: "#3498db", marginTop: 1, marginLeft: 8 }}>Angle: {s.outreach_angle.substring(0, 150)}</div>}
@@ -1488,48 +1842,73 @@ function InvestorContentPanel() {
         </Section>
       )}
 
-      <Section title="INVESTOR CONTENT" actions={
+      <Section title={`INVESTOR CONTENT — ${content ? `${actionableCount} actionable / ${sorted.length} shown` : "not loaded"}`} actions={
         <div style={{ display: "flex", gap: 4 }}>
-          <button onClick={() => loadFeed()} disabled={loading}
-            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
-            {loading ? "Loading..." : "Load"}
-          </button>
-          <button onClick={scan} disabled={loading}
-            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
-            {loading ? "Scanning..." : "Scan All"}
-          </button>
+          {sectionBtn(() => setShowAll(!showAll), showAll ? "High Alignment" : "Show All", { active: showAll, disabled: false })}
+          {sectionBtn(() => loadFeed(), loading ? "Loading..." : "Load")}
+          {sectionBtn(scan, loading ? "Scanning..." : "Scan All")}
         </div>
       }>
         <Flash flash={flash} />
         <div style={{ padding: "0 10px" }}>
           {!content && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view investor content or "Scan All" to fetch new.</div>}
-          {content && content.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No investor content yet. Run a scan first.</div>}
-          {content && content.map((c) => (
-            <div key={c.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 80 }}>{c.source_type}</span>
-                <span style={{ fontWeight: 500, minWidth: 100 }}>{c.investor_name}</span>
-                <a href={c.source_url} target="_blank" rel="noopener noreferrer"
-                  style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
-                  {c.title || c.source_url?.substring(0, 80)}
-                </a>
-                {c.analyzed ? (
-                  c.alignment_score !== null && <span style={{ fontFamily: T.mono, fontSize: 9, color: c.alignment_score > 0.5 ? "#27ae60" : T.inkFaint }}>
-                    {(c.alignment_score * 100).toFixed(0)}%
-                  </span>
-                ) : (
-                  <button onClick={() => analyzeItem(c.id)} disabled={!!analyzingId}
-                    style={{ fontSize: 9, fontFamily: T.mono, padding: "1px 4px", border: `1px solid ${T.inkFaint}`, background: "transparent", color: T.inkLight, cursor: "pointer", opacity: analyzingId ? 0.5 : 1 }}>
-                    {analyzingId === c.id ? "Analyzing..." : "Analyze"}
-                  </button>
+          {content && sorted.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No content matches current filter. Try "Show All".</div>}
+          {sorted.map((c) => {
+            const draft = drafts[c.id];
+            const hasOutreach = c.analyzed && c.alignment_score > 0.5;
+            return (
+              <div key={c.id} style={{ padding: "5px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11,
+                background: c.timing_signal ? "#e74c3c08" : "transparent" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {c.timing_signal && <span style={{ fontSize: 9, color: "#e74c3c", fontWeight: 700 }}>TIMING</span>}
+                  <span style={{ fontWeight: 500, minWidth: 90 }}>{c.investor_name}</span>
+                  <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 60 }}>{c.source_type}</span>
+                  <a href={c.source_url} target="_blank" rel="noopener noreferrer"
+                    style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
+                    {c.title || c.source_url?.substring(0, 80)}
+                  </a>
+                  {c.analyzed && alignmentBar(c.alignment_score)}
+                  {hasOutreach && !draft && (
+                    <button onClick={() => handleDraftOutreach(c)} disabled={!!draftingId}
+                      style={btn({ background: "#3498db18", fontSize: 9, opacity: draftingId ? 0.5 : 1 })}>
+                      {draftingId === c.id ? "Drafting..." : "Draft Outreach"}
+                    </button>
+                  )}
+                  {!c.analyzed && (
+                    <button onClick={() => handleDraftOutreach(c)} disabled={!!draftingId}
+                      style={{ fontSize: 9, fontFamily: T.mono, padding: "1px 4px", border: `1px solid ${T.inkFaint}`,
+                        background: "transparent", color: T.inkLight, cursor: "pointer", opacity: draftingId ? 0.5 : 1 }}>
+                      {draftingId === c.id ? "Analyzing..." : "Analyze"}
+                    </button>
+                  )}
+                </div>
+                {c.thesis_extract && !draft && (
+                  <div style={{ fontSize: 10, color: T.inkLight, marginTop: 1, marginLeft: 8 }}>{c.thesis_extract}</div>
                 )}
-                {c.timing_signal && <span style={{ fontSize: 9, color: "#e74c3c", fontWeight: 700 }}>TIMING</span>}
+                {draft && (
+                  <div style={{ marginTop: 4, marginLeft: 8 }}>
+                    <div style={{ background: T.paperWarm, padding: "6px 8px", fontSize: 11,
+                      border: `1px solid ${T.ruleLight}` }}>
+                      <div style={{ fontSize: 9, color: T.inkFaint, marginBottom: 2 }}>Outreach angle</div>
+                      <div style={{ whiteSpace: "pre-wrap" }}>{draft.outreach_angle || "No outreach angle generated"}</div>
+                      {draft.timing_notes && (
+                        <div style={{ marginTop: 4, fontSize: 10, color: "#e74c3c" }}>Timing: {draft.timing_notes}</div>
+                      )}
+                      {draft.alignment_notes && (
+                        <div style={{ marginTop: 2, fontSize: 10, color: T.inkLight }}>{draft.alignment_notes}</div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                      <button onClick={() => { navigator.clipboard.writeText(draft.outreach_angle || ""); showFlash("Copied to clipboard"); }}
+                        style={btn({ background: "#27ae6022" })}>Copy</button>
+                      <button onClick={() => setDrafts((prev) => { const n = { ...prev }; delete n[c.id]; return n; })}
+                        style={btn()}>Dismiss</button>
+                    </div>
+                  </div>
+                )}
               </div>
-              {c.thesis_extract && (
-                <div style={{ fontSize: 10, color: T.inkLight, marginTop: 1, marginLeft: 8 }}>{c.thesis_extract}</div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Section>
     </>
@@ -1594,8 +1973,21 @@ export default function OpsDashboard() {
       await opsFetch(`/api/ops/content/${contentId}/decide`, { method: "POST", body: JSON.stringify({ decision }) });
       setQueue((prev) => prev.filter((q) => q.id !== contentId));
       showFlash(`Content ${decision}`);
+      // Refresh feed to reflect decision
+      opsFetch("/api/ops/content/feed?limit=30").then((cf) => setFeed(cf.feed || [])).catch(() => {});
     } catch (e) { showFlash(e.message, false); }
     setDecidingId(null);
+  };
+
+  const handleFeedAnalyze = async (contentId) => {
+    setBusy(`analyze-${contentId}`);
+    try {
+      await opsFetch(`/api/ops/analyze/${contentId}`, { method: "POST" });
+      showFlash("Analysis complete");
+      const cf = await opsFetch("/api/ops/content/feed?limit=30");
+      setFeed(cf.feed || []);
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
   };
 
   const handleRunHealthCheck = async () => {
@@ -1722,7 +2114,7 @@ export default function OpsDashboard() {
             </Section>
 
             <Section title="RECENT TARGET CONTENT">
-              <div style={{ padding: "0 10px" }}><ContentFeed feed={feed} /></div>
+              <div style={{ padding: "0 10px" }}><ContentFeed feed={feed} onDecide={handleDecide} onAnalyze={handleFeedAnalyze} busy={busy} /></div>
             </Section>
 
             <DiscoveryPanel />
@@ -1772,7 +2164,7 @@ export default function OpsDashboard() {
               </div>
             </Section>
             <Section title="TARGET CONTENT FEED">
-              <div style={{ padding: "0 10px" }}><ContentFeed feed={feed} /></div>
+              <div style={{ padding: "0 10px" }}><ContentFeed feed={feed} onDecide={handleDecide} onAnalyze={handleFeedAnalyze} busy={busy} /></div>
             </Section>
           </>
         )}
@@ -1781,7 +2173,7 @@ export default function OpsDashboard() {
         {tab === "signals" && (
           <>
             <TwitterPanel />
-            <GovernancePanel />
+            <GovernancePanel targets={targets} />
             <InvestorContentPanel />
           </>
         )}

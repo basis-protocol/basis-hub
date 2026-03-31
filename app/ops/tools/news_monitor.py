@@ -14,12 +14,23 @@ logger = logging.getLogger(__name__)
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 COINGECKO_BASE = "https://pro-api.coingecko.com" if COINGECKO_API_KEY else "https://api.coingecko.com"
 
-# Stablecoin symbols and names for relevance matching
+# Stablecoin symbols, issuers, generic terms, regulatory, and risk keywords
 STABLECOIN_KEYWORDS = [
-    "usdc", "usdt", "tether", "dai", "frax", "pyusd", "fdusd", "tusd", "usdd",
-    "usde", "ethena", "usd1", "stablecoin", "peg", "depeg", "depegged",
-    "reserve", "attestation", "backing", "collateral", "mint", "redeem",
-    "circle", "paxos", "makerdao", "sky", "maker",
+    # ── Stablecoin names / symbols ──
+    "usdc", "usdt", "dai", "frax", "tusd", "busd", "gho", "lusd", "pyusd",
+    "usde", "fdusd", "usr", "susd", "crvusd", "mkusd", "usdm", "euroe",
+    "eurt", "sdai", "usds", "usdd", "usd1",
+    # ── Issuer / protocol names ──
+    "tether", "circle", "paxos", "makerdao", "maker", "sky", "frax finance",
+    "ethena", "paypal", "mountain protocol", "resolv",
+    # ── Generic stablecoin terms ──
+    "stablecoin", "stable coin", "stablecoins", "depeg", "de-peg", "depegged",
+    "reserves", "reserve", "attestation", "backing", "redemption", "redeem",
+    "mint", "burn", "collateral", "peg",
+    # ── Regulatory ──
+    "mica", "genius act", "occ", "stablecoin regulation", "stablecoin legislation",
+    # ── Risk events ──
+    "exploit", "hack", "bank run", "liquidity crisis",
 ]
 
 
@@ -56,9 +67,10 @@ def _detect_incident(title: str, description: str) -> bool:
     """Check if a news item describes a stablecoin incident."""
     text = (title + " " + description).lower()
     incident_keywords = [
-        "depeg", "depegged", "crash", "collapse", "exploit", "hack", "vulnerability",
-        "freeze", "frozen", "blacklist", "sanctions", "investigation", "sec ",
-        "lawsuit", "insolvency", "bank run", "withdrawal halt", "pause",
+        "depeg", "depegged", "de-peg", "crash", "collapse", "exploit", "hack",
+        "vulnerability", "freeze", "frozen", "blacklist", "sanctions",
+        "investigation", "sec ", "lawsuit", "insolvency", "bank run",
+        "withdrawal halt", "pause", "liquidity crisis", "rug pull",
     ]
     return any(kw in text for kw in incident_keywords)
 
@@ -105,7 +117,7 @@ async def scan_news() -> dict:
                ON CONFLICT (news_id) DO NOTHING""",
             (
                 news_id, title, description[:2000], url, thumb, source,
-                published, relevant, keywords if relevant else None,
+                published, relevant, keywords or None,
                 is_incident,
             ),
         )

@@ -51,7 +51,8 @@
       "Bash(wc -l /home/runner/workspace/app/ops/tools/*.py)",
       "Bash(find /home/runner/workspace/app/ops -name \"*.py\" -exec wc -l {} +)",
       "Bash(find /home/runner/workspace -type f -name *ops*)",
-      "Bash(find /home/runner/workspace -type f -name *integrity*)"
+      "Bash(find /home/runner/workspace -type f -name *integrity*)",
+      "Bash(find /home/runner/workspace/frontend -name *news* -o -name *routes.py)"
     ]
   }
 }
