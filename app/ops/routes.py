@@ -6,7 +6,7 @@ import os
 import json
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Request, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Query
 from typing import Optional
 
 from app.database import fetch_one, fetch_all, execute
@@ -277,25 +277,30 @@ async def get_health(request: Request):
 
 
 @router.post("/health/check")
-async def run_health_check(request: Request):
+async def run_health_check(request: Request, background_tasks: BackgroundTasks):
     _check_admin_key(request)
-    # Force-reload health checker module to pick up code changes without server restart
-    import importlib
-    import app.ops.tools.health_checker as _hc_mod
-    importlib.reload(_hc_mod)
-    try:
-        results = _hc_mod.run_all_checks()
-        # Fire alerts for failures (non-blocking)
+
+    def _run_health_checks():
+        import importlib
+        import app.ops.tools.health_checker as _hc_mod
+        importlib.reload(_hc_mod)
         try:
-            from app.ops.tools.alerter import check_and_alert_health, check_and_alert_engagement
-            await check_and_alert_health(results)
-            await check_and_alert_engagement()
-        except Exception as alert_err:
-            logger.warning(f"Alert dispatch failed (non-fatal): {alert_err}")
-        return {"status": "ok", "checks": results}
-    except Exception as e:
-        logger.error(f"Health check run failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            results = _hc_mod.run_all_checks()
+            # Fire alerts for failures
+            import asyncio
+            try:
+                from app.ops.tools.alerter import check_and_alert_health, check_and_alert_engagement
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(check_and_alert_health(results))
+                loop.run_until_complete(check_and_alert_engagement())
+                loop.close()
+            except Exception as alert_err:
+                logger.warning(f"Alert dispatch failed (non-fatal): {alert_err}")
+        except Exception as e:
+            logger.error(f"Health check run failed: {e}")
+
+    background_tasks.add_task(_run_health_checks)
+    return {"status": "accepted", "message": "Health checks running in background. GET /api/ops/health for results."}
 
 
 # =============================================================================
@@ -948,16 +953,20 @@ async def update_target_surfaces(request: Request, target_id: int):
 # =============================================================================
 
 @router.post("/twitter/scan")
-async def scan_twitter(request: Request, target_id: Optional[int] = None):
+async def scan_twitter(request: Request, background_tasks: BackgroundTasks, target_id: Optional[int] = None):
     """Scan Twitter for recent tweets from target contacts' handles."""
     _check_admin_key(request)
-    from app.ops.tools.twitter_monitor import scan_target_tweets
-    try:
-        result = await scan_target_tweets(target_id=target_id)
-        return result
-    except Exception as e:
-        logger.error(f"Twitter scan failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+
+    async def _run():
+        from app.ops.tools.twitter_monitor import scan_target_tweets
+        try:
+            await scan_target_tweets(target_id=target_id)
+        except Exception as e:
+            logger.error(f"Twitter scan failed: {e}")
+
+    import asyncio
+    background_tasks.add_task(lambda: asyncio.run(_run()))
+    return {"status": "accepted", "message": "Twitter scan running in background. GET /api/ops/twitter/feed for results."}
 
 
 @router.get("/twitter/feed")
@@ -993,7 +1002,7 @@ async def scan_twitter_keywords(request: Request):
 # =============================================================================
 
 @router.post("/governance/scan")
-async def scan_governance(request: Request, target_id: Optional[int] = None):
+async def scan_governance(request: Request, background_tasks: BackgroundTasks, target_id: Optional[int] = None):
     """Scan Snapshot + Tally for governance proposals from target DAOs."""
     _check_admin_key(request)
     body = {}
@@ -1004,13 +1013,16 @@ async def scan_governance(request: Request, target_id: Optional[int] = None):
     days_back = body.get("days_back", 14) if body else 14
     tid = body.get("target_id", target_id) if body else target_id
 
-    from app.ops.tools.governance_monitor import scan_all_governance
-    try:
-        result = await scan_all_governance(target_id=tid, days_back=days_back)
-        return result
-    except Exception as e:
-        logger.error(f"Governance scan failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    async def _run():
+        from app.ops.tools.governance_monitor import scan_all_governance
+        try:
+            await scan_all_governance(target_id=tid, days_back=days_back)
+        except Exception as e:
+            logger.error(f"Governance scan failed: {e}")
+
+    import asyncio
+    background_tasks.add_task(lambda: asyncio.run(_run()))
+    return {"status": "accepted", "message": "Governance scan running in background. GET /api/ops/governance/feed for results."}
 
 
 @router.get("/governance/feed")
@@ -1045,7 +1057,7 @@ async def get_snapshot_space(request: Request, space_id: str):
 # =============================================================================
 
 @router.post("/investors/content/scan")
-async def scan_investor_content_endpoint(request: Request):
+async def scan_investor_content_endpoint(request: Request, background_tasks: BackgroundTasks):
     """Scan VC blogs and tweets for investor content."""
     _check_admin_key(request)
     body = {}
@@ -1055,13 +1067,16 @@ async def scan_investor_content_endpoint(request: Request):
         pass
     investor_id = body.get("investor_id") if body else None
 
-    from app.ops.tools.investor_monitor import scan_investor_content
-    try:
-        result = await scan_investor_content(investor_id=investor_id)
-        return result
-    except Exception as e:
-        logger.error(f"Investor content scan failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    async def _run():
+        from app.ops.tools.investor_monitor import scan_investor_content
+        try:
+            await scan_investor_content(investor_id=investor_id)
+        except Exception as e:
+            logger.error(f"Investor content scan failed: {e}")
+
+    import asyncio
+    background_tasks.add_task(lambda: asyncio.run(_run()))
+    return {"status": "accepted", "message": "Investor content scan running in background. GET /api/ops/investors/content/feed for results."}
 
 
 @router.get("/investors/content/feed")

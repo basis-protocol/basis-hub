@@ -2354,21 +2354,10 @@ async def admin_reindex_batch(request: Request, background_tasks: BackgroundTask
     _check_admin_key(request)
     from app.indexer.pipeline import run_pipeline_batch
 
-    # Count wallets that will be queued
-    stale_row = fetch_one("""
-        SELECT COUNT(*) AS cnt FROM wallet_graph.wallets
-        WHERE last_indexed_at IS NULL
-           OR last_indexed_at < NOW() - INTERVAL '24 hours'
-    """)
-    wallets_stale = stale_row["cnt"] if stale_row else 0
-    wallets_queued = min(wallets_stale, batch_size)
-
     background_tasks.add_task(run_pipeline_batch, batch_size)
     return {
-        "status": "started",
+        "status": "accepted",
         "batch_size": batch_size,
-        "wallets_queued": wallets_queued,
-        "wallets_stale_total": wallets_stale,
         "message": "Reindex started. Check GET /api/admin/reindex-status for progress.",
     }
 
