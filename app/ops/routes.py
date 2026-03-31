@@ -279,9 +279,12 @@ async def get_health(request: Request):
 @router.post("/health/check")
 async def run_health_check(request: Request):
     _check_admin_key(request)
-    from app.ops.tools.health_checker import run_all_checks
+    # Force-reload health checker module to pick up code changes without server restart
+    import importlib
+    import app.ops.tools.health_checker as _hc_mod
+    importlib.reload(_hc_mod)
     try:
-        results = run_all_checks()
+        results = _hc_mod.run_all_checks()
         return {"status": "ok", "checks": results}
     except Exception as e:
         logger.error(f"Health check run failed: {e}")

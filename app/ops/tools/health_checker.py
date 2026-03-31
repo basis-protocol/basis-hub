@@ -3,15 +3,32 @@ Health checker — direct database queries against existing Basis tables.
 All queries are read-only SELECT with statement_timeout.
 """
 import logging
+import os
 import time
 import json
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from app.database import fetch_one, fetch_all, execute, get_cursor
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT_MS = 5000  # 5-second statement timeout for all ops reads
+
+# Use the public URL for HTTP checks (localhost doesn't work behind Replit proxy)
+_PUBLIC_BASE = os.environ.get("PUBLIC_URL", "https://basisprotocol.xyz")
+
+
+def _now_utc():
+    return datetime.now(timezone.utc)
+
+
+def _age_hours(ts):
+    """Compute age in hours, handling both naive and aware datetimes."""
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (_now_utc() - ts).total_seconds() / 3600
 
 
 def _safe_query(sql, params=None):
@@ -36,7 +53,7 @@ def _safe_fetch_one(sql, params=None):
 
 def check_sii_freshness():
     """Check if SII scores are updating hourly."""
-    row = _safe_fetch_one("SELECT MAX(scored_at) as last_scored FROM scores")
+    row = _safe_fetch_one("SELECT MAX(computed_at) as last_scored FROM scores")
     if row is None:
         return {"system": "sii_scoring", "status": "down", "details": {"error": "query_failed"}}
 
@@ -44,17 +61,17 @@ def check_sii_freshness():
     if not last_scored:
         return {"system": "sii_scoring", "status": "down", "details": {"error": "no_scores"}}
 
-    age_hours = (datetime.utcnow() - last_scored).total_seconds() / 3600
-    count = _safe_fetch_one("SELECT COUNT(DISTINCT symbol) as cnt FROM scores")
+    age = _age_hours(last_scored)
+    count = _safe_fetch_one("SELECT COUNT(DISTINCT stablecoin_id) as cnt FROM scores")
     coin_count = count["cnt"] if count else 0
 
-    status = "healthy" if age_hours < 2 else ("degraded" if age_hours < 4 else "down")
+    status = "healthy" if age < 2 else ("degraded" if age < 4 else "down")
     return {
         "system": "sii_scoring",
         "status": status,
         "details": {
             "last_scored": last_scored.isoformat(),
-            "age_hours": round(age_hours, 1),
+            "age_hours": round(age, 1),
             "stablecoin_count": coin_count,
         },
     }
@@ -62,10 +79,7 @@ def check_sii_freshness():
 
 def check_psi_freshness():
     """Check if PSI scores are current."""
-    # PSI scores table name from migration 017
-    row = _safe_fetch_one(
-        "SELECT MAX(scored_at) as last_scored FROM psi_scores"
-    )
+    row = _safe_fetch_one("SELECT MAX(computed_at) as last_scored FROM psi_scores")
     if row is None:
         return {"system": "psi_scoring", "status": "down", "details": {"error": "query_failed_or_no_table"}}
 
@@ -73,12 +87,12 @@ def check_psi_freshness():
     if not last_scored:
         return {"system": "psi_scoring", "status": "down", "details": {"error": "no_scores"}}
 
-    age_hours = (datetime.utcnow() - last_scored).total_seconds() / 3600
-    status = "healthy" if age_hours < 2 else ("degraded" if age_hours < 4 else "down")
+    age = _age_hours(last_scored)
+    status = "healthy" if age < 2 else ("degraded" if age < 4 else "down")
     return {
         "system": "psi_scoring",
         "status": status,
-        "details": {"last_scored": last_scored.isoformat(), "age_hours": round(age_hours, 1)},
+        "details": {"last_scored": last_scored.isoformat(), "age_hours": round(age, 1)},
     }
 
 
@@ -94,50 +108,50 @@ def check_cda_freshness():
     if not last_extracted:
         return {"system": "cda_pipeline", "status": "down", "details": {"error": "no_extractions"}}
 
-    age_hours = (datetime.utcnow() - last_extracted).total_seconds() / 3600
-    # Count today's extractions
+    age = _age_hours(last_extracted)
     today_count = _safe_fetch_one(
-        "SELECT COUNT(DISTINCT issuer_symbol) as cnt FROM cda_vendor_extractions WHERE extracted_at > NOW() - INTERVAL '24 hours'"
+        "SELECT COUNT(DISTINCT asset_symbol) as cnt FROM cda_vendor_extractions WHERE extracted_at > NOW() - INTERVAL '24 hours'"
     )
     issuer_count = today_count["cnt"] if today_count else 0
 
-    status = "healthy" if age_hours < 24 else ("degraded" if age_hours < 48 else "down")
+    status = "healthy" if age < 24 else ("degraded" if age < 48 else "down")
     return {
         "system": "cda_pipeline",
         "status": status,
         "details": {
             "last_extracted": last_extracted.isoformat(),
-            "age_hours": round(age_hours, 1),
+            "age_hours": round(age, 1),
             "issuers_today": issuer_count,
         },
     }
 
 
 def check_wallet_freshness():
-    """Check wallet indexer freshness."""
+    """Check wallet indexer freshness via wallets.last_indexed_at (updated every reindex cycle)."""
     row = _safe_fetch_one(
-        "SELECT MAX(scored_at) as last_scored FROM wallet_graph.wallet_risk_scores"
+        "SELECT MAX(last_indexed_at) as last_indexed FROM wallet_graph.wallets"
     )
     if row is None:
         return {"system": "wallet_indexer", "status": "down", "details": {"error": "query_failed_or_no_table"}}
 
-    last_scored = row.get("last_scored")
-    if not last_scored:
-        return {"system": "wallet_indexer", "status": "down", "details": {"error": "no_scores"}}
+    last_indexed = row.get("last_indexed")
+    if not last_indexed:
+        return {"system": "wallet_indexer", "status": "down", "details": {"error": "no_indexed_wallets"}}
 
-    age_hours = (datetime.utcnow() - last_scored).total_seconds() / 3600
+    age = _age_hours(last_indexed)
     active_count = _safe_fetch_one(
-        "SELECT COUNT(*) as cnt FROM wallet_graph.wallet_risk_scores WHERE risk_score IS NOT NULL"
+        "SELECT COUNT(*) as cnt FROM wallet_graph.wallets WHERE last_indexed_at IS NOT NULL"
     )
     active = active_count["cnt"] if active_count else 0
 
-    status = "healthy" if age_hours < 1 else ("degraded" if age_hours < 2 else "down")
+    # Cron runs every 15 min; flag degraded if >30 min stale, down if >1 hour
+    status = "healthy" if age < 0.5 else ("degraded" if age < 1 else "down")
     return {
         "system": "wallet_indexer",
         "status": status,
         "details": {
-            "last_scored": last_scored.isoformat(),
-            "age_hours": round(age_hours, 1),
+            "last_indexed": last_indexed.isoformat(),
+            "age_hours": round(age, 1),
             "active_wallets": active,
         },
     }
@@ -155,31 +169,30 @@ def check_graph_freshness():
     if not last_built:
         return {"system": "graph_edges", "status": "down", "details": {"error": "no_edges"}}
 
-    age_hours = (datetime.utcnow() - last_built).total_seconds() / 3600
-    # Per-chain stats
+    age = _age_hours(last_built)
     chain_stats = _safe_query(
         "SELECT chain, COUNT(*) as cnt FROM wallet_graph.wallet_edges GROUP BY chain"
     )
 
-    status = "healthy" if age_hours < 48 else ("degraded" if age_hours < 72 else "down")
+    status = "healthy" if age < 48 else ("degraded" if age < 72 else "down")
     return {
         "system": "graph_edges",
         "status": status,
         "details": {
             "last_built": last_built.isoformat(),
-            "age_hours": round(age_hours, 1),
+            "age_hours": round(age, 1),
             "chains": {r["chain"]: r["cnt"] for r in (chain_stats or [])},
         },
     }
 
 
 def check_api_health():
-    """Check API responsiveness."""
+    """Check API responsiveness via public URL."""
     start = time.time()
     try:
-        resp = httpx.get("http://localhost:5000/api/health", timeout=10)
+        resp = httpx.get(f"{_PUBLIC_BASE}/api/health", timeout=15)
         latency_ms = round((time.time() - start) * 1000)
-        status = "healthy" if resp.status_code == 200 and latency_ms < 500 else "degraded"
+        status = "healthy" if resp.status_code == 200 and latency_ms < 5000 else "degraded"
         return {
             "system": "api",
             "status": status,
@@ -193,7 +206,6 @@ def check_database():
     """Check database connectivity."""
     try:
         row = _safe_fetch_one("SELECT 1 as ok")
-        # Count tables
         table_count = _safe_fetch_one(
             "SELECT COUNT(*) as cnt FROM information_schema.tables WHERE table_schema IN ('public', 'wallet_graph', 'ops')"
         )
@@ -218,12 +230,12 @@ def check_discovery_freshness():
     if not last_detected:
         return {"system": "discovery", "status": "down", "details": {"error": "no_signals"}}
 
-    age_hours = (datetime.utcnow() - last_detected).total_seconds() / 3600
-    status = "healthy" if age_hours < 24 else ("degraded" if age_hours < 48 else "down")
+    age = _age_hours(last_detected)
+    status = "healthy" if age < 24 else ("degraded" if age < 48 else "down")
     return {
         "system": "discovery",
         "status": status,
-        "details": {"last_detected": last_detected.isoformat(), "age_hours": round(age_hours, 1)},
+        "details": {"last_detected": last_detected.isoformat(), "age_hours": round(age, 1)},
     }
 
 
@@ -236,7 +248,7 @@ def check_coingecko_usage():
         return {"system": "coingecko_api", "status": "healthy", "details": {"note": "no_budget_data"}}
 
     used = row.get("calls_used", 0)
-    limit = row.get("daily_limit", 16666)  # ~500K/month
+    limit = row.get("daily_limit", 16666)
     pct = round(used / limit * 100, 1) if limit > 0 else 0
 
     status = "healthy" if pct < 80 else ("degraded" if pct < 95 else "down")
@@ -248,9 +260,9 @@ def check_coingecko_usage():
 
 
 def check_integrity():
-    """Check integrity status via internal API."""
+    """Check integrity status via public URL."""
     try:
-        resp = httpx.get("http://localhost:5000/api/integrity", timeout=10)
+        resp = httpx.get(f"{_PUBLIC_BASE}/api/integrity", timeout=15)
         if resp.status_code == 200:
             data = resp.json()
             domains = data.get("domains", {})
@@ -291,7 +303,6 @@ def run_all_checks():
         try:
             result = check_fn()
             results.append(result)
-            # Store in ops_health_checks
             execute(
                 "INSERT INTO ops_health_checks (system, status, details) VALUES (%s, %s, %s)",
                 (result["system"], result["status"], json.dumps(result["details"])),
