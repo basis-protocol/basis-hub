@@ -314,6 +314,13 @@ async def startup():
         logger.info("Publisher page routes registered")
     except Exception as e:
         logger.warning(f"Publisher pages not available: {e}")
+    # Register Operations Hub routes
+    try:
+        from app.ops.routes import register_ops_routes
+        register_ops_routes(app)
+        logger.info("Operations Hub routes registered")
+    except Exception as e:
+        logger.warning(f"Operations Hub not available: {e}")
     # MCP HTTP endpoint
     try:
         from app.mcp_server import mcp as mcp_server

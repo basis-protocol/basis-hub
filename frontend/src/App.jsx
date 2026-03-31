@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import OpsDashboard from "./pages/OpsDashboard";
 
 const API = "";
 const _DK = "BF6KF2i34EslzTnvBXAjcLlDZBlQKLSTP9LdrAzxUHI";
@@ -2710,6 +2711,11 @@ function Footer({ mobile }) {
 }
 
 export default function App() {
+  // Route /ops to Operations Hub
+  if (window.location.pathname.startsWith("/ops")) {
+    return <OpsDashboard />;
+  }
+
   const [view, setView] = useState("rankings");
   const [selectedCoin, setSelectedCoin] = useState(null);
   const [witnessSymbol, setWitnessSymbol] = useState(null);
