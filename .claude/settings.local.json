@@ -49,7 +49,9 @@
       "Bash(node:*)",
       "Bash(1 __NEW_LINE_af0b3faa5161f097__ echo \"---\" echo \"Hitting production endpoint...\" curl -s --max-time 60 \"https://basisprotocol.xyz/api/scores/usdc/at/2023-03-11\")",
       "Bash(wc -l /home/runner/workspace/app/ops/tools/*.py)",
-      "Bash(find /home/runner/workspace/app/ops -name \"*.py\" -exec wc -l {} +)"
+      "Bash(find /home/runner/workspace/app/ops -name \"*.py\" -exec wc -l {} +)",
+      "Bash(find /home/runner/workspace -type f -name *ops*)",
+      "Bash(find /home/runner/workspace -type f -name *integrity*)"
     ]
   }
 }

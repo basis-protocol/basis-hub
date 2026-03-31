@@ -93,6 +93,26 @@ function Lbl({ children }) {
   return <span style={{ fontSize: 10, fontWeight: 600, fontFamily: T.mono, color: T.inkLight, textTransform: "uppercase", letterSpacing: 0.5 }}>{children}</span>;
 }
 
+function Flash({ flash }) {
+  if (!flash) return null;
+  return (
+    <div style={{
+      padding: "4px 8px", margin: "6px 10px", fontSize: 11, fontFamily: T.mono,
+      background: flash.ok ? "#27ae6018" : "#e74c3c18",
+      border: `1px solid ${flash.ok ? "#27ae6044" : "#e74c3c44"}`,
+      color: flash.ok ? "#27ae60" : T.accent,
+    }}>
+      {flash.msg}
+    </div>
+  );
+}
+
+function useFlash() {
+  const [flash, setFlash] = useState(null);
+  const showFlash = (msg, ok = true) => { setFlash({ msg, ok }); setTimeout(() => setFlash(null), 3000); };
+  return [flash, showFlash];
+}
+
 // ─── Auth Gate ────────────────────────────────────────────────────────
 
 function AuthGate({ onAuth }) {
@@ -137,7 +157,7 @@ function HealthPanel({ health }) {
 
 // ─── Action Queue ─────────────────────────────────────────────────────
 
-function ActionQueue({ queue, onDecide }) {
+function ActionQueue({ queue, onDecide, decidingId }) {
   if (!queue || queue.length === 0) return <div style={{ color: T.inkFaint, fontSize: 12 }}>No pending actions in queue.</div>;
   return (
     <div>
@@ -160,8 +180,10 @@ function ActionQueue({ queue, onDecide }) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 4, marginLeft: 12, flexShrink: 0 }}>
-              <button onClick={() => onDecide(item.id, "approved")} style={btn({ background: "#27ae6022" })}>Approve</button>
-              <button onClick={() => onDecide(item.id, "skipped")} style={btn()}>Skip</button>
+              <button onClick={() => onDecide(item.id, "approved")} disabled={!!decidingId}
+                style={btn({ background: "#27ae6022" })}>{decidingId === item.id ? "..." : "Approve"}</button>
+              <button onClick={() => onDecide(item.id, "skipped")} disabled={!!decidingId}
+                style={btn()}>{decidingId === item.id ? "..." : "Skip"}</button>
             </div>
           </div>
         </div>
@@ -264,13 +286,15 @@ function TargetRow({ target, onUpdate }) {
   };
 
   const handleDecideContent = async (contentId, decision) => {
+    setBusy(`decide-${contentId}`);
     try {
       await opsFetch(`/api/ops/content/${contentId}/decide`, {
         method: "POST", body: JSON.stringify({ decision }),
       });
-      showFlash(`${decision}`);
+      showFlash(`Content ${decision}`);
       loadDetail();
     } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
   };
 
   const handleDraftDm = async () => {
@@ -556,8 +580,10 @@ function TargetRow({ target, onUpdate }) {
                     {/* Approve/skip for undecided content with bridges */}
                     {c.bridge_found && !c.founder_decision && (
                       <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-                        <button onClick={() => handleDecideContent(c.id, "approved")} style={btn({ background: "#27ae6022" })}>Approve</button>
-                        <button onClick={() => handleDecideContent(c.id, "skipped")} style={btn()}>Skip</button>
+                        <button onClick={() => handleDecideContent(c.id, "approved")} disabled={!!busy}
+                          style={btn({ background: "#27ae6022" })}>{busy === `decide-${c.id}` ? "..." : "Approve"}</button>
+                        <button onClick={() => handleDecideContent(c.id, "skipped")} disabled={!!busy}
+                          style={btn()}>{busy === `decide-${c.id}` ? "..." : "Skip"}</button>
                       </div>
                     )}
                     {c.founder_decision && (
@@ -919,24 +945,27 @@ function Section({ title, actions, children }) {
 function DiscoveryPanel() {
   const [signals, setSignals] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
 
   const scan = async () => {
     setLoading(true);
     try {
       const res = await opsFetch("/api/ops/discovery/scan?limit=10");
       setSignals(res);
+      showFlash(`Found ${(res.signals || []).length} discovery signals`);
     } catch (e) {
-      setSignals({ signals: [], summary: `Error: ${e.message}` });
+      showFlash(e.message, false);
     }
     setLoading(false);
   };
 
   return (
     <Section title="DISCOVERY SIGNALS" actions={
-      <button onClick={scan} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+      <button onClick={scan} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
         {loading ? "Scanning..." : "Scan"}
       </button>
     }>
+      <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!signals && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Scan" to query discovery signals.</div>}
         {signals && (
@@ -972,14 +1001,17 @@ function DiscoveryPanel() {
 function MilestonesPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
 
   const check = async () => {
     setLoading(true);
     try {
       const res = await opsFetch("/api/ops/milestones");
       setData(res);
+      const st = res?.seed_triggers;
+      showFlash(st ? `${st.met}/${st.total} seed triggers met` : "Milestones loaded");
     } catch (e) {
-      setData(null);
+      showFlash(e.message, false);
     }
     setLoading(false);
   };
@@ -990,10 +1022,11 @@ function MilestonesPanel() {
 
   return (
     <Section title="MILESTONES" actions={
-      <button onClick={check} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+      <button onClick={check} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
         {loading ? "Checking..." : "Check"}
       </button>
     }>
+      <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!data && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Check" to compute milestones from live data.</div>}
         {st && (
@@ -1047,10 +1080,15 @@ function MilestonesPanel() {
 function AnalyticsPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
 
   const load = async () => {
     setLoading(true);
-    try { setData(await opsFetch("/api/ops/analytics")); } catch (e) { setData(null); }
+    try {
+      const res = await opsFetch("/api/ops/analytics");
+      setData(res);
+      showFlash(`Analytics computed — ${res?.engagement?.total_engagements || 0} engagements, ${res?.pipeline?.active_targets || 0} active targets`);
+    } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
@@ -1061,10 +1099,11 @@ function AnalyticsPanel() {
 
   return (
     <Section title="ANALYTICS" actions={
-      <button onClick={load} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
-        {loading ? "..." : "Compute"}
+      <button onClick={load} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+        {loading ? "Computing..." : "Compute"}
       </button>
     }>
+      <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!data && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Compute" to generate analytics.</div>}
         {eng && (
@@ -1139,23 +1178,28 @@ function AnalyticsPanel() {
 function NewsPanel() {
   const [news, setNews] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
 
   const scan = async () => {
     setLoading(true);
     try {
       await opsFetch("/api/ops/news/scan", { method: "POST" });
       const feed = await opsFetch("/api/ops/news/feed?limit=15");
-      setNews(feed.news || []);
-    } catch (e) { setNews([]); }
+      const items = feed.news || [];
+      setNews(items);
+      const incidents = items.filter((n) => n.incident_detected).length;
+      showFlash(`Found ${items.length} news items${incidents ? ` (${incidents} incidents)` : ""}`);
+    } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
   return (
     <Section title="COINGECKO NEWS" actions={
-      <button onClick={scan} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+      <button onClick={scan} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
         {loading ? "Scanning..." : "Scan News"}
       </button>
     }>
+      <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!news && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Scan News" to fetch stablecoin-related news.</div>}
         {news && news.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No stablecoin-relevant news found.</div>}
@@ -1186,22 +1230,26 @@ function NewsPanel() {
 function AlertsPanel() {
   const [alerts, setAlerts] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await opsFetch("/api/ops/alerts?limit=20");
-      setAlerts(res.alerts || []);
-    } catch (e) { setAlerts([]); }
+      const items = res.alerts || [];
+      setAlerts(items);
+      showFlash(`Loaded ${items.length} alerts`);
+    } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
   return (
     <Section title="ALERT LOG" actions={
-      <button onClick={load} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
-        {loading ? "..." : "Load"}
+      <button onClick={load} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+        {loading ? "Loading..." : "Load"}
       </button>
     }>
+      <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!alerts && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view recent alerts.</div>}
         {alerts && alerts.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No alerts sent yet.</div>}
@@ -1225,14 +1273,18 @@ function AlertsPanel() {
 function TwitterPanel() {
   const [tweets, setTweets] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
 
   const scan = async () => {
     setLoading(true);
     try {
       await opsFetch("/api/ops/twitter/scan", { method: "POST" });
       const res = await opsFetch("/api/ops/twitter/feed?limit=30");
-      setTweets(res.tweets || []);
-    } catch (e) { setTweets([]); }
+      const items = res.tweets || [];
+      setTweets(items);
+      const bridges = items.filter((t) => t.bridge_found).length;
+      showFlash(`Found ${items.length} tweets${bridges ? ` (${bridges} with bridges)` : ""}`);
+    } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
@@ -1240,22 +1292,25 @@ function TwitterPanel() {
     setLoading(true);
     try {
       const res = await opsFetch("/api/ops/twitter/feed?limit=30");
-      setTweets(res.tweets || []);
-    } catch (e) { setTweets([]); }
+      const items = res.tweets || [];
+      setTweets(items);
+      showFlash(`Loaded ${items.length} tweets`);
+    } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
   return (
     <Section title="TWITTER MONITORING" actions={
       <div style={{ display: "flex", gap: 4 }}>
-        <button onClick={loadFeed} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
-          Load
+        <button onClick={loadFeed} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+          {loading ? "Loading..." : "Load"}
         </button>
-        <button onClick={scan} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+        <button onClick={scan} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
           {loading ? "Scanning..." : "Scan All"}
         </button>
       </div>
     }>
+      <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!tweets && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view cached tweets or "Scan All" to fetch new ones.</div>}
         {tweets && tweets.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No tweets found yet. Run a scan first.</div>}
@@ -1290,22 +1345,28 @@ function GovernancePanel() {
   const [proposals, setProposals] = useState(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState("all"); // all, stablecoin
+  const [flash, showFlash] = useFlash();
 
   const scan = async () => {
     setLoading(true);
     try {
       await opsFetch("/api/ops/governance/scan", { method: "POST" });
-      await loadFeed();
-    } catch (e) { setProposals([]); }
+      await loadFeed(true);
+    } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
-  const loadFeed = async () => {
+  const loadFeed = async (scanned = false) => {
     const stableOnly = filter === "stablecoin";
     try {
       const res = await opsFetch(`/api/ops/governance/feed?limit=30&stablecoin_only=${stableOnly}`);
-      setProposals(res.proposals || []);
-    } catch (e) { setProposals([]); }
+      const items = res.proposals || [];
+      setProposals(items);
+      const stableCount = items.filter((p) => p.stablecoin_relevant).length;
+      showFlash(scanned
+        ? `${items.length} proposals scanned${stableCount ? ` (${stableCount} stablecoin-relevant)` : ""}`
+        : `Loaded ${items.length} proposals`);
+    } catch (e) { showFlash(e.message, false); }
   };
 
   useEffect(() => { if (proposals !== null) loadFeed(); }, [filter]);
@@ -1325,12 +1386,13 @@ function GovernancePanel() {
           style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: filter === "stablecoin" ? T.paper + "44" : "transparent", color: T.paper, cursor: "pointer" }}>
           {filter === "stablecoin" ? "Stablecoin Only" : "All"}
         </button>
-        <button onClick={() => { if (!proposals) loadFeed(); else scan(); }}
-          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+        <button onClick={() => { if (!proposals) loadFeed(); else scan(); }} disabled={loading}
+          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
           {loading ? "Scanning..." : proposals ? "Scan Snapshot/Tally" : "Load"}
         </button>
       </div>
     }>
+      <Flash flash={flash} />
       <div style={{ padding: "0 10px" }}>
         {!proposals && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view governance proposals or "Scan" to fetch new ones.</div>}
         {proposals && proposals.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No proposals found. Run a scan first.</div>}
@@ -1367,32 +1429,42 @@ function InvestorContentPanel() {
   const [content, setContent] = useState(null);
   const [signals, setSignals] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [analyzingId, setAnalyzingId] = useState(null);
+  const [flash, showFlash] = useFlash();
 
   const scan = async () => {
     setLoading(true);
     try {
       await opsFetch("/api/ops/investors/content/scan", { method: "POST" });
-      await loadFeed();
-    } catch (e) { setContent([]); }
+      await loadFeed(true);
+    } catch (e) { showFlash(e.message, false); }
     setLoading(false);
   };
 
-  const loadFeed = async () => {
+  const loadFeed = async (scanned = false) => {
     try {
       const [feed, sigs] = await Promise.all([
         opsFetch("/api/ops/investors/content/feed?limit=20"),
         opsFetch("/api/ops/investors/content/signals?limit=5"),
       ]);
-      setContent(feed.content || []);
-      setSignals(sigs.signals || []);
-    } catch (e) { setContent([]); setSignals([]); }
+      const items = feed.content || [];
+      const sigItems = sigs.signals || [];
+      setContent(items);
+      setSignals(sigItems);
+      showFlash(scanned
+        ? `Scanned ${items.length} items${sigItems.length ? ` (${sigItems.length} timing signals)` : ""}`
+        : `Loaded ${items.length} items`);
+    } catch (e) { showFlash(e.message, false); }
   };
 
   const analyzeItem = async (contentId) => {
+    setAnalyzingId(contentId);
     try {
       await opsFetch(`/api/ops/investors/content/${contentId}/analyze`, { method: "POST" });
+      showFlash("Analysis complete");
       await loadFeed();
-    } catch (e) { /* ignore */ }
+    } catch (e) { showFlash(e.message, false); }
+    setAnalyzingId(null);
   };
 
   return (
@@ -1418,16 +1490,17 @@ function InvestorContentPanel() {
 
       <Section title="INVESTOR CONTENT" actions={
         <div style={{ display: "flex", gap: 4 }}>
-          <button onClick={() => { if (!content) loadFeed(); else loadFeed(); }}
-            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
-            Load
+          <button onClick={() => loadFeed()} disabled={loading}
+            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+            {loading ? "Loading..." : "Load"}
           </button>
-          <button onClick={scan}
-            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+          <button onClick={scan} disabled={loading}
+            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
             {loading ? "Scanning..." : "Scan All"}
           </button>
         </div>
       }>
+        <Flash flash={flash} />
         <div style={{ padding: "0 10px" }}>
           {!content && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view investor content or "Scan All" to fetch new.</div>}
           {content && content.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No investor content yet. Run a scan first.</div>}
@@ -1445,9 +1518,9 @@ function InvestorContentPanel() {
                     {(c.alignment_score * 100).toFixed(0)}%
                   </span>
                 ) : (
-                  <button onClick={() => analyzeItem(c.id)}
-                    style={{ fontSize: 9, fontFamily: T.mono, padding: "1px 4px", border: `1px solid ${T.inkFaint}`, background: "transparent", color: T.inkLight, cursor: "pointer" }}>
-                    Analyze
+                  <button onClick={() => analyzeItem(c.id)} disabled={!!analyzingId}
+                    style={{ fontSize: 9, fontFamily: T.mono, padding: "1px 4px", border: `1px solid ${T.inkFaint}`, background: "transparent", color: T.inkLight, cursor: "pointer", opacity: analyzingId ? 0.5 : 1 }}>
+                    {analyzingId === c.id ? "Analyzing..." : "Analyze"}
                   </button>
                 )}
                 {c.timing_signal && <span style={{ fontSize: 9, color: "#e74c3c", fontWeight: 700 }}>TIMING</span>}
@@ -1476,6 +1549,9 @@ export default function OpsDashboard() {
   const [tab, setTab] = useState("dashboard");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(null); // tracks header button in-flight
+  const [flash, showFlash] = useFlash();
+  const [decidingId, setDecidingId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1513,30 +1589,47 @@ export default function OpsDashboard() {
   const handleAuth = (key) => { setAdminKey(key); setAuthed(true); };
 
   const handleDecide = async (contentId, decision) => {
+    setDecidingId(contentId);
     try {
       await opsFetch(`/api/ops/content/${contentId}/decide`, { method: "POST", body: JSON.stringify({ decision }) });
       setQueue((prev) => prev.filter((q) => q.id !== contentId));
-    } catch (e) { setError(e.message); }
+      showFlash(`Content ${decision}`);
+    } catch (e) { showFlash(e.message, false); }
+    setDecidingId(null);
   };
 
   const handleRunHealthCheck = async () => {
+    setBusy("health");
     try {
       const result = await opsFetch("/api/ops/health/check", { method: "POST" });
-      setHealth(result.checks || []);
-    } catch (e) { setError(e.message); }
+      const checks = result.checks || [];
+      setHealth(checks);
+      const healthy = checks.filter((c) => c.status === "healthy").length;
+      showFlash(`Health check complete — ${healthy}/${checks.length} healthy`);
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
   };
 
   const handleSeed = async () => {
-    try { await opsFetch("/api/ops/seed", { method: "POST" }); load(); } catch (e) { setError(e.message); }
+    setBusy("seed");
+    try {
+      await opsFetch("/api/ops/seed", { method: "POST" });
+      showFlash("Seed complete");
+      load();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
   };
 
   const handleMigrate = async () => {
+    setBusy("migrate");
     try {
       await opsFetch("/api/ops/migrate", { method: "POST" });
       // Also run migration 033 if available
       try { await opsFetch("/api/ops/migrate/033", { method: "POST" }); } catch (_) {}
+      showFlash("Migration complete");
       load();
-    } catch (e) { setError(e.message); }
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
   };
 
   if (!authed) return <AuthGate onAuth={handleAuth} />;
@@ -1568,9 +1661,15 @@ export default function OpsDashboard() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={handleMigrate} style={btn()}>Migrate</button>
-            <button onClick={handleSeed} style={btn()}>Seed</button>
-            <button onClick={load} style={btn()}>Refresh</button>
+            <button onClick={handleMigrate} disabled={!!busy} style={btn({ opacity: busy === "migrate" ? 0.5 : 1 })}>
+              {busy === "migrate" ? "Migrating..." : "Migrate"}
+            </button>
+            <button onClick={handleSeed} disabled={!!busy} style={btn({ opacity: busy === "seed" ? 0.5 : 1 })}>
+              {busy === "seed" ? "Seeding..." : "Seed"}
+            </button>
+            <button onClick={load} disabled={loading} style={btn({ opacity: loading ? 0.5 : 1 })}>
+              {loading ? "Loading..." : "Refresh"}
+            </button>
             <a href="/" style={{ ...btn(), textDecoration: "none", color: T.ink, display: "flex", alignItems: "center" }}>SII Dashboard</a>
           </div>
         </div>
@@ -1581,6 +1680,7 @@ export default function OpsDashboard() {
             <button onClick={() => setError(null)} style={{ marginLeft: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 14 }}>&times;</button>
           </div>
         )}
+        <Flash flash={flash} />
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
@@ -1600,8 +1700,8 @@ export default function OpsDashboard() {
         {tab === "dashboard" && (
           <>
             <Section title="PIPELINE HEALTH" actions={
-              <button onClick={handleRunHealthCheck} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
-                Run Check
+              <button onClick={handleRunHealthCheck} disabled={busy === "health"} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: busy === "health" ? 0.5 : 1 }}>
+                {busy === "health" ? "Checking..." : "Run Check"}
               </button>
             }>
               <div style={{ padding: "0 10px" }}>
@@ -1614,7 +1714,7 @@ export default function OpsDashboard() {
             </Section>
 
             <Section title={`ACTION QUEUE (${queue.length} items)`}>
-              <ActionQueue queue={queue} onDecide={handleDecide} />
+              <ActionQueue queue={queue} onDecide={handleDecide} decidingId={decidingId} />
             </Section>
 
             <Section title={`TARGET TRACKER (${targets.filter((t) => t.tier <= 2).length} active)`}>

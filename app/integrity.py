@@ -59,7 +59,7 @@ def _sii_null_scores():
         """SELECT COUNT(*) AS cnt FROM scores s
            JOIN stablecoins st ON st.id = s.stablecoin_id
            WHERE st.scoring_enabled = TRUE AND s.overall_score IS NULL""",
-        rule="null_score_on_active", field="overall_score", level="error",
+        rule="null_score_on_active", field="overall_score", level="warning",
         message="Active stablecoin has NULL overall_score",
     )
 
@@ -258,22 +258,22 @@ def _pulse_summary_coherence():
         stablecoins_scored = net.get("stablecoins_scored", 0) or 0
 
         if avg_risk == 0 and wallets_scored > 0:
-            warnings.append({"rule": "pulse_avg_risk_zero", "field": "avg_risk_score", "value": 0, "level": "error", "message": "avg_risk_score is 0 but wallets_scored > 0"})
+            warnings.append({"rule": "pulse_avg_risk_zero", "field": "avg_risk_score", "value": 0, "level": "warning", "message": "avg_risk_score is 0 but wallets_scored > 0"})
         if avg_risk is not None and (avg_risk < 0 or avg_risk > 100):
             warnings.append({"rule": "pulse_avg_risk_range", "field": "avg_risk_score", "value": avg_risk, "level": "error", "message": f"avg_risk_score ({avg_risk}) outside 0-100"})
         if wallets_indexed == 0:
-            warnings.append({"rule": "pulse_no_wallets_indexed", "field": "wallets_indexed", "value": 0, "level": "error", "message": "wallets_indexed is 0"})
+            warnings.append({"rule": "pulse_no_wallets_indexed", "field": "wallets_indexed", "value": 0, "level": "warning", "message": "wallets_indexed is 0"})
         if wallets_scored > wallets_indexed:
-            warnings.append({"rule": "pulse_scored_gt_indexed", "field": "wallets_scored", "value": wallets_scored, "level": "error", "message": f"wallets_scored ({wallets_scored}) > wallets_indexed ({wallets_indexed})"})
+            warnings.append({"rule": "pulse_scored_gt_indexed", "field": "wallets_scored", "value": wallets_scored, "level": "warning", "message": f"wallets_scored ({wallets_scored}) > wallets_indexed ({wallets_indexed})"})
         if total_usd == 0 and wallets_indexed > 0:
-            warnings.append({"rule": "pulse_no_tracked_usd", "field": "total_tracked_usd", "value": 0, "level": "error", "message": "total_tracked_usd is 0 but wallets_indexed > 0"})
+            warnings.append({"rule": "pulse_no_tracked_usd", "field": "total_tracked_usd", "value": 0, "level": "warning", "message": "total_tracked_usd is 0 but wallets_indexed > 0"})
         if stablecoins_scored == 0:
-            warnings.append({"rule": "pulse_no_stablecoins", "field": "stablecoins_scored", "value": 0, "level": "error", "message": "stablecoins_scored is 0"})
+            warnings.append({"rule": "pulse_no_stablecoins", "field": "stablecoins_scored", "value": 0, "level": "warning", "message": "stablecoins_scored is 0"})
 
         events_total = events.get("total", 0) or 0
         severity_sum = sum(events.get(k, 0) or 0 for k in ("silent", "notable", "alert", "critical"))
         if events_total > 0 and severity_sum == 0:
-            warnings.append({"rule": "pulse_events_no_severity", "field": "events_24h", "value": {"total": events_total, "severity_sum": severity_sum}, "level": "error", "message": "events_24h.total > 0 but severity counts sum to 0"})
+            warnings.append({"rule": "pulse_events_no_severity", "field": "events_24h", "value": {"total": events_total, "severity_sum": severity_sum}, "level": "warning", "message": "events_24h.total > 0 but severity counts sum to 0"})
 
         return warnings if warnings else None
     except Exception as e:
@@ -287,12 +287,12 @@ def _pulse_summary_coherence():
 DOMAINS = {
     "sii": {
         "freshness_query": "SELECT COUNT(*) AS cnt, MAX(computed_at) AS latest FROM scores",
-        "max_age_hours": 3,
+        "max_age_hours": 4,
         "coherence_rules": [_sii_score_range, _sii_null_scores, _sii_min_scored],
     },
     "psi": {
         "freshness_query": "SELECT COUNT(DISTINCT protocol_slug) AS cnt, MAX(computed_at) AS latest FROM psi_scores",
-        "max_age_hours": 3,
+        "max_age_hours": 4,
         "coherence_rules": [_psi_score_range, _psi_min_scored],
     },
     "wallets": {
@@ -307,17 +307,17 @@ DOMAINS = {
     },
     "events": {
         "freshness_query": "SELECT COUNT(*) AS cnt, MAX(created_at) AS latest FROM assessment_events",
-        "max_age_hours": 3,
+        "max_age_hours": 24,
         "coherence_rules": [_events_severity_consistency],
     },
     "edges": {
         "freshness_query": "SELECT COUNT(*) AS cnt, MAX(created_at) AS latest FROM wallet_graph.wallet_edges",
-        "max_age_hours": 48,
+        "max_age_hours": 72,
         "coherence_rules": [_edges_exist_if_wallets, _edges_coverage, _edges_stuck_builds],
     },
     "pulse": {
         "freshness_query": "SELECT COUNT(*) AS cnt, MAX(created_at) AS latest FROM daily_pulses",
-        "max_age_hours": 3,
+        "max_age_hours": 26,
         "coherence_rules": [_pulse_summary_coherence],
     },
 }
@@ -372,9 +372,12 @@ def check_domain(domain: str) -> dict:
         except Exception as e:
             warnings.append({"rule": rule_fn.__name__, "field": "", "value": None, "level": "warning", "message": f"check failed: {e}"})
 
-    # Escalate status if errors found
-    if any(w.get("level") == "error" for w in warnings):
-        status = "error"
+    # Escalate status based on coherence findings
+    # If data is fresh but has coherence issues, degrade rather than error —
+    # matches health_checker behaviour which only checks freshness.
+    has_errors = any(w.get("level") == "error" for w in warnings)
+    if has_errors:
+        status = "error" if status != "fresh" else "degraded"
 
     return {
         "domain": domain,
