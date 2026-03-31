@@ -285,6 +285,13 @@ async def run_health_check(request: Request):
     importlib.reload(_hc_mod)
     try:
         results = _hc_mod.run_all_checks()
+        # Fire alerts for failures (non-blocking)
+        try:
+            from app.ops.tools.alerter import check_and_alert_health, check_and_alert_engagement
+            await check_and_alert_health(results)
+            await check_and_alert_engagement()
+        except Exception as alert_err:
+            logger.warning(f"Alert dispatch failed (non-fatal): {alert_err}")
         return {"status": "ok", "checks": results}
     except Exception as e:
         logger.error(f"Health check run failed: {e}")
@@ -359,13 +366,31 @@ async def log_investor_interaction(request: Request, investor_id: int):
     return {"status": "ok"}
 
 
+@router.get("/investors/{investor_id}")
+async def get_investor(request: Request, investor_id: int):
+    _check_admin_key(request)
+    investor = fetch_one("SELECT * FROM ops_investors WHERE id = %s", (investor_id,))
+    if not investor:
+        raise HTTPException(status_code=404, detail="Investor not found")
+    interactions = fetch_all(
+        "SELECT * FROM ops_investor_interactions WHERE investor_id = %s ORDER BY occurred_at DESC LIMIT 20",
+        (investor_id,),
+    )
+    return {"investor": investor, "interactions": interactions}
+
+
 @router.get("/fundraise/dashboard")
 async def fundraise_dashboard(request: Request):
     _check_admin_key(request)
     investors = fetch_all("SELECT * FROM ops_investors ORDER BY tier, name")
 
     # Compute seed trigger milestones from live data
-    milestones = _compute_milestones()
+    from app.ops.tools.milestone_checker import check_all_milestones
+    try:
+        full_milestones = check_all_milestones()
+        milestones = full_milestones.get("seed_triggers", _compute_milestones())
+    except Exception:
+        milestones = _compute_milestones()
 
     return {
         "investors": investors,
@@ -655,6 +680,445 @@ async def create_content_item(request: Request):
         ),
     )
     return {"status": "ok"}
+
+
+# =============================================================================
+# Drafts — DM, email, forum post generation
+# =============================================================================
+
+@router.post("/draft/dm")
+async def draft_dm_endpoint(request: Request):
+    _check_admin_key(request)
+    body = await request.json()
+    target_id = body.get("target_id")
+    trigger = body.get("trigger", "")
+    if not target_id or not trigger:
+        raise HTTPException(status_code=400, detail="target_id and trigger required")
+
+    from app.ops.tools.drafter import draft_dm
+    result = await draft_dm(target_id, trigger)
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    return result
+
+
+@router.post("/draft/forum")
+async def draft_forum_endpoint(request: Request):
+    _check_admin_key(request)
+    body = await request.json()
+    forum = body.get("forum")
+    topic = body.get("topic")
+    if not forum or not topic:
+        raise HTTPException(status_code=400, detail="forum and topic required")
+
+    from app.ops.tools.drafter import draft_forum_post
+    result = await draft_forum_post(
+        forum=forum,
+        topic=topic,
+        target_id=body.get("target_id"),
+        include_sii_data=body.get("include_sii_data", True),
+    )
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    return result
+
+
+# =============================================================================
+# Discovery Scanner
+# =============================================================================
+
+@router.get("/discovery/scan")
+async def scan_discovery_endpoint(
+    request: Request,
+    limit: int = Query(default=20, le=100),
+    min_magnitude: float = Query(default=0.0),
+):
+    _check_admin_key(request)
+    from app.ops.tools.discovery_scanner import scan_discovery
+    try:
+        result = scan_discovery(limit=limit, min_magnitude=min_magnitude)
+        return result
+    except Exception as e:
+        logger.error(f"Discovery scan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Milestones — full tracker
+# =============================================================================
+
+@router.get("/milestones")
+async def get_milestones(request: Request):
+    _check_admin_key(request)
+    from app.ops.tools.milestone_checker import check_all_milestones
+    try:
+        return check_all_milestones()
+    except Exception as e:
+        logger.error(f"Milestone check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Historical Backfill — scrape all existing content for a target
+# =============================================================================
+
+@router.post("/backfill")
+async def backfill_target(request: Request):
+    """
+    Use Parallel Search to find all existing content for a target,
+    then scrape + analyze each URL.
+    """
+    _check_admin_key(request)
+    body = await request.json()
+    target_id = body.get("target_id")
+    query = body.get("query")  # e.g., "all blog posts on kpk.io"
+    max_results = body.get("max_results", 20)
+
+    if not target_id or not query:
+        raise HTTPException(status_code=400, detail="target_id and query required")
+
+    from app.services import parallel_client
+    from app.ops.tools.scraper import scrape_target
+    from app.ops.tools.analyzer import analyze_content
+
+    # Step 1: Search for URLs
+    search_result = await parallel_client.search(query, num_results=max_results)
+    if "error" in search_result:
+        raise HTTPException(status_code=500, detail=f"Search failed: {search_result['error']}")
+
+    # Parse URLs from search results
+    urls = []
+    results_data = search_result.get("results", search_result.get("search_results", []))
+    if isinstance(results_data, list):
+        for item in results_data:
+            if isinstance(item, dict):
+                url = item.get("url") or item.get("link") or item.get("source_url")
+                if url:
+                    urls.append(url)
+            elif isinstance(item, str):
+                urls.append(item)
+
+    if not urls:
+        return {"status": "ok", "scraped": 0, "message": "No URLs found for query"}
+
+    # Step 2: Scrape + analyze each URL
+    scraped = 0
+    analyzed = 0
+    errors = []
+    for url in urls[:max_results]:
+        try:
+            content_id = await scrape_target(target_id, url, "blog")
+            if content_id:
+                scraped += 1
+                analysis = await analyze_content(content_id)
+                if analysis:
+                    analyzed += 1
+        except Exception as e:
+            errors.append({"url": url, "error": str(e)})
+
+    return {
+        "status": "ok",
+        "query": query,
+        "urls_found": len(urls),
+        "scraped": scraped,
+        "analyzed": analyzed,
+        "errors": errors[:5],
+    }
+
+
+# =============================================================================
+# Alerts
+# =============================================================================
+
+@router.get("/alerts")
+async def get_alerts(request: Request, limit: int = Query(default=50, le=200)):
+    _check_admin_key(request)
+    from app.ops.tools.alerter import get_alert_log
+    return {"alerts": get_alert_log(limit)}
+
+
+@router.post("/alerts/config")
+async def configure_alerts(request: Request):
+    """Add or update alert channel config. Body: { channel, config, alert_types }"""
+    _check_admin_key(request)
+    body = await request.json()
+    channel = body.get("channel")
+    config = body.get("config", {})
+    alert_types = body.get("alert_types", ["health_failure", "engagement_response", "milestone_change"])
+
+    if channel not in ("telegram", "email"):
+        raise HTTPException(status_code=400, detail="channel must be 'telegram' or 'email'")
+
+    # Upsert
+    existing = fetch_one("SELECT id FROM ops_alert_config WHERE channel = %s", (channel,))
+    if existing:
+        execute(
+            "UPDATE ops_alert_config SET config = %s, alert_types = %s, enabled = TRUE WHERE id = %s",
+            (json.dumps(config), alert_types, existing["id"]),
+        )
+    else:
+        execute(
+            "INSERT INTO ops_alert_config (channel, config, alert_types) VALUES (%s, %s, %s)",
+            (channel, json.dumps(config), alert_types),
+        )
+    return {"status": "ok", "channel": channel}
+
+
+@router.post("/alerts/test")
+async def test_alert(request: Request):
+    """Send a test alert to verify configuration."""
+    _check_admin_key(request)
+    from app.ops.tools.alerter import send_alert
+    result = await send_alert(
+        "health_failure",
+        "*TEST ALERT*\nBasis Operations Hub alert system is working.",
+        {"test": True},
+    )
+    return {"status": "ok", "sent": result}
+
+
+# =============================================================================
+# CoinGecko News
+# =============================================================================
+
+@router.post("/news/scan")
+async def scan_news_endpoint(request: Request):
+    _check_admin_key(request)
+    from app.ops.tools.news_monitor import scan_news
+    try:
+        result = await scan_news()
+        return result
+    except Exception as e:
+        logger.error(f"News scan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/news/feed")
+async def get_news_feed(
+    request: Request,
+    limit: int = Query(default=30, le=100),
+    relevant_only: bool = Query(default=True),
+):
+    _check_admin_key(request)
+    from app.ops.tools.news_monitor import get_recent_news
+    return {"news": get_recent_news(limit, relevant_only)}
+
+
+@router.get("/news/incidents")
+async def get_incidents(request: Request, days: int = Query(default=7)):
+    _check_admin_key(request)
+    from app.ops.tools.news_monitor import get_incidents
+    return {"incidents": get_incidents(days)}
+
+
+# =============================================================================
+# Analytics
+# =============================================================================
+
+@router.get("/analytics")
+async def get_analytics(request: Request):
+    _check_admin_key(request)
+    from app.ops.tools.analytics import compute_analytics
+    try:
+        return compute_analytics()
+    except Exception as e:
+        logger.error(f"Analytics computation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Target Surfaces (for Tier 2 monitoring config)
+# =============================================================================
+
+@router.put("/targets/{target_id}/surfaces")
+async def update_target_surfaces(request: Request, target_id: int):
+    """Update surface_urls for a target. Body: { surfaces: [...urls] }"""
+    _check_admin_key(request)
+    body = await request.json()
+    surfaces = body.get("surfaces", [])
+    execute(
+        "UPDATE ops_targets SET surface_urls = %s, updated_at = NOW() WHERE id = %s",
+        (json.dumps(surfaces), target_id),
+    )
+    return {"status": "ok", "target_id": target_id, "surfaces": surfaces}
+
+
+# =============================================================================
+# Twitter Monitoring
+# =============================================================================
+
+@router.post("/twitter/scan")
+async def scan_twitter(request: Request, target_id: Optional[int] = None):
+    """Scan Twitter for recent tweets from target contacts' handles."""
+    _check_admin_key(request)
+    from app.ops.tools.twitter_monitor import scan_target_tweets
+    try:
+        result = await scan_target_tweets(target_id=target_id)
+        return result
+    except Exception as e:
+        logger.error(f"Twitter scan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/twitter/feed")
+async def get_twitter_feed(
+    request: Request,
+    target_id: Optional[int] = None,
+    limit: int = Query(default=30, le=100),
+):
+    """Get recent tweets from ops_target_content."""
+    _check_admin_key(request)
+    from app.ops.tools.twitter_monitor import get_recent_tweets
+    return {"tweets": get_recent_tweets(limit=limit, target_id=target_id)}
+
+
+@router.post("/twitter/keywords")
+async def scan_twitter_keywords(request: Request):
+    """Search Twitter for stablecoin-related tweets by keyword."""
+    _check_admin_key(request)
+    body = await request.json()
+    keywords = body.get("keywords")
+    max_results = body.get("max_results", 20)
+    from app.ops.tools.twitter_monitor import scan_keyword_tweets
+    try:
+        result = await scan_keyword_tweets(keywords=keywords, max_results=max_results)
+        return result
+    except Exception as e:
+        logger.error(f"Twitter keyword scan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Governance Monitoring (Snapshot / Tally)
+# =============================================================================
+
+@router.post("/governance/scan")
+async def scan_governance(request: Request, target_id: Optional[int] = None):
+    """Scan Snapshot + Tally for governance proposals from target DAOs."""
+    _check_admin_key(request)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    days_back = body.get("days_back", 14) if body else 14
+    tid = body.get("target_id", target_id) if body else target_id
+
+    from app.ops.tools.governance_monitor import scan_all_governance
+    try:
+        result = await scan_all_governance(target_id=tid, days_back=days_back)
+        return result
+    except Exception as e:
+        logger.error(f"Governance scan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/governance/feed")
+async def get_governance_feed(
+    request: Request,
+    target_id: Optional[int] = None,
+    stablecoin_only: bool = Query(default=False),
+    limit: int = Query(default=30, le=100),
+):
+    """Get recent governance proposals."""
+    _check_admin_key(request)
+    from app.ops.tools.governance_monitor import get_recent_proposals
+    return {"proposals": get_recent_proposals(limit=limit, stablecoin_only=stablecoin_only, target_id=target_id)}
+
+
+@router.get("/governance/snapshot/{space_id}")
+async def get_snapshot_space(request: Request, space_id: str):
+    """Get proposals for a specific Snapshot space."""
+    _check_admin_key(request)
+    from app.database import fetch_all as fa
+    proposals = fa(
+        """SELECT * FROM ops_governance_proposals
+           WHERE platform = 'snapshot' AND space_or_org = %s
+           ORDER BY fetched_at DESC LIMIT 20""",
+        (space_id,),
+    ) or []
+    return {"space": space_id, "proposals": proposals}
+
+
+# =============================================================================
+# Investor Content Monitoring
+# =============================================================================
+
+@router.post("/investors/content/scan")
+async def scan_investor_content_endpoint(request: Request):
+    """Scan VC blogs and tweets for investor content."""
+    _check_admin_key(request)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    investor_id = body.get("investor_id") if body else None
+
+    from app.ops.tools.investor_monitor import scan_investor_content
+    try:
+        result = await scan_investor_content(investor_id=investor_id)
+        return result
+    except Exception as e:
+        logger.error(f"Investor content scan failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/investors/content/feed")
+async def get_investor_content_feed(
+    request: Request,
+    investor_id: Optional[int] = None,
+    analyzed_only: bool = Query(default=False),
+    limit: int = Query(default=30, le=100),
+):
+    """Get recent investor content."""
+    _check_admin_key(request)
+    from app.ops.tools.investor_monitor import get_investor_content
+    return {"content": get_investor_content(limit=limit, investor_id=investor_id, analyzed_only=analyzed_only)}
+
+
+@router.post("/investors/content/{content_id}/analyze")
+async def analyze_investor_content_endpoint(request: Request, content_id: int):
+    """Analyze investor content for thesis alignment."""
+    _check_admin_key(request)
+    from app.ops.tools.investor_monitor import analyze_investor_content
+    try:
+        result = await analyze_investor_content(content_id)
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return {"content_id": content_id, "analysis": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Investor content analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/investors/content/signals")
+async def get_investor_timing_signals(request: Request, limit: int = Query(default=10, le=50)):
+    """Get investor content with timing signals — high-priority outreach opportunities."""
+    _check_admin_key(request)
+    from app.ops.tools.investor_monitor import get_timing_signals
+    return {"signals": get_timing_signals(limit=limit)}
+
+
+# =============================================================================
+# Migration 033 — run new tables
+# =============================================================================
+
+@router.post("/migrate/033")
+async def run_migration_033(request: Request):
+    _check_admin_key(request)
+    try:
+        from app.database import run_migration
+        import os
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "migrations", "033_ops_session6_expansion.sql"
+        )
+        run_migration(migration_path)
+        return {"status": "ok", "migration": "033_ops_session6_expansion"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def register_ops_routes(app):

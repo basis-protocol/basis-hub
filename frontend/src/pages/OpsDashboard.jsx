@@ -1,11 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
 
-/**
- * Operations Hub Dashboard — founder's single operating surface.
- * Four modules: Pipeline Health, Action Queue, Target Tracker, Content Feed + Fundraise.
- * Protected by admin key (stored in localStorage or query param).
- */
-
 const T = {
   paper: "#f5f2ec",
   paperWarm: "#f0ece3",
@@ -19,6 +13,11 @@ const T = {
   mono: "'IBM Plex Mono', monospace",
   sans: "'IBM Plex Sans', system-ui, sans-serif",
 };
+
+const STAGES = [
+  "not_started", "recognition", "familiarity", "direct",
+  "evaluating", "trying", "binding", "archived",
+];
 
 function getAdminKey() {
   const params = new URLSearchParams(window.location.search);
@@ -40,7 +39,15 @@ async function opsFetch(path, opts = {}) {
   return resp.json();
 }
 
-// ─── Status indicators ───────────────────────────────────────────────
+// ─── Shared UI ───────────────────────────────────────────────────────
+
+const btn = (extra = {}) => ({
+  fontSize: 10, fontFamily: T.mono, padding: "3px 8px", border: `1px solid ${T.ruleMid}`,
+  background: T.paper, cursor: "pointer", whiteSpace: "nowrap", ...extra,
+});
+const btnActive = (extra = {}) => ({
+  ...btn(extra), background: T.ink, color: T.paper, border: `1px solid ${T.ink}`,
+});
 
 function StatusDot({ status }) {
   const colors = { healthy: "#27ae60", degraded: "#f39c12", down: "#e74c3c" };
@@ -75,12 +82,15 @@ function TierBadge({ tier }) {
   return (
     <span style={{
       fontSize: 9, fontFamily: T.mono, fontWeight: 600, padding: "1px 4px",
-      borderRadius: 2, background: colors[tier] || "#999", color: "#fff",
-      marginRight: 6,
+      borderRadius: 2, background: colors[tier] || "#999", color: "#fff", marginRight: 6,
     }}>
       {labels[tier] || `T${tier}`}
     </span>
   );
+}
+
+function Lbl({ children }) {
+  return <span style={{ fontSize: 10, fontWeight: 600, fontFamily: T.mono, color: T.inkLight, textTransform: "uppercase", letterSpacing: 0.5 }}>{children}</span>;
 }
 
 // ─── Auth Gate ────────────────────────────────────────────────────────
@@ -89,28 +99,13 @@ function AuthGate({ onAuth }) {
   const [key, setKey] = useState("");
   return (
     <div style={{ padding: 40, textAlign: "center", fontFamily: T.sans }}>
-      <h2 style={{ fontFamily: T.mono, marginBottom: 16, fontWeight: 600, fontSize: 16 }}>
-        Basis Operations Hub
-      </h2>
+      <h2 style={{ fontFamily: T.mono, marginBottom: 16, fontWeight: 600, fontSize: 16 }}>Basis Operations Hub</h2>
       <p style={{ color: T.inkLight, fontSize: 13, marginBottom: 16 }}>Enter admin key to access</p>
-      <input
-        type="password"
-        value={key}
-        onChange={(e) => setKey(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && onAuth(key)}
-        placeholder="Admin key"
-        style={{
-          fontFamily: T.mono, fontSize: 13, padding: "8px 12px", border: `1px solid ${T.ruleMid}`,
-          background: T.paper, width: 280, marginRight: 8,
-        }}
-      />
-      <button
-        onClick={() => onAuth(key)}
-        style={{
-          fontFamily: T.mono, fontSize: 12, padding: "8px 16px", border: `2px solid ${T.ink}`,
-          background: T.ink, color: T.paper, cursor: "pointer",
-        }}
-      >
+      <input type="password" value={key} onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && onAuth(key)} placeholder="Admin key"
+        style={{ fontFamily: T.mono, fontSize: 13, padding: "8px 12px", border: `1px solid ${T.ruleMid}`, background: T.paper, width: 280, marginRight: 8 }} />
+      <button onClick={() => onAuth(key)}
+        style={{ fontFamily: T.mono, fontSize: 12, padding: "8px 16px", border: `2px solid ${T.ink}`, background: T.ink, color: T.paper, cursor: "pointer" }}>
         Enter
       </button>
     </div>
@@ -120,24 +115,18 @@ function AuthGate({ onAuth }) {
 // ─── Pipeline Health ──────────────────────────────────────────────────
 
 function HealthPanel({ health }) {
-  if (!health || health.length === 0) {
-    return <div style={{ color: T.inkFaint, fontSize: 12 }}>No health data. Run a health check first.</div>;
-  }
+  if (!health || health.length === 0) return <div style={{ color: T.inkFaint, fontSize: 12 }}>No health data. Run a health check first.</div>;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
       {health.map((h) => (
-        <div key={h.system} style={{
-          padding: "8px 10px", border: `1px solid ${T.ruleLight}`, background: T.paperWarm,
-          fontSize: 11, fontFamily: T.mono,
-        }}>
+        <div key={h.system} style={{ padding: "8px 10px", border: `1px solid ${T.ruleLight}`, background: T.paperWarm, fontSize: 11, fontFamily: T.mono }}>
           <StatusDot status={h.status} />
           <strong>{h.system.replace(/_/g, " ")}</strong>
           <div style={{ color: T.inkLight, fontSize: 10, marginTop: 4 }}>
             {h.details && typeof h.details === "object"
               ? Object.entries(h.details).slice(0, 3).map(([k, v]) => (
                   <div key={k}>{k}: {typeof v === "object" ? JSON.stringify(v) : String(v)}</div>
-                ))
-              : null}
+                )) : null}
             {h.checked_at && <div style={{ color: T.inkFaint, marginTop: 2 }}>checked: {new Date(h.checked_at).toLocaleTimeString()}</div>}
           </div>
         </div>
@@ -149,31 +138,18 @@ function HealthPanel({ health }) {
 // ─── Action Queue ─────────────────────────────────────────────────────
 
 function ActionQueue({ queue, onDecide }) {
-  if (!queue || queue.length === 0) {
-    return <div style={{ color: T.inkFaint, fontSize: 12 }}>No pending actions in queue.</div>;
-  }
+  if (!queue || queue.length === 0) return <div style={{ color: T.inkFaint, fontSize: 12 }}>No pending actions in queue.</div>;
   return (
     <div>
       {queue.map((item) => (
-        <div key={item.id} style={{
-          padding: "10px 12px", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 12,
-        }}>
+        <div key={item.id} style={{ padding: "10px 12px", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontFamily: T.mono, marginBottom: 4 }}>
-                {item.target_name} — {item.source_type}
-              </div>
+              <div style={{ fontWeight: 600, fontFamily: T.mono, marginBottom: 4 }}>{item.target_name} — {item.source_type}</div>
               <div style={{ fontWeight: 500, marginBottom: 4 }}>{item.title}</div>
-              {item.bridge_text && (
-                <div style={{ color: T.inkMid, fontSize: 11, marginBottom: 4 }}>
-                  Bridge: {item.bridge_text}
-                </div>
-              )}
+              {item.bridge_text && <div style={{ color: T.inkMid, fontSize: 11, marginBottom: 4 }}>Bridge: {item.bridge_text}</div>}
               {item.draft_comment && (
-                <div style={{
-                  background: T.paperWarm, padding: "6px 8px", fontSize: 11,
-                  border: `1px solid ${T.ruleLight}`, marginBottom: 6, whiteSpace: "pre-wrap",
-                }}>
+                <div style={{ background: T.paperWarm, padding: "6px 8px", fontSize: 11, border: `1px solid ${T.ruleLight}`, marginBottom: 6, whiteSpace: "pre-wrap" }}>
                   {item.draft_comment}
                 </div>
               )}
@@ -184,15 +160,8 @@ function ActionQueue({ queue, onDecide }) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 4, marginLeft: 12, flexShrink: 0 }}>
-              {["approved", "skipped"].map((d) => (
-                <button key={d} onClick={() => onDecide(item.id, d)} style={{
-                  fontSize: 10, fontFamily: T.mono, padding: "4px 8px",
-                  border: `1px solid ${T.ruleMid}`, background: d === "approved" ? "#27ae6022" : T.paper,
-                  cursor: "pointer",
-                }}>
-                  {d === "approved" ? "Approve" : "Skip"}
-                </button>
-              ))}
+              <button onClick={() => onDecide(item.id, "approved")} style={btn({ background: "#27ae6022" })}>Approve</button>
+              <button onClick={() => onDecide(item.id, "skipped")} style={btn()}>Skip</button>
             </div>
           </div>
         </div>
@@ -201,31 +170,672 @@ function ActionQueue({ queue, onDecide }) {
   );
 }
 
-// ─── Target Tracker ───────────────────────────────────────────────────
+// ─── Inline Target Row (accordion) ───────────────────────────────────
 
-function TargetTracker({ targets, onSelect }) {
+function TargetRow({ target, onUpdate }) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [busy, setBusy] = useState(null); // tracks which action is in-flight
+  const [engForm, setEngForm] = useState(null); // null or { action_type, channel, content }
+  const [stageOpen, setStageOpen] = useState(false);
+  const [scrapeUrl, setScrapeUrl] = useState("");
+  const [dmTrigger, setDmTrigger] = useState(""); // trigger context for DM draft
+  const [dmDraft, setDmDraft] = useState(null); // Claude-generated DM draft
+  const [backfillQuery, setBackfillQuery] = useState(""); // search query for backfill
+  const [flash, setFlash] = useState(null);
+
+  const t = target;
+
+  const showFlash = (msg, ok = true) => {
+    setFlash({ msg, ok });
+    setTimeout(() => setFlash(null), 3000);
+  };
+
+  const loadDetail = async () => {
+    setLoadingDetail(true);
+    try {
+      const data = await opsFetch(`/api/ops/targets/${t.id}`);
+      setDetail(data);
+    } catch (e) {
+      showFlash(e.message, false);
+    }
+    setLoadingDetail(false);
+  };
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !detail) loadDetail();
+  };
+
+  const handleScrape = async () => {
+    if (!scrapeUrl.trim()) return;
+    setBusy("scrape");
+    try {
+      const res = await opsFetch("/api/ops/scrape", {
+        method: "POST", body: JSON.stringify({ target_id: t.id, url: scrapeUrl.trim(), source_type: "blog" }),
+      });
+      showFlash(`Scraped content #${res.content_id}`);
+      setScrapeUrl("");
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleExposure = async () => {
+    setBusy("exposure");
+    try {
+      const res = await opsFetch("/api/ops/exposure/generate", {
+        method: "POST", body: JSON.stringify({ target_id: t.id }),
+      });
+      showFlash(`Exposure report: weighted SII ${res.data?.weighted_sii || "N/A"}`);
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleStageChange = async (newStage) => {
+    setBusy("stage");
+    try {
+      await opsFetch(`/api/ops/targets/${t.id}/stage`, {
+        method: "PUT", body: JSON.stringify({ stage: newStage }),
+      });
+      showFlash(`Stage → ${newStage.replace(/_/g, " ")}`);
+      setStageOpen(false);
+      if (onUpdate) onUpdate();
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleEngagement = async () => {
+    if (!engForm?.action_type) return;
+    setBusy("engagement");
+    try {
+      await opsFetch(`/api/ops/targets/${t.id}/engagement`, {
+        method: "POST", body: JSON.stringify(engForm),
+      });
+      showFlash("Engagement logged");
+      setEngForm(null);
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleDecideContent = async (contentId, decision) => {
+    try {
+      await opsFetch(`/api/ops/content/${contentId}/decide`, {
+        method: "POST", body: JSON.stringify({ decision }),
+      });
+      showFlash(`${decision}`);
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+  };
+
+  const handleDraftDm = async () => {
+    if (!dmTrigger.trim()) return;
+    setBusy("dm");
+    try {
+      const res = await opsFetch("/api/ops/draft/dm", {
+        method: "POST", body: JSON.stringify({ target_id: t.id, trigger: dmTrigger.trim() }),
+      });
+      setDmDraft(res.draft);
+      showFlash("DM draft generated");
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleBackfill = async () => {
+    if (!backfillQuery.trim()) return;
+    setBusy("backfill");
+    try {
+      const res = await opsFetch("/api/ops/backfill", {
+        method: "POST", body: JSON.stringify({ target_id: t.id, query: backfillQuery.trim(), max_results: 15 }),
+      });
+      showFlash(`Backfill: ${res.scraped} scraped, ${res.analyzed} analyzed of ${res.urls_found} found`);
+      setBackfillQuery("");
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const contacts = detail?.contacts || [];
+  const content = detail?.recent_content || [];
+  const engagement = detail?.engagement_log || [];
+  const tgt = detail?.target || t;
+  const exposure = detail?.latest_exposure;
+
+  return (
+    <div style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+      {/* Row header — always visible */}
+      <div onClick={toggle} style={{
+        padding: "7px 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 8,
+        cursor: "pointer", background: open ? T.paperWarm : "transparent",
+        transition: "background 0.15s",
+      }}>
+        <span style={{ fontSize: 10, color: T.inkFaint, width: 12 }}>{open ? "\u25BC" : "\u25B6"}</span>
+        <TierBadge tier={t.tier} />
+        <div style={{ flex: 1, fontFamily: T.mono, fontWeight: 500 }}>{t.name}</div>
+        <StageBadge stage={t.pipeline_stage} />
+        {t.track && <span style={{ fontSize: 10, color: T.inkFaint }}>{t.track}</span>}
+        <div style={{ fontSize: 10, color: T.inkFaint, minWidth: 80, textAlign: "right" }}>
+          {t.next_action || "—"}
+        </div>
+      </div>
+
+      {/* Expanded detail panel */}
+      {open && (
+        <div style={{ padding: "0 10px 12px 30px", fontSize: 12, animation: "fadeIn 0.15s ease" }}>
+          {loadingDetail && !detail && <div style={{ color: T.inkFaint, padding: "8px 0" }}>Loading...</div>}
+
+          {/* Flash message */}
+          {flash && (
+            <div style={{
+              padding: "4px 8px", margin: "6px 0", fontSize: 11, fontFamily: T.mono,
+              background: flash.ok ? "#27ae6018" : "#e74c3c18",
+              border: `1px solid ${flash.ok ? "#27ae6044" : "#e74c3c44"}`,
+              color: flash.ok ? "#27ae60" : T.accent,
+            }}>
+              {flash.msg}
+            </div>
+          )}
+
+          {/* ── Action bar ── */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 0 6px", borderBottom: `1px solid ${T.ruleLight}`, marginBottom: 8 }}>
+            <button onClick={handleExposure} disabled={!!busy} style={btn()}>
+              {busy === "exposure" ? "..." : "Generate exposure"}
+            </button>
+            <button onClick={() => setDmDraft(null) || setDmTrigger(dmTrigger !== null && dmTrigger !== "" ? "" : " ")}
+              style={dmTrigger ? btnActive() : btn()}>
+              Draft DM
+            </button>
+            <button onClick={() => setEngForm(engForm ? null : { action_type: "", channel: "", content: "" })}
+              style={engForm ? btnActive() : btn()}>
+              Log engagement
+            </button>
+            <button onClick={() => setStageOpen(!stageOpen)} style={stageOpen ? btnActive() : btn()}>
+              Update stage
+            </button>
+            <button onClick={() => setBackfillQuery(backfillQuery ? "" : " ")}
+              style={backfillQuery ? btnActive() : btn()}>
+              Backfill
+            </button>
+            <button onClick={() => detail && loadDetail()} style={btn()}>Refresh</button>
+          </div>
+
+          {/* ── Stage dropdown ── */}
+          {stageOpen && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "4px 0 8px" }}>
+              {STAGES.map((s) => (
+                <button key={s} onClick={() => handleStageChange(s)} disabled={s === t.pipeline_stage || !!busy}
+                  style={btn({
+                    opacity: s === t.pipeline_stage ? 0.4 : 1,
+                    background: s === t.pipeline_stage ? T.paperWarm : T.paper,
+                  })}>
+                  {s.replace(/_/g, " ")}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* ── Engagement form ── */}
+          {engForm && (
+            <div style={{ padding: "6px 0 8px", display: "flex", flexWrap: "wrap", gap: 6, alignItems: "flex-end" }}>
+              <div>
+                <Lbl>Action</Lbl>
+                <select value={engForm.action_type} onChange={(e) => setEngForm({ ...engForm, action_type: e.target.value })}
+                  style={{ display: "block", fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper, marginTop: 2 }}>
+                  <option value="">select...</option>
+                  {["comment_posted", "dm_sent", "email_sent", "call_completed", "exposure_sent", "artifact_sent", "forum_posted"].map((a) => (
+                    <option key={a} value={a}>{a.replace(/_/g, " ")}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Lbl>Channel</Lbl>
+                <select value={engForm.channel} onChange={(e) => setEngForm({ ...engForm, channel: e.target.value })}
+                  style={{ display: "block", fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper, marginTop: 2 }}>
+                  <option value="">select...</option>
+                  {["twitter_dm", "twitter_reply", "forum", "email", "call", "linkedin", "discord", "telegram"].map((c) => (
+                    <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <Lbl>Content</Lbl>
+                <input value={engForm.content} onChange={(e) => setEngForm({ ...engForm, content: e.target.value })}
+                  placeholder="What was said/sent..."
+                  style={{ display: "block", width: "100%", fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper, marginTop: 2 }} />
+              </div>
+              <button onClick={handleEngagement} disabled={!engForm.action_type || !!busy}
+                style={btn({ background: "#27ae6022" })}>
+                {busy === "engagement" ? "..." : "Save"}
+              </button>
+            </div>
+          )}
+
+          {/* ── DM Draft form ── */}
+          {dmTrigger !== "" && dmTrigger !== null && (
+            <div style={{ padding: "6px 0 8px" }}>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 6 }}>
+                <input value={dmTrigger} onChange={(e) => setDmTrigger(e.target.value)}
+                  placeholder="Trigger context (e.g., 'published blog post about stablecoin allocation')..."
+                  onKeyDown={(e) => e.key === "Enter" && handleDraftDm()}
+                  style={{ flex: 1, fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper }} />
+                <button onClick={handleDraftDm} disabled={!dmTrigger.trim() || !!busy} style={btn({ background: "#3498db22" })}>
+                  {busy === "dm" ? "Generating..." : "Generate"}
+                </button>
+                <button onClick={() => { setDmTrigger(""); setDmDraft(null); }} style={btn()}>Cancel</button>
+              </div>
+              {dmDraft && (
+                <div style={{ background: T.paperWarm, border: `1px solid ${T.ruleLight}`, padding: "8px 10px", fontSize: 11 }}>
+                  {dmDraft.twitter_dm && (
+                    <div style={{ marginBottom: 6 }}>
+                      <Lbl>Twitter DM</Lbl>
+                      <div style={{ fontFamily: T.mono, marginTop: 2, whiteSpace: "pre-wrap" }}>{dmDraft.twitter_dm}</div>
+                    </div>
+                  )}
+                  {dmDraft.email_subject && (
+                    <div style={{ marginBottom: 6 }}>
+                      <Lbl>Email</Lbl>
+                      <div style={{ fontFamily: T.mono, marginTop: 2 }}>Subject: {dmDraft.email_subject}</div>
+                      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{dmDraft.email_body}</div>
+                    </div>
+                  )}
+                  {dmDraft.rationale && (
+                    <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 4, fontStyle: "italic" }}>
+                      Rationale: {dmDraft.rationale}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Backfill bar ── */}
+          {backfillQuery !== "" && backfillQuery !== null && (
+            <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "4px 0 8px" }}>
+              <input value={backfillQuery} onChange={(e) => setBackfillQuery(e.target.value)}
+                placeholder={`Search query (e.g., "all blog posts on ${t.name.toLowerCase().replace(/ /g,'')}.io")...`}
+                onKeyDown={(e) => e.key === "Enter" && handleBackfill()}
+                style={{ flex: 1, fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper }} />
+              <button onClick={handleBackfill} disabled={!backfillQuery.trim() || !!busy} style={btn({ background: "#8e44ad22" })}>
+                {busy === "backfill" ? "Searching..." : "Backfill"}
+              </button>
+              <button onClick={() => setBackfillQuery("")} style={btn()}>Cancel</button>
+            </div>
+          )}
+
+          {/* ── Scrape bar ── */}
+          <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "4px 0 8px" }}>
+            <input value={scrapeUrl} onChange={(e) => setScrapeUrl(e.target.value)}
+              placeholder="Paste URL to scrape..."
+              onKeyDown={(e) => e.key === "Enter" && handleScrape()}
+              style={{ flex: 1, fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper }} />
+            <button onClick={handleScrape} disabled={!scrapeUrl.trim() || !!busy} style={btn()}>
+              {busy === "scrape" ? "Scraping..." : "Scrape"}
+            </button>
+          </div>
+
+          {/* ── Worldview / Gap / Wedge / Landmine ── */}
+          {tgt.worldview_summary && (
+            <div style={{ marginBottom: 6, lineHeight: 1.5 }}>
+              <Lbl>Worldview</Lbl>
+              <div style={{ fontSize: 11, color: T.inkMid, marginTop: 2 }}>{tgt.worldview_summary}</div>
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px", marginBottom: 8 }}>
+            {tgt.gap && <div><Lbl>Gap</Lbl><div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{tgt.gap}</div></div>}
+            {tgt.first_wedge && <div><Lbl>First wedge</Lbl><div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{tgt.first_wedge}</div></div>}
+            {tgt.landmine && <div><Lbl>Landmine</Lbl><div style={{ fontSize: 11, color: T.accent, marginTop: 1 }}>{tgt.landmine}</div></div>}
+            {tgt.positioning && <div><Lbl>Positioning</Lbl><div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{tgt.positioning}</div></div>}
+          </div>
+
+          {/* ── Contacts ── */}
+          {contacts.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <Lbl>Contacts</Lbl>
+              <div style={{ marginTop: 3 }}>
+                {contacts.map((c) => (
+                  <div key={c.id} style={{ fontSize: 11, padding: "2px 0", display: "flex", gap: 8, alignItems: "center" }}>
+                    <strong>{c.name}</strong>
+                    {c.role && <span style={{ color: T.inkLight }}>{c.role}</span>}
+                    {c.twitter_handle && (
+                      <a href={`https://twitter.com/${c.twitter_handle.replace(/^@/, "")}`}
+                        target="_blank" rel="noopener noreferrer"
+                        style={{ color: "#1da1f2", fontSize: 10, fontFamily: T.mono, textDecoration: "none" }}>
+                        {c.twitter_handle.startsWith("@") ? c.twitter_handle : `@${c.twitter_handle}`}
+                      </a>
+                    )}
+                    {c.linkedin_url && (
+                      <a href={c.linkedin_url} target="_blank" rel="noopener noreferrer"
+                        style={{ color: "#0a66c2", fontSize: 10, textDecoration: "none" }}>LinkedIn</a>
+                    )}
+                    {c.warmth && <span style={{ fontSize: 9, color: T.inkFaint }}>warmth: {c.warmth}/5</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Scraped content with draft comments + approve/skip ── */}
+          {content.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <Lbl>Scraped Content ({content.length})</Lbl>
+              <div style={{ marginTop: 3 }}>
+                {content.map((c) => (
+                  <div key={c.id} style={{ padding: "5px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11 }}>
+                      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight }}>{c.source_type}</span>
+                      <a href={c.source_url} target="_blank" rel="noopener noreferrer"
+                        style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
+                        {c.title || c.source_url}
+                      </a>
+                      {c.bridge_found != null && (
+                        <span style={{ fontSize: 10, fontFamily: T.mono, color: c.bridge_found ? "#27ae60" : T.inkFaint }}>
+                          bridge: {c.bridge_found ? "YES" : "NO"}
+                        </span>
+                      )}
+                      {c.relevance_score != null && (
+                        <span style={{ fontSize: 10, fontFamily: T.mono, color: T.inkFaint }}>
+                          rel: {c.relevance_score}
+                        </span>
+                      )}
+                    </div>
+                    {c.content_summary && <div style={{ fontSize: 10, color: T.inkLight, marginTop: 2 }}>{c.content_summary}</div>}
+                    {c.bridge_text && <div style={{ fontSize: 10, color: "#27ae60", marginTop: 2 }}>Bridge: {c.bridge_text}</div>}
+                    {c.draft_comment && (
+                      <div style={{ background: T.paperWarm, padding: "5px 7px", fontSize: 11, border: `1px solid ${T.ruleLight}`, marginTop: 4, whiteSpace: "pre-wrap" }}>
+                        <div style={{ fontSize: 9, color: T.inkFaint, marginBottom: 2 }}>
+                          Draft ({c.comment_type || "comment"}) — {c.engagement_action || "pending"}
+                        </div>
+                        {c.draft_comment}
+                      </div>
+                    )}
+                    {/* Approve/skip for undecided content with bridges */}
+                    {c.bridge_found && !c.founder_decision && (
+                      <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                        <button onClick={() => handleDecideContent(c.id, "approved")} style={btn({ background: "#27ae6022" })}>Approve</button>
+                        <button onClick={() => handleDecideContent(c.id, "skipped")} style={btn()}>Skip</button>
+                      </div>
+                    )}
+                    {c.founder_decision && (
+                      <div style={{ fontSize: 10, fontFamily: T.mono, color: T.inkFaint, marginTop: 3 }}>
+                        Decision: {c.founder_decision}
+                        {c.posted_at && ` · posted ${new Date(c.posted_at).toLocaleDateString()}`}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Engagement history ── */}
+          {engagement.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <Lbl>Engagement History ({engagement.length})</Lbl>
+              <div style={{ marginTop: 3 }}>
+                {engagement.map((e) => (
+                  <div key={e.id} style={{ fontSize: 11, padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}`, display: "flex", gap: 8 }}>
+                    <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 110 }}>
+                      {e.action_type.replace(/_/g, " ")}
+                    </span>
+                    {e.channel && <span style={{ fontSize: 10, color: T.inkFaint }}>{e.channel}</span>}
+                    <span style={{ flex: 1, color: T.inkMid }}>{e.content || "—"}</span>
+                    {e.response && <span style={{ color: "#27ae60", fontSize: 10 }}>replied</span>}
+                    <span style={{ fontSize: 9, color: T.inkFaint }}>{new Date(e.created_at).toLocaleDateString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Latest exposure report ── */}
+          {exposure && (
+            <div style={{ marginBottom: 8 }}>
+              <Lbl>Latest Exposure Report</Lbl>
+              <pre style={{ fontSize: 10, fontFamily: T.mono, whiteSpace: "pre-wrap", background: T.paperWarm, padding: 8, marginTop: 3, border: `1px solid ${T.ruleLight}` }}>
+                {exposure.report_markdown}
+              </pre>
+            </div>
+          )}
+
+          {/* ── Empty state nudge ── */}
+          {detail && content.length === 0 && engagement.length === 0 && (
+            <div style={{ color: T.inkFaint, fontSize: 11, fontStyle: "italic", padding: "4px 0" }}>
+              No content scraped and no engagement logged yet. Paste a URL above to start.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Target Tracker (accordion list) ──────────────────────────────────
+
+function TargetTracker({ targets, onUpdate }) {
   return (
     <div>
       {(targets || []).map((t) => (
-        <div key={t.id} onClick={() => onSelect(t.id)} style={{
-          padding: "6px 10px", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 12,
-          display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
-        }}>
-          <TierBadge tier={t.tier} />
-          <div style={{ flex: 1, fontFamily: T.mono, fontWeight: 500 }}>{t.name}</div>
-          <StageBadge stage={t.pipeline_stage} />
-          <div style={{ fontSize: 10, color: T.inkFaint, minWidth: 100, textAlign: "right" }}>
-            {t.next_action || "—"}
-          </div>
-        </div>
+        <TargetRow key={t.id} target={t} onUpdate={onUpdate} />
       ))}
+    </div>
+  );
+}
+
+// ─── Investor Row (accordion) ─────────────────────────────────────────
+
+const INVESTOR_STAGES = [
+  "not_started", "researching", "warm_intro_sent", "meeting_scheduled",
+  "meeting_completed", "dd_in_progress", "term_sheet", "closed", "passed",
+  "advisor_in_place",
+];
+
+function InvestorRow({ investor, onUpdate }) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [stageOpen, setStageOpen] = useState(false);
+  const [intForm, setIntForm] = useState(null);
+  const [flash, setFlash] = useState(null);
+
+  const inv = investor;
+
+  const showFlash = (msg, ok = true) => {
+    setFlash({ msg, ok });
+    setTimeout(() => setFlash(null), 3000);
+  };
+
+  const loadDetail = async () => {
+    try {
+      const data = await opsFetch(`/api/ops/investors/${inv.id}`);
+      setDetail(data);
+    } catch (e) { showFlash(e.message, false); }
+  };
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !detail) loadDetail();
+  };
+
+  const handleStageChange = async (newStage) => {
+    setBusy("stage");
+    try {
+      await opsFetch(`/api/ops/investors/${inv.id}/stage`, {
+        method: "PUT", body: JSON.stringify({ stage: newStage }),
+      });
+      showFlash(`Stage → ${newStage.replace(/_/g, " ")}`);
+      setStageOpen(false);
+      if (onUpdate) onUpdate();
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const handleLogInteraction = async () => {
+    if (!intForm?.action_type) return;
+    setBusy("interaction");
+    try {
+      await opsFetch(`/api/ops/investors/${inv.id}/interaction`, {
+        method: "POST", body: JSON.stringify(intForm),
+      });
+      showFlash("Interaction logged");
+      setIntForm(null);
+      loadDetail();
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
+  const interactions = detail?.interactions || [];
+  const invDetail = detail?.investor || inv;
+
+  const stageColors = {
+    not_started: "#999", researching: "#3498db", warm_intro_sent: "#2980b9",
+    meeting_scheduled: "#8e44ad", meeting_completed: "#9b59b6",
+    dd_in_progress: "#f39c12", term_sheet: "#e67e22",
+    closed: "#27ae60", passed: "#7f8c8d", advisor_in_place: "#27ae60",
+  };
+
+  return (
+    <div style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+      <div onClick={toggle} style={{
+        padding: "7px 10px", fontSize: 11, fontFamily: T.mono, display: "flex", alignItems: "center", gap: 8,
+        cursor: "pointer", background: open ? T.paperWarm : "transparent", transition: "background 0.15s",
+      }}>
+        <span style={{ fontSize: 10, color: T.inkFaint, width: 12 }}>{open ? "\u25BC" : "\u25B6"}</span>
+        <TierBadge tier={inv.tier} />
+        <div style={{ flex: 1, fontWeight: 500 }}>{inv.name}</div>
+        {inv.firm && inv.firm !== inv.name && <span style={{ color: T.inkFaint, fontSize: 10 }}>{inv.firm}</span>}
+        <span style={{
+          fontSize: 10, padding: "2px 6px", borderRadius: 3,
+          background: (stageColors[inv.stage] || "#999") + "22", color: stageColors[inv.stage] || "#999",
+          border: `1px solid ${stageColors[inv.stage] || "#999"}44`,
+        }}>
+          {(inv.stage || "not started").replace(/_/g, " ")}
+        </span>
+        <div style={{ fontSize: 10, color: T.inkFaint, minWidth: 80, textAlign: "right" }}>
+          {inv.next_action || "—"}
+        </div>
+      </div>
+
+      {open && (
+        <div style={{ padding: "0 10px 12px 30px", fontSize: 12, animation: "fadeIn 0.15s ease" }}>
+          {flash && (
+            <div style={{
+              padding: "4px 8px", margin: "6px 0", fontSize: 11, fontFamily: T.mono,
+              background: flash.ok ? "#27ae6018" : "#e74c3c18",
+              border: `1px solid ${flash.ok ? "#27ae6044" : "#e74c3c44"}`,
+              color: flash.ok ? "#27ae60" : T.accent,
+            }}>
+              {flash.msg}
+            </div>
+          )}
+
+          {/* Action bar */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 0 6px", borderBottom: `1px solid ${T.ruleLight}`, marginBottom: 8 }}>
+            <button onClick={() => setStageOpen(!stageOpen)} style={stageOpen ? btnActive() : btn()}>Update stage</button>
+            <button onClick={() => setIntForm(intForm ? null : { action_type: "", content: "", next_step: "" })}
+              style={intForm ? btnActive() : btn()}>Log interaction</button>
+            <button onClick={loadDetail} style={btn()}>Refresh</button>
+          </div>
+
+          {/* Stage dropdown */}
+          {stageOpen && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "4px 0 8px" }}>
+              {INVESTOR_STAGES.map((s) => (
+                <button key={s} onClick={() => handleStageChange(s)} disabled={s === inv.stage || !!busy}
+                  style={btn({ opacity: s === inv.stage ? 0.4 : 1, background: s === inv.stage ? T.paperWarm : T.paper })}>
+                  {s.replace(/_/g, " ")}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Interaction form */}
+          {intForm && (
+            <div style={{ padding: "6px 0 8px", display: "flex", flexWrap: "wrap", gap: 6, alignItems: "flex-end" }}>
+              <div>
+                <Lbl>Action</Lbl>
+                <select value={intForm.action_type} onChange={(e) => setIntForm({ ...intForm, action_type: e.target.value })}
+                  style={{ display: "block", fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper, marginTop: 2 }}>
+                  <option value="">select...</option>
+                  {["email_sent", "meeting", "materials_sent", "follow_up", "intro_request", "call", "dm_sent"].map((a) => (
+                    <option key={a} value={a}>{a.replace(/_/g, " ")}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <Lbl>Content</Lbl>
+                <input value={intForm.content} onChange={(e) => setIntForm({ ...intForm, content: e.target.value })}
+                  placeholder="What happened..."
+                  style={{ display: "block", width: "100%", fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper, marginTop: 2 }} />
+              </div>
+              <div style={{ minWidth: 160 }}>
+                <Lbl>Next step</Lbl>
+                <input value={intForm.next_step} onChange={(e) => setIntForm({ ...intForm, next_step: e.target.value })}
+                  placeholder="Follow up with..."
+                  style={{ display: "block", width: "100%", fontFamily: T.mono, fontSize: 11, padding: "4px 6px", border: `1px solid ${T.ruleMid}`, background: T.paper, marginTop: 2 }} />
+              </div>
+              <button onClick={handleLogInteraction} disabled={!intForm.action_type || !!busy}
+                style={btn({ background: "#27ae6022" })}>
+                {busy === "interaction" ? "..." : "Save"}
+              </button>
+            </div>
+          )}
+
+          {/* Investor details */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px", marginBottom: 8 }}>
+            {invDetail.key_person && <div><Lbl>Key person</Lbl><div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{invDetail.key_person}</div></div>}
+            {invDetail.warm_path && <div><Lbl>Warm path</Lbl><div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{invDetail.warm_path}</div></div>}
+            {invDetail.thesis_alignment && <div><Lbl>Thesis alignment</Lbl><div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{invDetail.thesis_alignment}</div></div>}
+            {invDetail.notes && <div><Lbl>Notes</Lbl><div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{invDetail.notes}</div></div>}
+          </div>
+
+          {invDetail.materials_sent && invDetail.materials_sent.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <Lbl>Materials sent</Lbl>
+              <div style={{ fontSize: 11, color: T.inkMid, marginTop: 1 }}>{invDetail.materials_sent.join(", ")}</div>
+            </div>
+          )}
+
+          {/* Interaction history */}
+          {interactions.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <Lbl>Interaction History ({interactions.length})</Lbl>
+              <div style={{ marginTop: 3 }}>
+                {interactions.map((i) => (
+                  <div key={i.id} style={{ fontSize: 11, padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}`, display: "flex", gap: 8 }}>
+                    <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 100 }}>
+                      {i.action_type.replace(/_/g, " ")}
+                    </span>
+                    <span style={{ flex: 1, color: T.inkMid }}>{i.content || "—"}</span>
+                    {i.response && <span style={{ color: "#27ae60", fontSize: 10 }}>response: {i.response}</span>}
+                    {i.next_step && <span style={{ color: T.inkFaint, fontSize: 10 }}>next: {i.next_step}</span>}
+                    <span style={{ fontSize: 9, color: T.inkFaint }}>{new Date(i.occurred_at).toLocaleDateString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {interactions.length === 0 && (
+            <div style={{ color: T.inkFaint, fontSize: 11, fontStyle: "italic", padding: "4px 0" }}>
+              No interactions logged yet. Use "Log interaction" above to start tracking.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Fundraise Panel ──────────────────────────────────────────────────
 
-function FundraisePanel({ data }) {
+function FundraisePanel({ data, onUpdate }) {
   if (!data) return null;
   const { investors, milestones: ms, raise: raiseInfo } = data;
   return (
@@ -251,15 +861,7 @@ function FundraisePanel({ data }) {
       )}
       <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Investor Pipeline</div>
       {(investors || []).map((inv) => (
-        <div key={inv.id} style={{
-          fontSize: 11, fontFamily: T.mono, padding: "3px 0",
-          display: "flex", gap: 8, borderBottom: `1px solid ${T.ruleLight}`,
-        }}>
-          <TierBadge tier={inv.tier} />
-          <div style={{ flex: 1 }}>{inv.name}</div>
-          <span style={{ color: T.inkLight }}>{(inv.stage || "").replace(/_/g, " ")}</span>
-          <span style={{ color: T.inkFaint, fontSize: 10 }}>{inv.next_action || "—"}</span>
-        </div>
+        <InvestorRow key={inv.id} investor={inv} onUpdate={onUpdate} />
       ))}
     </div>
   );
@@ -268,15 +870,11 @@ function FundraisePanel({ data }) {
 // ─── Content Feed ─────────────────────────────────────────────────────
 
 function ContentFeed({ feed }) {
-  if (!feed || feed.length === 0) {
-    return <div style={{ color: T.inkFaint, fontSize: 12 }}>No content scraped yet.</div>;
-  }
+  if (!feed || feed.length === 0) return <div style={{ color: T.inkFaint, fontSize: 12 }}>No content scraped yet.</div>;
   return (
     <div>
       {feed.slice(0, 20).map((item) => (
-        <div key={item.id} style={{
-          padding: "6px 10px", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11,
-        }}>
+        <div key={item.id} style={{ padding: "6px 10px", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span style={{ fontFamily: T.mono, fontWeight: 500, minWidth: 100 }}>{item.target_name}</span>
             <span style={{ color: T.inkLight, fontSize: 10 }}>{item.source_type}</span>
@@ -287,106 +885,9 @@ function ContentFeed({ feed }) {
               </span>
             )}
           </div>
-          {item.content_summary && (
-            <div style={{ color: T.inkMid, fontSize: 10, marginTop: 2 }}>{item.content_summary}</div>
-          )}
+          {item.content_summary && <div style={{ color: T.inkMid, fontSize: 10, marginTop: 2 }}>{item.content_summary}</div>}
         </div>
       ))}
-    </div>
-  );
-}
-
-// ─── Target Detail ────────────────────────────────────────────────────
-
-function TargetDetail({ targetId, onBack }) {
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    opsFetch(`/api/ops/targets/${targetId}`)
-      .then(setData)
-      .catch((e) => setError(e.message));
-  }, [targetId]);
-
-  if (error) return <div style={{ color: T.accent }}>Error: {error}</div>;
-  if (!data) return <div style={{ color: T.inkFaint, fontSize: 12 }}>Loading...</div>;
-
-  const { target: t, contacts, recent_content, engagement_log, latest_exposure } = data;
-  return (
-    <div>
-      <button onClick={onBack} style={{
-        border: "none", background: "transparent", cursor: "pointer",
-        fontFamily: T.mono, fontSize: 11, color: T.inkLight, marginBottom: 12,
-      }}>
-        &larr; Back to targets
-      </button>
-      <h3 style={{ fontFamily: T.mono, fontSize: 16, marginBottom: 4 }}>{t.name}</h3>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <TierBadge tier={t.tier} />
-        <StageBadge stage={t.pipeline_stage} />
-        {t.track && <span style={{ fontSize: 10, color: T.inkLight }}>track: {t.track}</span>}
-        <span style={{ fontSize: 10, color: T.inkLight }}>type: {t.type}</span>
-      </div>
-
-      {t.worldview_summary && (
-        <div style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
-          <strong>Worldview:</strong> {t.worldview_summary}
-        </div>
-      )}
-      {t.gap && <div style={{ fontSize: 12, marginBottom: 8 }}><strong>Gap:</strong> {t.gap}</div>}
-      {t.first_wedge && <div style={{ fontSize: 12, marginBottom: 8 }}><strong>First wedge:</strong> {t.first_wedge}</div>}
-      {t.landmine && <div style={{ fontSize: 12, marginBottom: 8 }}><strong>Landmine:</strong> {t.landmine}</div>}
-      {t.positioning && <div style={{ fontSize: 12, marginBottom: 12 }}><strong>Positioning:</strong> {t.positioning}</div>}
-
-      {contacts && contacts.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <h4 style={{ fontFamily: T.mono, fontSize: 12, marginBottom: 4 }}>Contacts</h4>
-          {contacts.map((c) => (
-            <div key={c.id} style={{ fontSize: 11, padding: "2px 0" }}>
-              <strong>{c.name}</strong> — {c.role}
-              {c.twitter_handle && <span style={{ color: T.inkLight }}> {c.twitter_handle}</span>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {recent_content && recent_content.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <h4 style={{ fontFamily: T.mono, fontSize: 12, marginBottom: 4 }}>Recent Content</h4>
-          {recent_content.map((c) => (
-            <div key={c.id} style={{ fontSize: 11, padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
-              <div>{c.title || c.source_url}</div>
-              {c.bridge_found != null && (
-                <span style={{ fontSize: 10, color: c.bridge_found ? "#27ae60" : T.inkFaint }}>
-                  bridge: {c.bridge_found ? "YES" : "NO"}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {engagement_log && engagement_log.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <h4 style={{ fontFamily: T.mono, fontSize: 12, marginBottom: 4 }}>Engagement Log</h4>
-          {engagement_log.map((e) => (
-            <div key={e.id} style={{ fontSize: 11, padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
-              <span style={{ fontFamily: T.mono }}>{e.action_type}</span>
-              {e.channel && <span style={{ color: T.inkLight }}> via {e.channel}</span>}
-              {e.content && <div style={{ color: T.inkMid, fontSize: 10, marginTop: 2 }}>{e.content}</div>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {latest_exposure && (
-        <div>
-          <h4 style={{ fontFamily: T.mono, fontSize: 12, marginBottom: 4 }}>Latest Exposure Report</h4>
-          <pre style={{ fontSize: 10, fontFamily: T.mono, whiteSpace: "pre-wrap", background: T.paperWarm, padding: 8 }}>
-            {latest_exposure.report_markdown}
-          </pre>
-        </div>
-      )}
     </div>
   );
 }
@@ -404,16 +905,561 @@ function Section({ title, actions, children }) {
         <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 600, letterSpacing: 1 }}>
           {collapsed ? "\u25B6" : "\u25BC"} {title}
         </span>
-        <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
-          {actions}
-        </div>
+        <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>{actions}</div>
       </div>
       {!collapsed && (
-        <div style={{ border: `1px solid ${T.ruleMid}`, borderTop: "none", padding: "8px 0" }}>
-          {children}
-        </div>
+        <div style={{ border: `1px solid ${T.ruleMid}`, borderTop: "none", padding: "8px 0" }}>{children}</div>
       )}
     </div>
+  );
+}
+
+// ─── Discovery Panel (lazy-loaded) ────────────────────────────────────
+
+function DiscoveryPanel() {
+  const [signals, setSignals] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const scan = async () => {
+    setLoading(true);
+    try {
+      const res = await opsFetch("/api/ops/discovery/scan?limit=10");
+      setSignals(res);
+    } catch (e) {
+      setSignals({ signals: [], summary: `Error: ${e.message}` });
+    }
+    setLoading(false);
+  };
+
+  return (
+    <Section title="DISCOVERY SIGNALS" actions={
+      <button onClick={scan} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+        {loading ? "Scanning..." : "Scan"}
+      </button>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {!signals && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Scan" to query discovery signals.</div>}
+        {signals && (
+          <>
+            <div style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMid, marginBottom: 8 }}>{signals.summary}</div>
+            {(signals.signals || []).map((sig) => (
+              <div key={sig.signal_id} style={{ padding: "5px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 70 }}>{sig.domain}</span>
+                  <span style={{ flex: 1, fontWeight: 500 }}>{sig.title || sig.signal_type}</span>
+                  <span style={{ fontFamily: T.mono, fontSize: 10, color: sig.content_score >= 0.5 ? "#27ae60" : T.inkFaint }}>
+                    score: {sig.content_score.toFixed(2)}
+                  </span>
+                  <span style={{ fontSize: 10, fontFamily: T.mono, color: T.inkLight }}>{sig.suggested_action.replace(/_/g, " ")}</span>
+                </div>
+                {sig.description && <div style={{ fontSize: 10, color: T.inkMid, marginTop: 2 }}>{sig.description}</div>}
+                {sig.relevant_targets.length > 0 && (
+                  <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 2 }}>
+                    Targets: {sig.relevant_targets.map((t) => t.name).join(", ")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+// ─── Milestones Panel (lazy-loaded) ───────────────────────────────────
+
+function MilestonesPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const check = async () => {
+    setLoading(true);
+    try {
+      const res = await opsFetch("/api/ops/milestones");
+      setData(res);
+    } catch (e) {
+      setData(null);
+    }
+    setLoading(false);
+  };
+
+  const st = data?.seed_triggers;
+  const ks = data?.kill_signals;
+  const am = data?.adoption_metrics;
+
+  return (
+    <Section title="MILESTONES" actions={
+      <button onClick={check} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+        {loading ? "Checking..." : "Check"}
+      </button>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {!data && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Check" to compute milestones from live data.</div>}
+        {st && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+              Seed Triggers: {st.met}/{st.total} met (need {st.threshold})
+              {st.activated && <span style={{ color: "#27ae60", marginLeft: 8 }}>ACTIVATED</span>}
+            </div>
+            {st.milestones.map((m, i) => (
+              <div key={i} style={{ fontSize: 11, fontFamily: T.mono, padding: "2px 0" }}>
+                <span style={{ marginRight: 6 }}>{m.met ? "\u2705" : "\u274C"}</span>
+                {m.name}
+                {m.current != null && <span style={{ color: T.inkFaint }}> ({m.current}/{m.target})</span>}
+              </div>
+            ))}
+          </div>
+        )}
+        {ks && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Kill Signals</div>
+            {ks.signals.map((s, i) => (
+              <div key={i} style={{ fontSize: 11, fontFamily: T.mono, padding: "2px 0", color: s.status === "at_risk" ? T.accent : T.inkMid }}>
+                {s.status === "safe" ? "\u26AA" : s.status === "at_risk" ? "\uD83D\uDD34" : "\u26AA"} {s.name}
+                {s.evaluable && <span style={{ color: T.inkFaint, marginLeft: 8 }}>
+                  API: {s.conditions.api_calls_daily || 0}/day
+                </span>}
+              </div>
+            ))}
+          </div>
+        )}
+        {am && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Adoption Metrics</div>
+            {am.metrics.map((m, i) => (
+              <div key={i} style={{ fontSize: 11, fontFamily: T.mono, padding: "2px 0", display: "flex", gap: 8 }}>
+                <span style={{ flex: 1 }}>{m.name}</span>
+                <span style={{ color: T.inkMid }}>{m.current}</span>
+                <span style={{ color: T.inkFaint, fontSize: 10 }}>M6: {m.m6_target}</span>
+                <span style={{ color: T.inkFaint, fontSize: 10 }}>M12: {m.m12_target}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+// ─── Analytics Panel ──────────────────────────────────────────────────
+
+function AnalyticsPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try { setData(await opsFetch("/api/ops/analytics")); } catch (e) { setData(null); }
+    setLoading(false);
+  };
+
+  const eng = data?.engagement;
+  const pipe = data?.pipeline;
+  const cont = data?.content;
+  const api = data?.api_usage;
+
+  return (
+    <Section title="ANALYTICS" actions={
+      <button onClick={load} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+        {loading ? "..." : "Compute"}
+      </button>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {!data && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Compute" to generate analytics.</div>}
+        {eng && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Engagement</div>
+            <div style={{ fontSize: 11, fontFamily: T.mono, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 6 }}>
+              <div>Total: <strong>{eng.total_engagements}</strong></div>
+              <div>Responses: <strong>{eng.total_responses}</strong></div>
+              <div>Rate: <strong>{eng.overall_response_rate}%</strong></div>
+            </div>
+            {eng.by_action_type.length > 0 && (
+              <div style={{ fontSize: 10 }}>
+                {eng.by_action_type.map((a, i) => (
+                  <div key={i} style={{ fontFamily: T.mono, display: "flex", gap: 8, padding: "1px 0" }}>
+                    <span style={{ minWidth: 120 }}>{a.action_type.replace(/_/g, " ")}</span>
+                    <span>{a.total} sent</span>
+                    <span style={{ color: a.response_rate > 0 ? "#27ae60" : T.inkFaint }}>{a.response_rate}% response</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {pipe && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Pipeline</div>
+            <div style={{ fontSize: 11, fontFamily: T.mono, marginBottom: 4 }}>Active targets: {pipe.active_targets}</div>
+            {pipe.avg_days_to_first_engagement && (
+              <div style={{ fontSize: 11, fontFamily: T.mono }}>Avg days to first engagement: {pipe.avg_days_to_first_engagement}</div>
+            )}
+            {pipe.overdue_actions.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                <div style={{ fontSize: 10, color: T.accent, fontWeight: 600 }}>Overdue Actions:</div>
+                {pipe.overdue_actions.map((o) => (
+                  <div key={o.id} style={{ fontSize: 10, fontFamily: T.mono, color: T.accent }}>
+                    T{o.tier} {o.name}: {o.next_action} (due {new Date(o.next_action_due).toLocaleDateString()})
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {cont && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Content</div>
+            <div style={{ fontSize: 10, fontFamily: T.mono, display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 4 }}>
+              <div>Scraped: {cont.total_content}</div>
+              <div>Analyzed: {cont.analyzed}</div>
+              <div>Bridges: {cont.bridges_found} ({cont.bridge_rate}%)</div>
+              <div>Approved: {cont.approved} ({cont.approval_rate}%)</div>
+            </div>
+          </div>
+        )}
+        {api && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>API Usage</div>
+            <div style={{ fontSize: 10, fontFamily: T.mono, display: "flex", gap: 12 }}>
+              <span>Today: {api.requests.today}</span>
+              <span>Week: {api.requests.week}</span>
+              <span>Month: {api.requests.month}</span>
+              <span>Active keys (7d): {api.active_api_keys_7d}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+// ─── News Panel ──────────────────────────────────────────────────────
+
+function NewsPanel() {
+  const [news, setNews] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const scan = async () => {
+    setLoading(true);
+    try {
+      await opsFetch("/api/ops/news/scan", { method: "POST" });
+      const feed = await opsFetch("/api/ops/news/feed?limit=15");
+      setNews(feed.news || []);
+    } catch (e) { setNews([]); }
+    setLoading(false);
+  };
+
+  return (
+    <Section title="COINGECKO NEWS" actions={
+      <button onClick={scan} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+        {loading ? "Scanning..." : "Scan News"}
+      </button>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {!news && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Scan News" to fetch stablecoin-related news.</div>}
+        {news && news.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No stablecoin-relevant news found.</div>}
+        {news && news.map((n) => (
+          <div key={n.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {n.incident_detected && <span style={{ color: T.accent, fontWeight: 700, fontSize: 10 }}>INCIDENT</span>}
+              <a href={n.url} target="_blank" rel="noopener noreferrer"
+                style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
+                {n.title}
+              </a>
+              <span style={{ fontSize: 9, color: T.inkFaint }}>{n.source}</span>
+            </div>
+            {n.relevant_symbols && n.relevant_symbols.length > 0 && (
+              <div style={{ fontSize: 9, color: T.inkLight, fontFamily: T.mono, marginTop: 1 }}>
+                {n.relevant_symbols.join(", ")}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ─── Alerts Panel ────────────────────────────────────────────────────
+
+function AlertsPanel() {
+  const [alerts, setAlerts] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await opsFetch("/api/ops/alerts?limit=20");
+      setAlerts(res.alerts || []);
+    } catch (e) { setAlerts([]); }
+    setLoading(false);
+  };
+
+  return (
+    <Section title="ALERT LOG" actions={
+      <button onClick={load} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+        {loading ? "..." : "Load"}
+      </button>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {!alerts && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view recent alerts.</div>}
+        {alerts && alerts.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No alerts sent yet.</div>}
+        {alerts && alerts.map((a) => (
+          <div key={a.id} style={{ padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11, display: "flex", gap: 8 }}>
+            <span style={{ fontFamily: T.mono, fontSize: 10, color: a.alert_type === "health_failure" ? T.accent : "#3498db", minWidth: 120 }}>
+              {a.alert_type.replace(/_/g, " ")}
+            </span>
+            <span style={{ fontSize: 10, color: T.inkLight }}>{a.channel}</span>
+            <span style={{ flex: 1, color: T.inkMid }}>{(a.message || "").replace(/\*/g, "").substring(0, 120)}</span>
+            <span style={{ fontSize: 9, color: T.inkFaint }}>{new Date(a.sent_at).toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ─── Twitter Panel ──────────────────────────────────────────────────
+
+function TwitterPanel() {
+  const [tweets, setTweets] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const scan = async () => {
+    setLoading(true);
+    try {
+      await opsFetch("/api/ops/twitter/scan", { method: "POST" });
+      const res = await opsFetch("/api/ops/twitter/feed?limit=30");
+      setTweets(res.tweets || []);
+    } catch (e) { setTweets([]); }
+    setLoading(false);
+  };
+
+  const loadFeed = async () => {
+    setLoading(true);
+    try {
+      const res = await opsFetch("/api/ops/twitter/feed?limit=30");
+      setTweets(res.tweets || []);
+    } catch (e) { setTweets([]); }
+    setLoading(false);
+  };
+
+  return (
+    <Section title="TWITTER MONITORING" actions={
+      <div style={{ display: "flex", gap: 4 }}>
+        <button onClick={loadFeed} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+          Load
+        </button>
+        <button onClick={scan} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+          {loading ? "Scanning..." : "Scan All"}
+        </button>
+      </div>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {!tweets && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view cached tweets or "Scan All" to fetch new ones.</div>}
+        {tweets && tweets.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No tweets found yet. Run a scan first.</div>}
+        {tweets && tweets.map((tw) => (
+          <div key={tw.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <TierBadge tier={tw.tier || 0} />
+              <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 100 }}>{tw.target_name}</span>
+              <a href={tw.source_url} target="_blank" rel="noopener noreferrer"
+                style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
+                {tw.title || tw.content?.substring(0, 120) || tw.source_url}
+              </a>
+              <span style={{ fontSize: 9, color: T.inkFaint }}>
+                {tw.scraped_at ? new Date(tw.scraped_at).toLocaleDateString() : ""}
+              </span>
+            </div>
+            {tw.bridge_found && (
+              <div style={{ fontSize: 9, color: "#27ae60", fontFamily: T.mono, marginTop: 1, marginLeft: 28 }}>
+                BRIDGE: {tw.bridge_text?.substring(0, 100)}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ─── Governance Panel ───────────────────────────────────────────────
+
+function GovernancePanel() {
+  const [proposals, setProposals] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState("all"); // all, stablecoin
+
+  const scan = async () => {
+    setLoading(true);
+    try {
+      await opsFetch("/api/ops/governance/scan", { method: "POST" });
+      await loadFeed();
+    } catch (e) { setProposals([]); }
+    setLoading(false);
+  };
+
+  const loadFeed = async () => {
+    const stableOnly = filter === "stablecoin";
+    try {
+      const res = await opsFetch(`/api/ops/governance/feed?limit=30&stablecoin_only=${stableOnly}`);
+      setProposals(res.proposals || []);
+    } catch (e) { setProposals([]); }
+  };
+
+  useEffect(() => { if (proposals !== null) loadFeed(); }, [filter]);
+
+  const stateColor = (state) => {
+    if (!state) return T.inkFaint;
+    const s = state.toLowerCase();
+    if (s === "active" || s === "pending") return "#3498db";
+    if (s === "closed" || s === "executed") return "#27ae60";
+    return T.inkFaint;
+  };
+
+  return (
+    <Section title="GOVERNANCE PROPOSALS" actions={
+      <div style={{ display: "flex", gap: 4 }}>
+        <button onClick={() => setFilter(filter === "all" ? "stablecoin" : "all")}
+          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: filter === "stablecoin" ? T.paper + "44" : "transparent", color: T.paper, cursor: "pointer" }}>
+          {filter === "stablecoin" ? "Stablecoin Only" : "All"}
+        </button>
+        <button onClick={() => { if (!proposals) loadFeed(); else scan(); }}
+          style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+          {loading ? "Scanning..." : proposals ? "Scan Snapshot/Tally" : "Load"}
+        </button>
+      </div>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {!proposals && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view governance proposals or "Scan" to fetch new ones.</div>}
+        {proposals && proposals.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No proposals found. Run a scan first.</div>}
+        {proposals && proposals.map((p) => (
+          <div key={p.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, minWidth: 50 }}>{p.platform}</span>
+              <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 100 }}>{p.target_name}</span>
+              <span style={{ flex: 1, color: T.inkMid }}>{p.title}</span>
+              <span style={{ fontFamily: T.mono, fontSize: 9, color: stateColor(p.state), fontWeight: 600 }}>{p.state}</span>
+              {p.votes_count > 0 && <span style={{ fontSize: 9, color: T.inkFaint }}>{p.votes_count} votes</span>}
+            </div>
+            {p.stablecoin_relevant && (
+              <div style={{ fontSize: 9, marginTop: 1, marginLeft: 58 }}>
+                <span style={{ color: "#27ae60", fontFamily: T.mono, fontWeight: 600 }}>STABLECOIN</span>
+                {p.relevant_coins && p.relevant_coins.length > 0 && (
+                  <span style={{ color: T.inkLight, marginLeft: 6 }}>{p.relevant_coins.join(", ")}</span>
+                )}
+              </div>
+            )}
+            {p.space_or_org && (
+              <div style={{ fontSize: 9, color: T.inkFaint, marginLeft: 58 }}>{p.space_or_org}</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ─── Investor Content Panel ─────────────────────────────────────────
+
+function InvestorContentPanel() {
+  const [content, setContent] = useState(null);
+  const [signals, setSignals] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const scan = async () => {
+    setLoading(true);
+    try {
+      await opsFetch("/api/ops/investors/content/scan", { method: "POST" });
+      await loadFeed();
+    } catch (e) { setContent([]); }
+    setLoading(false);
+  };
+
+  const loadFeed = async () => {
+    try {
+      const [feed, sigs] = await Promise.all([
+        opsFetch("/api/ops/investors/content/feed?limit=20"),
+        opsFetch("/api/ops/investors/content/signals?limit=5"),
+      ]);
+      setContent(feed.content || []);
+      setSignals(sigs.signals || []);
+    } catch (e) { setContent([]); setSignals([]); }
+  };
+
+  const analyzeItem = async (contentId) => {
+    try {
+      await opsFetch(`/api/ops/investors/content/${contentId}/analyze`, { method: "POST" });
+      await loadFeed();
+    } catch (e) { /* ignore */ }
+  };
+
+  return (
+    <>
+      {signals && signals.length > 0 && (
+        <Section title="TIMING SIGNALS">
+          <div style={{ padding: "0 10px" }}>
+            {signals.map((s) => (
+              <div key={s.id} style={{ padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontFamily: T.mono, fontSize: 10, color: "#e74c3c", fontWeight: 700 }}>TIMING</span>
+                  <span style={{ fontWeight: 600 }}>{s.investor_name}</span>
+                  <span style={{ color: T.inkLight }}>{s.title || s.source_type}</span>
+                  {s.alignment_score && <span style={{ fontFamily: T.mono, fontSize: 9, color: "#27ae60" }}>align: {(s.alignment_score * 100).toFixed(0)}%</span>}
+                </div>
+                {s.timing_notes && <div style={{ fontSize: 10, color: T.inkMid, marginTop: 2, marginLeft: 8 }}>{s.timing_notes}</div>}
+                {s.outreach_angle && <div style={{ fontSize: 10, color: "#3498db", marginTop: 1, marginLeft: 8 }}>Angle: {s.outreach_angle.substring(0, 150)}</div>}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      <Section title="INVESTOR CONTENT" actions={
+        <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => { if (!content) loadFeed(); else loadFeed(); }}
+            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+            Load
+          </button>
+          <button onClick={scan}
+            style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+            {loading ? "Scanning..." : "Scan All"}
+          </button>
+        </div>
+      }>
+        <div style={{ padding: "0 10px" }}>
+          {!content && <div style={{ color: T.inkFaint, fontSize: 12 }}>Click "Load" to view investor content or "Scan All" to fetch new.</div>}
+          {content && content.length === 0 && <div style={{ color: T.inkFaint, fontSize: 12 }}>No investor content yet. Run a scan first.</div>}
+          {content && content.map((c) => (
+            <div key={c.id} style={{ padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, fontSize: 11 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 80 }}>{c.source_type}</span>
+                <span style={{ fontWeight: 500, minWidth: 100 }}>{c.investor_name}</span>
+                <a href={c.source_url} target="_blank" rel="noopener noreferrer"
+                  style={{ flex: 1, color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  {c.title || c.source_url?.substring(0, 80)}
+                </a>
+                {c.analyzed ? (
+                  c.alignment_score !== null && <span style={{ fontFamily: T.mono, fontSize: 9, color: c.alignment_score > 0.5 ? "#27ae60" : T.inkFaint }}>
+                    {(c.alignment_score * 100).toFixed(0)}%
+                  </span>
+                ) : (
+                  <button onClick={() => analyzeItem(c.id)}
+                    style={{ fontSize: 9, fontFamily: T.mono, padding: "1px 4px", border: `1px solid ${T.inkFaint}`, background: "transparent", color: T.inkLight, cursor: "pointer" }}>
+                    Analyze
+                  </button>
+                )}
+                {c.timing_signal && <span style={{ fontSize: 9, color: "#e74c3c", fontWeight: 700 }}>TIMING</span>}
+              </div>
+              {c.thesis_extract && (
+                <div style={{ fontSize: 10, color: T.inkLight, marginTop: 1, marginLeft: 8 }}>{c.thesis_extract}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Section>
+    </>
   );
 }
 
@@ -427,7 +1473,6 @@ export default function OpsDashboard() {
   const [fundraise, setFundraise] = useState(null);
   const [feed, setFeed] = useState([]);
   const [contentItems, setContentItems] = useState([]);
-  const [selectedTarget, setSelectedTarget] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -465,61 +1510,36 @@ export default function OpsDashboard() {
     if (authed) load();
   }, [authed, load]);
 
-  const handleAuth = (key) => {
-    setAdminKey(key);
-    setAuthed(true);
-  };
+  const handleAuth = (key) => { setAdminKey(key); setAuthed(true); };
 
   const handleDecide = async (contentId, decision) => {
     try {
-      await opsFetch(`/api/ops/content/${contentId}/decide`, {
-        method: "POST",
-        body: JSON.stringify({ decision }),
-      });
+      await opsFetch(`/api/ops/content/${contentId}/decide`, { method: "POST", body: JSON.stringify({ decision }) });
       setQueue((prev) => prev.filter((q) => q.id !== contentId));
-    } catch (e) {
-      setError(e.message);
-    }
+    } catch (e) { setError(e.message); }
   };
 
   const handleRunHealthCheck = async () => {
     try {
       const result = await opsFetch("/api/ops/health/check", { method: "POST" });
       setHealth(result.checks || []);
-    } catch (e) {
-      setError(e.message);
-    }
+    } catch (e) { setError(e.message); }
   };
 
   const handleSeed = async () => {
-    try {
-      await opsFetch("/api/ops/seed", { method: "POST" });
-      load();
-    } catch (e) {
-      setError(e.message);
-    }
+    try { await opsFetch("/api/ops/seed", { method: "POST" }); load(); } catch (e) { setError(e.message); }
   };
 
   const handleMigrate = async () => {
     try {
       await opsFetch("/api/ops/migrate", { method: "POST" });
+      // Also run migration 033 if available
+      try { await opsFetch("/api/ops/migrate/033", { method: "POST" }); } catch (_) {}
       load();
-    } catch (e) {
-      setError(e.message);
-    }
+    } catch (e) { setError(e.message); }
   };
 
   if (!authed) return <AuthGate onAuth={handleAuth} />;
-
-  if (selectedTarget) {
-    return (
-      <div style={{ minHeight: "100vh", background: T.paper, fontFamily: T.sans, padding: "20px 24px" }}>
-        <div style={{ maxWidth: 900, margin: "0 auto" }}>
-          <TargetDetail targetId={selectedTarget} onBack={() => setSelectedTarget(null)} />
-        </div>
-      </div>
-    );
-  }
 
   const healthSummary = health.length > 0
     ? `${health.filter((h) => h.status === "healthy").length}/${health.length} healthy`
@@ -531,6 +1551,7 @@ export default function OpsDashboard() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "16px 20px" }}>
@@ -540,47 +1561,37 @@ export default function OpsDashboard() {
           marginBottom: 16, borderBottom: `3px solid ${T.ink}`, paddingBottom: 8,
         }}>
           <div>
-            <h1 style={{ fontFamily: T.mono, fontSize: 16, fontWeight: 700, letterSpacing: 1 }}>
-              BASIS OPERATIONS HUB
-            </h1>
+            <h1 style={{ fontFamily: T.mono, fontSize: 16, fontWeight: 700, letterSpacing: 1 }}>BASIS OPERATIONS HUB</h1>
             <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, marginTop: 2 }}>
               {new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
               {loading && " · loading..."}
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={handleMigrate} style={{ fontSize: 10, fontFamily: T.mono, padding: "4px 8px", border: `1px solid ${T.ruleMid}`, background: T.paper, cursor: "pointer" }}>
-              Migrate
-            </button>
-            <button onClick={handleSeed} style={{ fontSize: 10, fontFamily: T.mono, padding: "4px 8px", border: `1px solid ${T.ruleMid}`, background: T.paper, cursor: "pointer" }}>
-              Seed
-            </button>
-            <button onClick={load} style={{ fontSize: 10, fontFamily: T.mono, padding: "4px 8px", border: `1px solid ${T.ruleMid}`, background: T.paper, cursor: "pointer" }}>
-              Refresh
-            </button>
-            <a href="/" style={{ fontSize: 10, fontFamily: T.mono, padding: "4px 8px", border: `1px solid ${T.ruleMid}`, background: T.paper, textDecoration: "none", color: T.ink, display: "flex", alignItems: "center" }}>
-              SII Dashboard
-            </a>
+            <button onClick={handleMigrate} style={btn()}>Migrate</button>
+            <button onClick={handleSeed} style={btn()}>Seed</button>
+            <button onClick={load} style={btn()}>Refresh</button>
+            <a href="/" style={{ ...btn(), textDecoration: "none", color: T.ink, display: "flex", alignItems: "center" }}>SII Dashboard</a>
           </div>
         </div>
 
         {error && (
           <div style={{ padding: "8px 12px", background: "#e74c3c22", border: "1px solid #e74c3c44", fontSize: 12, marginBottom: 12, color: T.accent }}>
             {error}
-            <button onClick={() => setError(null)} style={{ marginLeft: 8, border: "none", background: "transparent", cursor: "pointer" }}>&times;</button>
+            <button onClick={() => setError(null)} style={{ marginLeft: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 14 }}>&times;</button>
           </div>
         )}
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-          {["dashboard", "targets", "fundraise", "content"].map((t) => (
-            <button key={t} onClick={() => setTab(t)} style={{
+          {["dashboard", "targets", "fundraise", "content", "signals", "analytics"].map((tb) => (
+            <button key={tb} onClick={() => setTab(tb)} style={{
               fontFamily: T.mono, fontSize: 11, padding: "4px 0", border: "none",
-              background: "transparent", cursor: "pointer", fontWeight: tab === t ? 700 : 400,
-              color: tab === t ? T.ink : T.inkLight,
-              borderBottom: tab === t ? `2px solid ${T.ink}` : "2px solid transparent",
+              background: "transparent", cursor: "pointer", fontWeight: tab === tb ? 700 : 400,
+              color: tab === tb ? T.ink : T.inkLight,
+              borderBottom: tab === tb ? `2px solid ${T.ink}` : "2px solid transparent",
             }}>
-              {t.charAt(0).toUpperCase() + t.slice(1)}
+              {tb.charAt(0).toUpperCase() + tb.slice(1)}
             </button>
           ))}
         </div>
@@ -588,24 +1599,15 @@ export default function OpsDashboard() {
         {/* Dashboard tab */}
         {tab === "dashboard" && (
           <>
-            <Section
-              title="PIPELINE HEALTH"
-              actions={
-                <button onClick={handleRunHealthCheck} style={{
-                  fontSize: 9, fontFamily: T.mono, padding: "2px 6px",
-                  border: `1px solid ${T.paper}44`, background: "transparent",
-                  color: T.paper, cursor: "pointer",
-                }}>
-                  Run Check
-                </button>
-              }
-            >
+            <Section title="PIPELINE HEALTH" actions={
+              <button onClick={handleRunHealthCheck} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
+                Run Check
+              </button>
+            }>
               <div style={{ padding: "0 10px" }}>
                 <div style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMid, marginBottom: 8 }}>
                   {healthSummary}
-                  {warnings.length > 0 && (
-                    <span style={{ color: "#f39c12" }}> · {warnings.length} warning(s): {warnings.map((w) => w.system).join(", ")}</span>
-                  )}
+                  {warnings.length > 0 && <span style={{ color: "#f39c12" }}> · {warnings.length} warning(s): {warnings.map((w) => w.system).join(", ")}</span>}
                 </div>
                 <HealthPanel health={health} />
               </div>
@@ -616,17 +1618,15 @@ export default function OpsDashboard() {
             </Section>
 
             <Section title={`TARGET TRACKER (${targets.filter((t) => t.tier <= 2).length} active)`}>
-              <TargetTracker
-                targets={targets.filter((t) => t.tier <= 2)}
-                onSelect={setSelectedTarget}
-              />
+              <TargetTracker targets={targets.filter((t) => t.tier <= 2)} onUpdate={load} />
             </Section>
 
             <Section title="RECENT TARGET CONTENT">
-              <div style={{ padding: "0 10px" }}>
-                <ContentFeed feed={feed} />
-              </div>
+              <div style={{ padding: "0 10px" }}><ContentFeed feed={feed} /></div>
             </Section>
+
+            <DiscoveryPanel />
+            <MilestonesPanel />
           </>
         )}
 
@@ -634,13 +1634,13 @@ export default function OpsDashboard() {
         {tab === "targets" && (
           <>
             <Section title="TIER 1 — ACTIVE PURSUIT">
-              <TargetTracker targets={targets.filter((t) => t.tier === 1)} onSelect={setSelectedTarget} />
+              <TargetTracker targets={targets.filter((t) => t.tier === 1)} onUpdate={load} />
             </Section>
             <Section title="TIER 2 — MONITORING">
-              <TargetTracker targets={targets.filter((t) => t.tier === 2)} onSelect={setSelectedTarget} />
+              <TargetTracker targets={targets.filter((t) => t.tier === 2)} onUpdate={load} />
             </Section>
             <Section title="TIER 3 — WATCH LIST">
-              <TargetTracker targets={targets.filter((t) => t.tier === 3)} onSelect={setSelectedTarget} />
+              <TargetTracker targets={targets.filter((t) => t.tier === 3)} onUpdate={load} />
             </Section>
           </>
         )}
@@ -648,9 +1648,7 @@ export default function OpsDashboard() {
         {/* Fundraise tab */}
         {tab === "fundraise" && (
           <Section title="FUNDRAISE PIPELINE">
-            <div style={{ padding: "0 10px" }}>
-              <FundraisePanel data={fundraise} />
-            </div>
+            <div style={{ padding: "0 10px" }}><FundraisePanel data={fundraise} onUpdate={load} /></div>
           </Section>
         )}
 
@@ -663,32 +1661,40 @@ export default function OpsDashboard() {
                   <div style={{ color: T.inkFaint, fontSize: 12 }}>No content items yet.</div>
                 ) : (
                   contentItems.map((item) => (
-                    <div key={item.id} style={{
-                      fontSize: 11, padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`,
-                      display: "flex", gap: 8,
-                    }}>
+                    <div key={item.id} style={{ fontSize: 11, padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, display: "flex", gap: 8 }}>
                       <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 60 }}>{item.type}</span>
                       <span style={{ flex: 1 }}>{item.title || "(untitled)"}</span>
                       <StageBadge stage={item.status} />
-                      {item.scheduled_for && (
-                        <span style={{ fontSize: 10, color: T.inkFaint }}>
-                          {new Date(item.scheduled_for).toLocaleDateString()}
-                        </span>
-                      )}
+                      {item.scheduled_for && <span style={{ fontSize: 10, color: T.inkFaint }}>{new Date(item.scheduled_for).toLocaleDateString()}</span>}
                     </div>
                   ))
                 )}
               </div>
             </Section>
             <Section title="TARGET CONTENT FEED">
-              <div style={{ padding: "0 10px" }}>
-                <ContentFeed feed={feed} />
-              </div>
+              <div style={{ padding: "0 10px" }}><ContentFeed feed={feed} /></div>
             </Section>
           </>
         )}
 
-        {/* Footer */}
+        {/* Signals tab — Twitter, Governance, Investor Content */}
+        {tab === "signals" && (
+          <>
+            <TwitterPanel />
+            <GovernancePanel />
+            <InvestorContentPanel />
+          </>
+        )}
+
+        {/* Analytics tab */}
+        {tab === "analytics" && (
+          <>
+            <AnalyticsPanel />
+            <NewsPanel />
+            <AlertsPanel />
+          </>
+        )}
+
         <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, textAlign: "center", marginTop: 24, paddingBottom: 16 }}>
           Basis Protocol · Operations Hub · Internal Use Only
         </div>

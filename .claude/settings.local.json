@@ -47,7 +47,9 @@
       "Bash(npx -y acorn --ecma2020 --module --allow-import-export-everywhere frontend/src/App.jsx)",
       "Bash(node -e \"try { require\\(''fs''\\).readFileSync\\(''frontend/src/App.jsx'',''utf8''\\); console.log\\(''File readable''\\) } catch\\(e\\) { console.log\\(e.message\\) }\")",
       "Bash(node:*)",
-      "Bash(1 __NEW_LINE_af0b3faa5161f097__ echo \"---\" echo \"Hitting production endpoint...\" curl -s --max-time 60 \"https://basisprotocol.xyz/api/scores/usdc/at/2023-03-11\")"
+      "Bash(1 __NEW_LINE_af0b3faa5161f097__ echo \"---\" echo \"Hitting production endpoint...\" curl -s --max-time 60 \"https://basisprotocol.xyz/api/scores/usdc/at/2023-03-11\")",
+      "Bash(wc -l /home/runner/workspace/app/ops/tools/*.py)",
+      "Bash(find /home/runner/workspace/app/ops -name \"*.py\" -exec wc -l {} +)"
     ]
   }
 }
