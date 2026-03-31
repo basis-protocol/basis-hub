@@ -906,27 +906,21 @@ async def _collect_dashboard(symbol: str, url: str, disc_type: str, prefix: str)
     logger.info(f"{prefix} — dashboard collection: {url[:80]}")
 
     try:
-        # Step 1: Firecrawl JS render to get the page content
-        result = firecrawl_client.scrape_js_page(url, wait_ms=10000)
-        markdown = getattr(result, "markdown", "") or ""
-
-        if not markdown or len(markdown) < 200:
-            logger.warning(f"{prefix} — dashboard: insufficient content ({len(markdown)} chars)")
-            return None
-
-        # Step 2: Try Firecrawl JSON extraction with type-specific schema
+        # Step 1: Try Firecrawl JSON extraction with type-specific schema
         from app.services.reducto_client import get_schema_for_type
         schema, system_prompt = get_schema_for_type(disc_type)
 
         client = firecrawl_client.get_client()
         extract_result = client.scrape(
             url,
-            formats=["extract"],
+            formats=["extract", "markdown"],
             extract={"schema": schema},
-            actions=[{"type": "wait", "milliseconds": 10000}],
+            actions=[{"type": "wait", "milliseconds": 15000}],
         )
 
+        markdown = getattr(extract_result, "markdown", "") or ""
         extract_data = getattr(extract_result, "extract", None)
+        logger.info(f"{prefix} — dashboard: {len(markdown)} chars markdown, extract={'yes' if extract_data else 'no'}")
 
         if isinstance(extract_data, dict) and any(
             v for v in extract_data.values() if v is not None and v != "" and v != 0
@@ -956,8 +950,11 @@ async def _collect_dashboard(symbol: str, url: str, disc_type: str, prefix: str)
 
             return {"status": "success", "method": "firecrawl_dashboard"}
 
-        # Step 3: Fall back to regex extraction from rendered markdown
-        page_data = _extract_reserve_data_from_markdown(markdown)
+        # Step 2: Fall back to regex extraction from rendered markdown
+        if markdown and len(markdown) > 100:
+            page_data = _extract_reserve_data_from_markdown(markdown)
+        else:
+            page_data = None
         if page_data:
             _store_extraction(
                 asset_symbol=symbol,
