@@ -171,6 +171,12 @@ def _seed_cda_issuer_registry():
         "frax": "algorithmic",
         "usdy": "rwa-tokenized",
     }
+    SOURCE_URLS_MAP = {
+        "usde": [
+            {"url": "https://app.ethena.fi/dashboards/transparency", "type": "dashboard", "description": "Real-time transparency dashboard"},
+            {"url": "https://docs.ethena.fi/resources/custodian-attestations", "type": "attestation_page", "description": "Custodian attestation reports"},
+        ],
+    }
     seeded = 0
     for sid, cfg in STABLECOIN_REGISTRY.items():
         auditor = cfg.get("attestation", {}).get("auditor", "")
@@ -178,20 +184,38 @@ def _seed_cda_issuer_registry():
         method = "nav_oracle" if category == "crypto-backed" else "web_extract"
         url = cfg.get("attestation", {}).get("transparency_url")
         disc_type = DISCLOSURE_TYPE_MAP.get(sid, "fiat-reserve" if category == "fiat-backed" else "unknown")
+        src_urls = SOURCE_URLS_MAP.get(sid)
         try:
-            execute(
-                """
-                INSERT INTO cda_issuer_registry
-                    (asset_symbol, issuer_name, coingecko_id, transparency_url,
-                     collection_method, asset_category, disclosure_type)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (asset_symbol) DO UPDATE SET
-                    disclosure_type = EXCLUDED.disclosure_type,
-                    asset_category = EXCLUDED.asset_category
-                """,
-                (cfg["symbol"], cfg.get("issuer", "Unknown"), cfg.get("coingecko_id"),
-                 url, method, category, disc_type),
-            )
+            if src_urls:
+                import json as _j
+                execute(
+                    """
+                    INSERT INTO cda_issuer_registry
+                        (asset_symbol, issuer_name, coingecko_id, transparency_url,
+                         collection_method, asset_category, disclosure_type, source_urls)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (asset_symbol) DO UPDATE SET
+                        disclosure_type = EXCLUDED.disclosure_type,
+                        asset_category = EXCLUDED.asset_category,
+                        source_urls = EXCLUDED.source_urls
+                    """,
+                    (cfg["symbol"], cfg.get("issuer", "Unknown"), cfg.get("coingecko_id"),
+                     url, method, category, disc_type, _j.dumps(src_urls)),
+                )
+            else:
+                execute(
+                    """
+                    INSERT INTO cda_issuer_registry
+                        (asset_symbol, issuer_name, coingecko_id, transparency_url,
+                         collection_method, asset_category, disclosure_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (asset_symbol) DO UPDATE SET
+                        disclosure_type = EXCLUDED.disclosure_type,
+                        asset_category = EXCLUDED.asset_category
+                    """,
+                    (cfg["symbol"], cfg.get("issuer", "Unknown"), cfg.get("coingecko_id"),
+                     url, method, category, disc_type),
+                )
             seeded += 1
         except Exception as e:
             logger.warning(f"CDA seed failed for {cfg['symbol']}: {e}")
