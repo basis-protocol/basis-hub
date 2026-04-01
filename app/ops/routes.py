@@ -931,6 +931,17 @@ async def get_analytics(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/analytics/compute")
+async def compute_analytics_endpoint(request: Request):
+    _check_admin_key(request)
+    from app.ops.tools.analytics import compute_analytics
+    try:
+        return compute_analytics()
+    except Exception as e:
+        logger.error(f"Analytics computation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # Target Surfaces (for Tier 2 monitoring config)
 # =============================================================================

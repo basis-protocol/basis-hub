@@ -169,15 +169,21 @@ def _api_usage_trends() -> dict:
     }
     usage = {}
     for label, interval in periods.items():
-        row = fetch_one(
-            f"SELECT COUNT(*) as cnt FROM api_request_log WHERE created_at > NOW() - INTERVAL '{interval}'"
-        )
-        usage[label] = row["cnt"] if row else 0
+        try:
+            row = fetch_one(
+                f"SELECT COUNT(*) as cnt FROM api_request_log WHERE timestamp > NOW() - INTERVAL '{interval}'"
+            )
+            usage[label] = row["cnt"] if row else 0
+        except Exception:
+            usage[label] = 0
 
     # Unique API keys active
-    active_keys = fetch_one(
-        "SELECT COUNT(DISTINCT api_key_id) as cnt FROM api_request_log WHERE created_at > NOW() - INTERVAL '7 days' AND api_key_id IS NOT NULL"
-    )
+    try:
+        active_keys = fetch_one(
+            "SELECT COUNT(DISTINCT api_key_id) as cnt FROM api_request_log WHERE timestamp > NOW() - INTERVAL '7 days' AND api_key_id IS NOT NULL"
+        )
+    except Exception:
+        active_keys = None
 
     return {
         "requests": usage,
