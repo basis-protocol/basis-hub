@@ -12,6 +12,7 @@ import logging
 from typing import Optional
 
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
 
 from app.database import execute, fetch_all, fetch_one
 from app.indexer.backlog import get_backlog, get_backlog_detail
@@ -689,33 +690,44 @@ def register_wallet_routes(app: FastAPI) -> None:
         if not admin_key or provided != admin_key:
             raise HTTPException(status_code=403, detail="Invalid admin key")
 
-        from app.indexer.solana_edges import discover_drift_depositors, run_solana_edge_builder
-        import httpx as _httpx
+        try:
+            from app.indexer.solana_edges import discover_drift_depositors, run_solana_edge_builder
+            import httpx as _httpx
 
-        async with _httpx.AsyncClient() as client:
-            depositors = await discover_drift_depositors(client)
+            async with _httpx.AsyncClient() as client:
+                depositors = await discover_drift_depositors(client)
 
-        if not depositors:
-            return {"status": "no depositors found", "wallets": 0}
+            if not depositors:
+                return {"status": "no depositors found", "wallets": 0}
 
-        # Register wallets
-        for addr in depositors:
-            execute(
-                """
-                INSERT INTO wallet_graph.wallets (address, chain, source, label, created_at, updated_at)
-                VALUES (%s, 'solana', 'drift-discovery', 'drift-depositor', NOW(), NOW())
-                ON CONFLICT (address, chain) DO NOTHING
-                """,
-                (addr,),
+            # Register wallets
+            for addr in depositors:
+                execute(
+                    """
+                    INSERT INTO wallet_graph.wallets (address, chain, source, label, created_at, updated_at)
+                    VALUES (%s, 'solana', 'drift-discovery', 'drift-depositor', NOW(), NOW())
+                    ON CONFLICT (address, chain) DO NOTHING
+                    """,
+                    (addr,),
+                )
+
+            # Build edges
+            result = await run_solana_edge_builder(depositors, max_pages_per_wallet=3)
+
+            return {
+                "depositors_discovered": len(depositors),
+                "edge_build_result": result,
+            }
+        except Exception as _e:
+            import traceback
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": str(_e),
+                    "type": type(_e).__name__,
+                    "traceback": traceback.format_exc(),
+                },
             )
-
-        # Build edges
-        result = await run_solana_edge_builder(depositors, max_pages_per_wallet=3)
-
-        return {
-            "depositors_discovered": len(depositors),
-            "edge_build_result": result,
-        }
 
     @app.post("/api/admin/merge-wallets")
     async def admin_merge_wallets(
