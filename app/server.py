@@ -3392,33 +3392,6 @@ async def psi_scores():
     }
 
 
-@app.get("/api/psi/scores/{slug}")
-async def psi_score_detail(slug: str):
-    """Detailed PSI breakdown for one protocol."""
-    row = fetch_one("""
-        SELECT id, protocol_slug, protocol_name, overall_score, grade,
-               category_scores, component_scores, raw_values,
-               formula_version, computed_at
-        FROM psi_scores
-        WHERE protocol_slug = %s
-        ORDER BY computed_at DESC
-        LIMIT 1
-    """, (slug,))
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in PSI scores")
-    return {
-        "protocol_slug": row["protocol_slug"],
-        "protocol_name": row["protocol_name"],
-        "score": float(row["overall_score"]) if row.get("overall_score") else None,
-        "grade": row["grade"],
-        "category_scores": row.get("category_scores"),
-        "component_scores": row.get("component_scores"),
-        "raw_values": row.get("raw_values"),
-        "formula_version": row.get("formula_version"),
-        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
-    }
-
-
 @app.get("/api/psi/definition")
 async def psi_definition():
     """Return the full PSI v0.1 index definition."""
@@ -3583,6 +3556,33 @@ async def verify_psi_score(slug: str):
             "stored_inputs_hash": stored_hash,
             "recomputed_inputs_hash": recomputed_hash,
         },
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+    }
+
+
+@app.get("/api/psi/scores/{slug}")
+async def psi_score_detail(slug: str):
+    """Detailed PSI breakdown for one protocol."""
+    row = fetch_one("""
+        SELECT id, protocol_slug, protocol_name, overall_score, grade,
+               category_scores, component_scores, raw_values,
+               formula_version, computed_at
+        FROM psi_scores
+        WHERE protocol_slug = %s
+        ORDER BY computed_at DESC
+        LIMIT 1
+    """, (slug,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in PSI scores")
+    return {
+        "protocol_slug": row["protocol_slug"],
+        "protocol_name": row["protocol_name"],
+        "score": float(row["overall_score"]) if row.get("overall_score") else None,
+        "grade": row["grade"],
+        "category_scores": row.get("category_scores"),
+        "component_scores": row.get("component_scores"),
+        "raw_values": row.get("raw_values"),
+        "formula_version": row.get("formula_version"),
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
     }
 
