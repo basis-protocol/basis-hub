@@ -31,7 +31,7 @@ from app.scoring import (
     SII_V1_WEIGHTS, STRUCTURAL_SUBWEIGHTS, FORMULA_VERSION,
     score_to_grade, COMPONENT_NORMALIZATIONS,
 )
-from app.specs.methodology_versions import METHODOLOGY_VERSIONS, WALLET_METHODOLOGY_VERSIONS
+from app.specs.methodology_versions import METHODOLOGY_VERSIONS, WALLET_METHODOLOGY_VERSIONS, PSI_METHODOLOGY_VERSIONS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1114,6 +1114,7 @@ async def get_methodology_versions():
     """Get methodology version history, governance rules, and wallet scoring versions."""
     return {
         "sii": METHODOLOGY_VERSIONS,
+        "psi": PSI_METHODOLOGY_VERSIONS,
         "wallet": WALLET_METHODOLOGY_VERSIONS,
     }
 
@@ -3463,19 +3464,25 @@ async def psi_scores():
             "formula_version": row.get("formula_version"),
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         })
+    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
     return {
         "protocols": results,
         "count": len(results),
         "index": "psi",
-        "version": "v0.1.0",
+        "version": PSI_V01_DEFINITION["version"],
+        "methodology_version": f"psi-{PSI_V01_DEFINITION['version']}",
     }
 
 
 @app.get("/api/psi/definition")
 async def psi_definition():
-    """Return the full PSI v0.1 index definition."""
+    """Return the full PSI index definition with methodology changelog."""
     from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
-    return PSI_V01_DEFINITION
+    return {
+        **PSI_V01_DEFINITION,
+        "methodology_version": f"psi-{PSI_V01_DEFINITION['version']}",
+        "changelog": PSI_METHODOLOGY_VERSIONS["versions"],
+    }
 
 
 # =============================================================================
@@ -3675,6 +3682,32 @@ async def psi_score_detail(slug: str):
         "formula_version": row.get("formula_version"),
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
     }
+
+
+# =============================================================================
+# Governance History & Market History — temporal security signals
+# =============================================================================
+
+@app.get("/api/protocols/{slug}/governance-history")
+async def protocol_governance_history(slug: str):
+    """Governance config snapshot history with change detection events."""
+    try:
+        from app.collectors.governance_detector import get_governance_history
+        return get_governance_history(slug)
+    except Exception as e:
+        logger.error(f"governance-history failed for {slug}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/protocols/{slug}/market-history")
+async def protocol_market_history(slug: str):
+    """Market listing snapshot history with diffs and velocity events."""
+    try:
+        from app.collectors.collateral_coverage import get_market_history
+        return get_market_history(slug)
+    except Exception as e:
+        logger.error(f"market-history failed for {slug}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

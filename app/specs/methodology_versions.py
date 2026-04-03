@@ -1,5 +1,5 @@
 """
-Methodology version registry for SII and Wallet risk scoring.
+Methodology version registry for SII, PSI, and Wallet risk scoring.
 Provides version metadata, governance rules, and changelog.
 """
 
@@ -18,6 +18,50 @@ METHODOLOGY_VERSIONS = {
         "change_protocol": "Announced 30 days in advance. Versioned. Timestamped. Retroactively reproducible.",
         "comment_period_days": 30,
         "deprecation_notice_days": 90
+    }
+}
+
+PSI_METHODOLOGY_VERSIONS = {
+    "current": "psi-v0.2.0",
+    "versions": [
+        {
+            "version": "psi-v0.1.0",
+            "released": "2026-03-15",
+            "status": "superseded",
+            "components": 24,
+            "categories": 6,
+            "security_components": ["audit_count", "audit_recency_days", "protocol_admin_key_risk"],
+            "security_weights": {"audit_count": 0.40, "audit_recency_days": 0.30, "protocol_admin_key_risk": 0.30},
+            "formula": "PSI = 0.25*BalanceSheet + 0.20*Revenue + 0.20*Liquidity + 0.15*Security + 0.10*Governance + 0.10*TokenHealth",
+            "changelog": "Initial PSI release. 24 components across 6 categories scoring 13 DeFi protocols."
+        },
+        {
+            "version": "psi-v0.2.0",
+            "released": "2026-04-03",
+            "status": "current",
+            "components": 27,
+            "categories": 6,
+            "security_components": [
+                "audit_count", "audit_recency_days", "protocol_admin_key_risk",
+                "governance_stability", "collateral_coverage_ratio", "market_listing_velocity"
+            ],
+            "security_weights": {
+                "audit_count": 0.25, "audit_recency_days": 0.15, "protocol_admin_key_risk": 0.15,
+                "governance_stability": 0.15, "collateral_coverage_ratio": 0.15, "market_listing_velocity": 0.15
+            },
+            "formula": "PSI = 0.25*BalanceSheet + 0.20*Revenue + 0.20*Liquidity + 0.15*Security + 0.10*Governance + 0.10*TokenHealth",
+            "changelog": (
+                "V0.2.0: Added governance_stability, collateral_coverage_ratio, market_listing_velocity "
+                "to Security category. Motivated by Drift Protocol exploit analysis (April 1, 2026). "
+                "Security category expanded from 3 to 6 components with rebalanced weights. "
+                "Category-level weights unchanged. 27 total components (was 24)."
+            )
+        }
+    ],
+    "governance": {
+        "change_protocol": "Versioned. Timestamped. Prior versions reproducible via temporal reconstruction.",
+        "comment_period_days": 7,
+        "deprecation_notice_days": 30
     }
 }
 

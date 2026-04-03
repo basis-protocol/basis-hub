@@ -1,5 +1,5 @@
 """
-PSI v0.1.0 — Protocol Solvency Index
+PSI v0.2.0 — Protocol Solvency Index
 ======================================
 Measures financial health and operational resilience of DeFi protocols.
 Uses the same scoring engine as SII with different categories, weights,
@@ -8,7 +8,7 @@ components, and data sources.
 
 PSI_V01_DEFINITION = {
     "index_id": "psi",
-    "version": "v0.1.0",
+    "version": "v0.2.0",
     "name": "Protocol Solvency Index",
     "description": "Measures financial health and operational resilience of DeFi protocols",
     "entity_type": "protocol",
@@ -122,23 +122,44 @@ PSI_V01_DEFINITION = {
         "audit_count": {
             "name": "Number of Security Audits",
             "category": "security",
-            "weight": 0.40,
+            "weight": 0.25,
             "normalization": {"function": "log", "params": {"thresholds": {1: 30, 2: 50, 3: 70, 5: 85, 10: 100}}},
             "data_source": "defillama"
         },
         "audit_recency_days": {
             "name": "Days Since Last Audit",
             "category": "security",
-            "weight": 0.30,
+            "weight": 0.15,
             "normalization": {"function": "inverse_linear", "params": {"perfect": 0, "threshold": 730}},
             "data_source": "defillama"
         },
         "protocol_admin_key_risk": {
             "name": "Admin Key Risk Assessment",
             "category": "security",
-            "weight": 0.30,
+            "weight": 0.15,
             "normalization": {"function": "direct", "params": {}},
             "data_source": "config"
+        },
+        "governance_stability": {
+            "name": "Governance Config Stability",
+            "category": "security",
+            "weight": 0.15,
+            "normalization": {"function": "direct", "params": {}},
+            "data_source": "governance_detector"
+        },
+        "collateral_coverage_ratio": {
+            "name": "Collateral Coverage Ratio",
+            "category": "security",
+            "weight": 0.15,
+            "normalization": {"function": "direct", "params": {}},
+            "data_source": "collateral_coverage"
+        },
+        "market_listing_velocity": {
+            "name": "Market Listing Velocity",
+            "category": "security",
+            "weight": 0.15,
+            "normalization": {"function": "direct", "params": {}},
+            "data_source": "market_snapshots"
         },
         "governance_token_holders": {
             "name": "Governance Token Holder Count",

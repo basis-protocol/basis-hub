@@ -606,6 +606,40 @@ def score_protocol(slug):
         # Non-EVM protocols without Solana program ID — use static score
         raw_values["protocol_admin_key_risk"] = _PROTOCOL_ADMIN_SCORES[slug]
 
+    # Governance stability — temporal signal from config change detection
+    try:
+        from app.collectors.governance_detector import compute_governance_stability
+        raw_values["governance_stability"] = compute_governance_stability(slug)
+    except Exception as e:
+        logger.debug(f"governance_stability unavailable for {slug}: {e}")
+
+    # Collateral coverage ratio — pre-computed by collect_coverage_and_markets()
+    try:
+        from app.collectors.collateral_coverage import normalize_coverage_ratio
+        coverage_row = fetch_one("""
+            SELECT collateral_coverage_ratio FROM (
+                SELECT protocol_slug,
+                    SUM(CASE WHEN is_sii_scored THEN tvl_usd ELSE 0 END) /
+                    NULLIF(SUM(tvl_usd), 0) * 100 AS collateral_coverage_ratio
+                FROM protocol_collateral_exposure
+                WHERE protocol_slug = %s AND snapshot_date = CURRENT_DATE
+                GROUP BY protocol_slug
+            ) sub
+        """, (slug,))
+        if coverage_row and coverage_row["collateral_coverage_ratio"] is not None:
+            raw_values["collateral_coverage_ratio"] = normalize_coverage_ratio(
+                float(coverage_row["collateral_coverage_ratio"])
+            )
+    except Exception as e:
+        logger.debug(f"collateral_coverage_ratio unavailable for {slug}: {e}")
+
+    # Market listing velocity — pre-computed from market snapshots
+    try:
+        from app.collectors.collateral_coverage import compute_market_listing_velocity
+        raw_values["market_listing_velocity"] = compute_market_listing_velocity(slug)
+    except Exception as e:
+        logger.debug(f"market_listing_velocity unavailable for {slug}: {e}")
+
     result = score_entity(PSI_V01_DEFINITION, raw_values)
     result["protocol_slug"] = slug
     result["protocol_name"] = protocol_data.get("name", slug)
@@ -1339,6 +1373,19 @@ def promote_eligible_protocols():
 
 def run_psi_scoring():
     """Score all target protocols and promoted backlog protocols."""
+    # Pre-scoring: capture governance snapshots and collateral/market data
+    try:
+        from app.collectors.governance_detector import capture_all_governance_snapshots
+        capture_all_governance_snapshots()
+    except Exception as e:
+        logger.warning(f"Governance snapshot capture failed: {e}")
+
+    try:
+        from app.collectors.collateral_coverage import collect_coverage_and_markets
+        collect_coverage_and_markets()
+    except Exception as e:
+        logger.warning(f"Coverage/market collection failed: {e}")
+
     results = []
     scoring_protocols = get_scoring_protocols()
     for slug in scoring_protocols:
