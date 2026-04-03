@@ -119,11 +119,16 @@ def run(get_conn):
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(f"""
-                        SELECT setval(pg_get_serial_sequence('{table}', 'id'),
-                                      COALESCE(MAX(id), 1))
-                        FROM {table}
-                    """)
+                    cur.execute(
+                        pg_sql.SQL("""
+                            SELECT setval(pg_get_serial_sequence({table_lit}, 'id'),
+                                          COALESCE(MAX(id), 1))
+                            FROM {table_id}
+                        """).format(
+                            table_lit=pg_sql.Literal(table),
+                            table_id=pg_sql.Identifier(table),
+                        )
+                    )
         except Exception:
             pass
 
