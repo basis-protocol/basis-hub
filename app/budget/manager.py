@@ -37,6 +37,20 @@ class ApiBudgetManager:
         "wallet_expansion": "wallet_expansion_calls_used",
     }
 
+    _STARTED_COL = {
+        "sii": "sii_started_at",
+        "psi": "psi_started_at",
+        "wallet_refresh": "wallet_refresh_started_at",
+        "wallet_expansion": "wallet_expansion_started_at",
+    }
+
+    _COMPLETED_COL = {
+        "sii": "sii_completed_at",
+        "psi": "psi_completed_at",
+        "wallet_refresh": "wallet_refresh_completed_at",
+        "wallet_expansion": "wallet_expansion_completed_at",
+    }
+
     def get_or_create_today(self, provider="etherscan") -> dict:
         """
         Returns today's budget row. Creates if not exists.
@@ -138,7 +152,7 @@ class ApiBudgetManager:
         # Ensure row exists
         self.get_or_create_today(provider)
 
-        col = f"{process}_started_at"
+        col = self._STARTED_COL[process]
         execute(
             f"""
             UPDATE ops.api_budget
@@ -153,7 +167,7 @@ class ApiBudgetManager:
         if process not in self._CALLS_COL:
             raise ValueError(f"Unknown process: {process}")
 
-        col = f"{process}_completed_at"
+        col = self._COMPLETED_COL[process]
         execute(
             f"""
             UPDATE ops.api_budget
