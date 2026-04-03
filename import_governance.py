@@ -117,9 +117,13 @@ def import_from_sql(sql_file: str):
             
             logger.info(f"  Trying row-by-row insert for {new_table}...")
             success = 0
+            from psycopg2 import sql as pgsql
             cols = [c.strip() for c in col_list.split(',')]
-            placeholders = ', '.join(['%s'] * len(cols))
-            insert_sql = f"INSERT INTO {new_table} ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+            insert_sql = pgsql.SQL("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING").format(
+                pgsql.Identifier(new_table),
+                pgsql.SQL(', ').join(pgsql.Identifier(c) for c in cols),
+                pgsql.SQL(', ').join(pgsql.Placeholder() for _ in cols),
+            )
             
             for row in rows:
                 fields = row.split('\t')
