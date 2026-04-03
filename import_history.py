@@ -22,6 +22,7 @@ import sys
 import argparse
 import re
 import psycopg2
+from psycopg2 import sql
 from datetime import datetime
 
 
@@ -35,7 +36,7 @@ def get_connection():
 
 def count_rows(conn, table):
     cur = conn.cursor()
-    cur.execute(f"SELECT COUNT(*) FROM {table}")
+    cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table)))
     count = cur.fetchone()[0]
     cur.close()
     return count
