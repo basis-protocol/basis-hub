@@ -22,6 +22,126 @@ logger = logging.getLogger(__name__)
 
 DEFILLAMA_BASE = "https://api.llama.fi"
 
+# =============================================================================
+# Solana program upgrade authority check via Helius RPC
+# =============================================================================
+
+HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
+_HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else ""
+
+# Solana program IDs for PSI-scored protocols
+SOLANA_PROGRAM_IDS = {
+    "drift": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
+    "jupiter-perpetual-exchange": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+    "raydium": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+}
+
+# Cache: {program_id: (timestamp, admin_risk_score)}
+_solana_authority_cache: dict[str, tuple[float, int]] = {}
+_AUTHORITY_CACHE_TTL = 86400  # 24 hours
+
+
+def get_solana_program_authority(program_id: str) -> dict | None:
+    """Check a Solana program's upgrade authority via Helius getAccountInfo.
+
+    Returns dict with 'upgradeable' (bool) and 'authority' (str or None),
+    or None if the call fails.
+
+    Solana BPF Upgradeable Loader programs have a programData account
+    that contains the upgrade authority. If authority is null, the program
+    is immutable.
+    """
+    if not _HELIUS_RPC_URL:
+        return None
+
+    # Check cache
+    cached = _solana_authority_cache.get(program_id)
+    if cached and (time.time() - cached[0]) < _AUTHORITY_CACHE_TTL:
+        return cached[1]
+
+    try:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getAccountInfo",
+            "params": [program_id, {"encoding": "jsonParsed"}],
+        }
+        resp = requests.post(_HELIUS_RPC_URL, json=payload, timeout=15)
+        data = resp.json()
+        account = data.get("result", {}).get("value")
+        if not account:
+            return None
+
+        parsed = account.get("data", {})
+        if isinstance(parsed, dict):
+            parsed_info = parsed.get("parsed", {})
+            info = parsed_info.get("info", {})
+
+            # BPF Upgradeable Loader: the program account points to programData
+            program_data_addr = info.get("programData")
+            if program_data_addr:
+                # Fetch the programData account to get the authority
+                pd_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "getAccountInfo",
+                    "params": [program_data_addr, {"encoding": "jsonParsed"}],
+                }
+                pd_resp = requests.post(_HELIUS_RPC_URL, json=pd_payload, timeout=15)
+                pd_data = pd_resp.json()
+                pd_account = pd_data.get("result", {}).get("value")
+                if pd_account:
+                    pd_parsed = pd_account.get("data", {})
+                    if isinstance(pd_parsed, dict):
+                        pd_info = pd_parsed.get("parsed", {}).get("info", {})
+                        authority = pd_info.get("authority")
+                        result = {
+                            "upgradeable": authority is not None,
+                            "authority": authority,
+                        }
+                        _solana_authority_cache[program_id] = (time.time(), result)
+                        return result
+
+            # If no programData pointer, may be a native or non-upgradeable program
+            result = {"upgradeable": False, "authority": None}
+            _solana_authority_cache[program_id] = (time.time(), result)
+            return result
+
+    except Exception as e:
+        logger.warning(f"Helius getAccountInfo failed for {program_id}: {e}")
+        return None
+
+
+def get_solana_admin_risk_score(slug: str) -> int | None:
+    """Get admin risk score for a Solana protocol based on on-chain upgrade authority.
+
+    Returns an integer score (0-100) or None if lookup fails.
+    - Immutable (no upgrade authority): 90 (very safe)
+    - Upgradeable with known multisig/DAO: 55-65
+    - Upgradeable with single authority: 40-50
+    """
+    program_id = SOLANA_PROGRAM_IDS.get(slug)
+    if not program_id:
+        return None
+
+    authority_info = get_solana_program_authority(program_id)
+    if authority_info is None:
+        return None  # API unavailable, caller should fall back to static
+
+    if not authority_info["upgradeable"]:
+        # Program is immutable — very safe
+        return 90
+
+    # Program is upgradeable — score based on authority type
+    # Without further on-chain analysis of the authority account (multisig vs EOA),
+    # use a moderate score. Protocols with active governance get a small bump.
+    if slug == "jupiter-perpetual-exchange":
+        return 55  # JUP DAO active, but program still upgradeable
+    elif slug == "drift":
+        return 50  # Upgradeable, governance active
+    else:
+        return 45  # Upgradeable, unknown authority type
+
 # Known stablecoin symbols for treasury matching (case-insensitive)
 KNOWN_STABLECOIN_SYMBOLS = {
     "USDC", "USDT", "DAI", "FRAX", "PYUSD", "TUSD", "USDE", "USDD",
@@ -307,12 +427,10 @@ def extract_raw_values(protocol_data, fees_data, treasury_data=None):
     elif audit_links:
         raw["audit_count"] = len(audit_links)
 
-    # Audit recency — estimate from audit_links or audit_note
-    # DeFiLlama doesn't always include timestamps, so use protocol launch date as fallback
-    if audit_links:
-        # Many audit links contain dates in the URL or name
-        # Conservative estimate: if audits exist, assume most recent was within 365 days
-        # unless the protocol is very old
+    # Audit recency — DeFiLlama's 'audits' field is only a count (e.g. 2), and
+    # 'audit_links' are URLs to audit pages without parseable dates. The API does
+    # not expose individual audit timestamps, so we use conservative defaults.
+    if audit_links or (audits and int(audits) > 0):
         raw["audit_recency_days"] = 365  # conservative default if audits exist
     else:
         raw["audit_recency_days"] = 730  # no audits known
@@ -462,8 +580,17 @@ def score_protocol(slug):
             # Map protocols to admin risk based on known governance structure
             admin_score = _PROTOCOL_ADMIN_SCORES.get(slug, 50)
         raw_values["protocol_admin_key_risk"] = admin_score
+    elif slug in SOLANA_PROGRAM_IDS:
+        # Solana protocols — check on-chain upgrade authority via Helius
+        onchain_score = get_solana_admin_risk_score(slug)
+        if onchain_score is not None:
+            raw_values["protocol_admin_key_risk"] = onchain_score
+            logger.info(f"PSI {slug}: admin risk from on-chain authority = {onchain_score}")
+        else:
+            # Helius unavailable — fall back to static score
+            raw_values["protocol_admin_key_risk"] = _PROTOCOL_ADMIN_SCORES.get(slug, 50)
     elif slug in _PROTOCOL_ADMIN_SCORES:
-        # Non-EVM protocols (e.g. Solana) — use static score when no contract to analyze
+        # Non-EVM protocols without Solana program ID — use static score
         raw_values["protocol_admin_key_risk"] = _PROTOCOL_ADMIN_SCORES[slug]
 
     result = score_entity(PSI_V01_DEFINITION, raw_values)
@@ -1093,7 +1220,15 @@ def enrich_protocol_backlog():
             if proposal_count is not None:
                 raw_values["governance_proposals_90d"] = proposal_count
 
-        raw_values["protocol_admin_key_risk"] = _PROTOCOL_ADMIN_SCORES.get(slug, 50)
+        # Admin risk: try on-chain Solana authority, then static fallback
+        if slug in SOLANA_PROGRAM_IDS:
+            onchain_score = get_solana_admin_risk_score(slug)
+            if onchain_score is not None:
+                raw_values["protocol_admin_key_risk"] = onchain_score
+            else:
+                raw_values["protocol_admin_key_risk"] = _PROTOCOL_ADMIN_SCORES.get(slug, 50)
+        else:
+            raw_values["protocol_admin_key_risk"] = _PROTOCOL_ADMIN_SCORES.get(slug, 50)
 
         # Count available components
         components_total = len(PSI_V01_DEFINITION["components"])
