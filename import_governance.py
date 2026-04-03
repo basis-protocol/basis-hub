@@ -13,6 +13,7 @@ import sys
 import re
 import logging
 import argparse
+from psycopg2 import sql
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -158,11 +159,14 @@ def fix_sequences():
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(f"""
-                        SELECT setval(pg_get_serial_sequence('{table}', 'id'),
-                                      COALESCE(MAX(id), 1))
-                        FROM {table}
-                    """)
+                    cur.execute(
+                        sql.SQL("""
+                            SELECT setval(pg_get_serial_sequence(%s, 'id'),
+                                          COALESCE(MAX(id), 1))
+                            FROM {table}
+                        """).format(table=sql.Identifier(table)),
+                        (table,)
+                    )
         except Exception:
             pass
 
