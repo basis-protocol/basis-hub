@@ -24,6 +24,7 @@ def init_pool(database_url: Optional[str] = None, min_conn: int = 2, max_conn: i
     if not url:
         logger.error("DATABASE_URL not set — database unavailable")
         return
+    logger.info(f"Database URL prefix: {url[:50]}...")
     try:
         # TCP keepalives: prevent the OS from silently dropping idle connections
         # after PostgreSQL's idle-session timeout. Without this, connections that

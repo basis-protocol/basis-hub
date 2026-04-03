@@ -301,6 +301,34 @@ async def startup():
         logger.info("Cleared stale temporal reconstruction cache entries")
     except Exception:
         pass
+    # Ensure historical_protocol_data table exists on this database
+    try:
+        from app.database import execute as _exec2, fetch_one as _fo
+        _exec2("""
+            CREATE TABLE IF NOT EXISTS historical_protocol_data (
+                id SERIAL PRIMARY KEY,
+                protocol_slug VARCHAR(64) NOT NULL,
+                record_date DATE NOT NULL,
+                tvl NUMERIC,
+                fees_24h NUMERIC,
+                revenue_24h NUMERIC,
+                token_price NUMERIC,
+                token_mcap NUMERIC,
+                token_volume NUMERIC,
+                chain_count INTEGER,
+                data_source VARCHAR(32) DEFAULT 'defillama+coingecko',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(protocol_slug, record_date)
+            )
+        """)
+        _exec2(
+            "CREATE INDEX IF NOT EXISTS idx_hist_protocol_slug_date "
+            "ON historical_protocol_data(protocol_slug, record_date)"
+        )
+        count = _fo("SELECT COUNT(*) as cnt FROM historical_protocol_data")
+        logger.info(f"historical_protocol_data: {count['cnt']} rows")
+    except Exception as e:
+        logger.warning(f"historical_protocol_data check failed: {e}")
     # Register verification agent routes
     try:
         from app.agent.api import register_agent_routes
