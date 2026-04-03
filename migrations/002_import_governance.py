@@ -7,6 +7,7 @@ import os
 import re
 import logging
 from io import StringIO
+from psycopg2 import sql as pg_sql
 
 logger = logging.getLogger("migration-002")
 
@@ -88,8 +89,13 @@ def run(get_conn):
             logger.error(f"  {new_table} COPY failed: {e}, trying row-by-row...")
             success = 0
             cols = [c.strip() for c in col_list.split(',')]
-            placeholders = ', '.join(['%s'] * len(cols))
-            insert_sql = f"INSERT INTO {new_table} ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+            insert_sql = pg_sql.SQL(
+                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING"
+            ).format(
+                pg_sql.Identifier(new_table),
+                pg_sql.SQL(', ').join(map(pg_sql.Identifier, cols)),
+                pg_sql.SQL(', ').join([pg_sql.Placeholder()] * len(cols))
+            )
 
             for row in rows:
                 fields = row.split('\t')
