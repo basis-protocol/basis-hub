@@ -379,6 +379,13 @@ async def startup():
         logger.info("Operations Hub routes registered")
     except Exception as e:
         logger.warning(f"Operations Hub not available: {e}")
+    # Register Squads Guard routes (webhook + scoring for Solana multisigs)
+    try:
+        from squads_guard.router import router as squads_router
+        app.include_router(squads_router, prefix="/api/squads")
+        logger.info("Squads Guard routes registered at /api/squads")
+    except Exception as e:
+        logger.warning(f"Squads Guard not available: {e}")
     # MCP HTTP endpoint
     try:
         from app.mcp_server import mcp as mcp_server
