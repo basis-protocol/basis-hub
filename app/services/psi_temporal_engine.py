@@ -32,7 +32,7 @@ def _get_historical_data(slug: str, target: date) -> dict | None:
         SELECT * FROM historical_protocol_data
         WHERE protocol_slug = %s AND record_date <= %s
         ORDER BY record_date DESC LIMIT 1
-    """, (slug, target.isoformat()))
+    """, (slug, target))
     return dict(row) if row else None
 
 
@@ -43,7 +43,7 @@ def _get_tvl_series(slug: str, target: date, lookback_days: int = 30) -> list[fl
         SELECT tvl FROM historical_protocol_data
         WHERE protocol_slug = %s AND record_date BETWEEN %s AND %s AND tvl IS NOT NULL
         ORDER BY record_date ASC
-    """, (slug, from_date.isoformat(), target.isoformat()))
+    """, (slug, from_date, target))
     return [float(r["tvl"]) for r in rows if r.get("tvl")]
 
 
@@ -54,7 +54,7 @@ def _get_price_series(slug: str, target: date, lookback_days: int = 30) -> list[
         SELECT token_price FROM historical_protocol_data
         WHERE protocol_slug = %s AND record_date BETWEEN %s AND %s AND token_price IS NOT NULL
         ORDER BY record_date ASC
-    """, (slug, from_date.isoformat(), target.isoformat()))
+    """, (slug, from_date, target))
     return [float(r["token_price"]) for r in rows if r.get("token_price")]
 
 

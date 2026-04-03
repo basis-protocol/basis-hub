@@ -3404,7 +3404,7 @@ async def psi_definition():
 # =============================================================================
 
 @app.get("/api/psi/scores/{slug}/at/{date_str}")
-def psi_score_at_date(slug: str, date_str: str):
+async def psi_score_at_date(slug: str, date_str: str):
     """Reconstruct PSI score for a protocol at a historical date."""
     from app.services.psi_temporal_engine import reconstruct_psi_score
     try:
@@ -3415,7 +3415,7 @@ def psi_score_at_date(slug: str, date_str: str):
 
 
 @app.get("/api/psi/scores/{slug}/range")
-def psi_score_range(
+async def psi_score_range(
     slug: str,
     start: Optional[str] = Query(default=None),
     end: Optional[str] = Query(default=None),
@@ -3437,7 +3437,7 @@ def psi_score_range(
 
 
 @app.get("/api/psi/scores/{slug}/backtest/{event}")
-def psi_backtest_event(slug: str, event: str):
+async def psi_backtest_event(slug: str, event: str):
     """Reconstruct PSI scores during a named crisis event."""
     from app.services.psi_temporal_engine import reconstruct_psi_range
     from app.services.temporal_engine import CRISIS_EVENTS
