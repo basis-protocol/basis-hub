@@ -164,11 +164,12 @@ def run_worker_loop():
         # Wallet expansion — daily gate (seed new addresses from under-covered stablecoins)
         hours_since_wallet_expansion = (time.time() - last_wallet_expansion_at) / 3600
         if hours_since_wallet_expansion >= 24:
+            last_wallet_expansion_at = time.time()  # Set unconditionally — prevent retry storms on failure
+
             try:
                 from app.indexer.expander import run_wallet_expansion
                 logger.info("Running wallet expansion pipeline...")
                 expansion_result = asyncio.run(run_wallet_expansion(max_etherscan_calls=50))
-                last_wallet_expansion_at = time.time()
                 logger.info(
                     f"Wallet expansion complete: {expansion_result.get('new_wallets_seeded', 0)} seeded, "
                     f"{expansion_result.get('etherscan_calls_used', 0)} Etherscan calls used"
