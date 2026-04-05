@@ -1,0 +1,26 @@
+Fix three pipelines that exist as code but are never called in the worker loop. All three follow the same pattern already used for PSI expansion in main.py — a daily gate with a timestamp tracker.
+
+1. Wire wallet expander into the worker loop
+
+In main.py's run_worker_loop() function, add a daily-gated call to the wallet expander. Follow the exact same pattern as last_expansion_at for PSI expansion.
+
+Initialize last_wallet_expansion_at = 0 at the top of the loop with the other timestamps.
+
+Then after the PSI expansion block, add a wallet expansion block on a 24-hour gate. Import from app.indexer.expander — check the file first to confirm the actual function name (it might be run_expander or run_expansion or take parameters). If it's async, wrap in asyncio.run(). If sync, call directly. Log the result. Set last_wallet_expansion_at = time.time() on success.
+
+2. Wire wallet profile builder into the worker loop
+
+Check app/indexer/profiles.py for the bulk builder function — it should be build_unified_profile() or similar. Add a daily-gated batch call after the wallet expander. Piggyback on the same 24-hour gate so new wallets get profiled in the same cycle.
+
+If there's no batch function and only build_unified_profile(address) for single wallets, create a simple batch wrapper that queries all scored wallets without a profile and calls it for each one. Limit to 500 per cycle to avoid timeouts.
+
+3. Fix discovery signal deduplication
+
+Check app/discovery.py — specifically run_discovery_cycle(). The issue: all 117 signals in prod are type concentration_topology, all from March 31, and the same signal fired 3 times in 90 minutes. Two problems to investigate:
+
+- The deduplication logic might be preventing ALL new signals because it sees existing signals of the same type and thinks they're duplicates. Check the novelty/dedup logic — is it comparing by type only, or by type + entity + value?
+- The novelty threshold might be too high after the initial run. If it's checking "has this changed since last detection?" but the topology hasn't changed enough, it'll stay silent forever.
+
+Look at the dedup/novelty code and tell me what you find before changing it. I want to understand the logic before you tune it.
+
+Important: Only modify main.py for fixes 1 and 2. Don't touch worker.py — the loop lives in main.py. Don't restart yet — show me the diff first.
