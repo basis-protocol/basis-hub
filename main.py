@@ -104,6 +104,7 @@ def run_worker_loop():
     cda_interval_hours = int(os.environ.get("CDA_COLLECTION_INTERVAL_HOURS", "24"))
     last_cda_at = 0  # Run CDA on first cycle
     last_expansion_at = 0  # Run PSI expansion on first cycle
+    last_wallet_expansion_at = 0  # Run wallet expansion on first cycle
     edge_cycle_counter = 0
 
     while True:
@@ -159,6 +160,33 @@ def run_worker_loop():
                 )
             except Exception as e:
                 logger.warning(f"PSI expansion pipeline failed: {e}")
+
+        # Wallet expansion — daily gate (seed new addresses from under-covered stablecoins)
+        hours_since_wallet_expansion = (time.time() - last_wallet_expansion_at) / 3600
+        if hours_since_wallet_expansion >= 24:
+            try:
+                from app.indexer.expander import run_wallet_expansion
+                logger.info("Running wallet expansion pipeline...")
+                expansion_result = asyncio.run(run_wallet_expansion(max_etherscan_calls=50))
+                last_wallet_expansion_at = time.time()
+                logger.info(
+                    f"Wallet expansion complete: {expansion_result.get('new_wallets_seeded', 0)} seeded, "
+                    f"{expansion_result.get('etherscan_calls_used', 0)} Etherscan calls used"
+                )
+            except Exception as e:
+                logger.warning(f"Wallet expansion failed: {e}")
+
+            # Profile rebuild — piggyback on same daily gate so new wallets get profiled
+            try:
+                from app.indexer.profiles import rebuild_all_profiles
+                logger.info("Rebuilding wallet profiles...")
+                profile_result = rebuild_all_profiles()
+                logger.info(
+                    f"Profile rebuild complete: {profile_result.get('built', 0)} built, "
+                    f"{profile_result.get('errors', 0)} errors out of {profile_result.get('total', 0)} addresses"
+                )
+            except Exception as e:
+                logger.warning(f"Profile rebuild failed: {e}")
 
         # Verification agent cycle — runs after every scoring cycle
         try:

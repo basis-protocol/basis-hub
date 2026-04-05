@@ -151,8 +151,24 @@ def run_graph_detectors() -> List[Dict]:
 def store_signals(signals: List[Dict]):
     """Persist signals to discovery_signals table for lifecycle tracking."""
     stored = 0
+    skipped = 0
     for s in signals:
         try:
+            existing = fetch_all("""
+                SELECT id FROM discovery_signals
+                WHERE signal_type = %s
+                  AND domain = %s
+                  AND magnitude = %s
+                  AND detected_at > NOW() - INTERVAL '24 hours'
+                LIMIT 1
+            """, (
+                s.get("signal_type"),
+                s.get("domain"),
+                s.get("magnitude"),
+            ))
+            if existing:
+                skipped += 1
+                continue
             execute("""
                 INSERT INTO discovery_signals
                 (signal_type, domain, title, description, entities,
@@ -175,6 +191,8 @@ def store_signals(signals: List[Dict]):
             stored += 1
         except Exception as e:
             logger.warning(f"Failed to store signal: {e}")
+    if skipped:
+        logger.info(f"Skipped {skipped} duplicate signal(s) already stored in the last 24h")
     return stored
 
 
