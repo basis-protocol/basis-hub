@@ -1,0 +1,29 @@
+Now I have the full picture. The column is contract in the stablecoins table but the expander queries contract_address. Let me verify:​​​​​​​​​​​​​​​​
+
+Got it. Here’s the full picture — the column might actually be contract_address in prod if it was altered, or it might be silently failing. Either way, the core problem is the pagination. Here’s the prompt:
+
+Fix the wallet expander so it actually discovers new wallets instead of re-scanning the same top 500 holders every day.
+
+Current problem: app/indexer/expander.py always fetches pages 1-5 of the Etherscan top holder list for each stablecoin. Those are the same ~500 wallets that were already seeded in the initial batch on March 23-26. The ON CONFLICT DO NOTHING skips them all, so the expander runs daily, burns API calls, and finds zero new wallets every time.
+
+The fix has two parts:
+
+1. Track the last page fetched per stablecoin so the expander progresses deeper into the holder list each day.
+
+Add a column to the stablecoins table (or use a lightweight tracking table) to persist the last expansion page fetched per contract:
+
+    ALTER TABLE stablecoins ADD COLUMN IF NOT EXISTS expansion_last_page INTEGER DEFAULT 0;
+
+Then change run_wallet_expansion() so that instead of always starting at page 1:
+
+    - Read the current expansion_last_page for each stablecoin
+    - Start fetching from expansion_last_page + 1
+    - After each successful run, UPDATE the stablecoin's expansion_last_page to the last page fetched
+    - Keep the 5-pages-per-coin-per-run limit — this means each daily run goes 5 pages deeper
+    - If a page returns empty results, that stablecoin has been fully exhausted — set a flag or a very high page number so we skip it in future runs until a configurable reset interval (e.g. 30 days)
+
+2. Also check the _get_coverage_gaps() query — it references s.contract_address but the stablecoins table schema from migration 001 has the column named contract, not contract_address. Verify which column name exists in the production database. If the column is actually contract, fix the query. If it was renamed via an ALTER at some point, leave it.
+
+The result should be: each daily run picks up where yesterday left off, going deeper into the holder list. Day 1: pages 1-5 (already done). Day 2: pages 6-10. Day 3: pages 11-15. And so on until the holder list is exhausted. At 100 holders per page and 5 pages per coin per day across ~10 stablecoins with contracts, that's 500 new wallet candidates per coin per day, 5000 total per day. 44K becomes 100K in about 12 days.
+
+Important: Check the column name issue first before making changes. Show me the migration SQL and the modified expander code before applying.
