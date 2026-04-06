@@ -584,6 +584,174 @@ function CategoryBar({ label, score, weight, useBlue }) {
   );
 }
 
+// =============================================================================
+// PSI Detail Expansion — radar chart + category bars
+// =============================================================================
+
+const PSI_CATEGORIES = [
+  { id: "balance_sheet", label: "Balance", shortLabel: "BAL", weight: 0.25 },
+  { id: "revenue", label: "Revenue", shortLabel: "REV", weight: 0.20 },
+  { id: "liquidity", label: "Liquidity", shortLabel: "LIQ", weight: 0.20 },
+  { id: "security", label: "Security", shortLabel: "SEC", weight: 0.15 },
+  { id: "governance", label: "Governance", shortLabel: "GOV", weight: 0.10 },
+  { id: "token_health", label: "Token", shortLabel: "TOK", weight: 0.10 },
+];
+
+function PsiRadarChart({ categoryScores, size = 220 }) {
+  const cx = size / 2, cy = size / 2, r = size * 0.38;
+  const n = PSI_CATEGORIES.length;
+  const angleStep = (2 * Math.PI) / n;
+  const startAngle = -Math.PI / 2;
+
+  const point = (i, pct) => {
+    const angle = startAngle + i * angleStep;
+    return [cx + r * pct * Math.cos(angle), cy + r * pct * Math.sin(angle)];
+  };
+
+  const gridLevels = [0.25, 0.5, 0.75, 1.0];
+
+  const dataPoints = PSI_CATEGORIES.map((cat, i) => {
+    const score = categoryScores[cat.id];
+    const raw = score != null ? Math.max(0, Math.min(100, score)) / 100 : 0;
+    const pct = score != null ? 0.12 + raw * 0.88 : 0;
+    return point(i, pct);
+  });
+  const polygon = dataPoints.map(([x, y]) => `${x},${y}`).join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} style={{ width: size, height: size }}>
+      {/* Grid rings */}
+      {gridLevels.map((lvl) => {
+        const pts = Array.from({ length: n }, (_, i) => point(i, lvl));
+        return (
+          <polygon key={lvl}
+            points={pts.map(([x, y]) => `${x},${y}`).join(" ")}
+            fill="none" stroke={T.ruleLight} strokeWidth="0.5"
+          />
+        );
+      })}
+      {/* Axis lines */}
+      {PSI_CATEGORIES.map((_, i) => {
+        const [x, y] = point(i, 1);
+        return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke={T.ruleLight} strokeWidth="0.5" />;
+      })}
+      {/* Data polygon */}
+      <polygon points={polygon} fill="#7BA3A8" fillOpacity="0.18" stroke="#7BA3A8" strokeWidth="1.5" />
+      {/* Data dots */}
+      {dataPoints.map(([x, y], i) => {
+        const score = categoryScores[PSI_CATEGORIES[i].id];
+        if (score == null) return null;
+        return <circle key={i} cx={x} cy={y} r="2.5" fill="#7BA3A8" />;
+      })}
+      {/* Axis labels */}
+      {PSI_CATEGORIES.map((cat, i) => {
+        const [x, y] = point(i, 1.18);
+        const score = categoryScores[cat.id];
+        return (
+          <text key={i} x={x} y={y} textAnchor="middle" dominantBaseline="middle"
+            fill={score != null ? T.inkLight : T.inkFaint}
+            fontSize="9" fontFamily={T.mono} fontWeight="500"
+          >{cat.shortLabel}</text>
+        );
+      })}
+    </svg>
+  );
+}
+
+function PsiCategoryBar({ label, score, weight }) {
+  const pct = score != null ? Math.min(100, Math.max(0, score)) : 0;
+  let barColor;
+  if (score == null) barColor = T.inkFaint;
+  else if (score >= 75) barColor = "#2d6b45";
+  else if (score >= 50) barColor = "#7BA3A8";
+  else if (score >= 35) barColor = "#B8937A";
+  else barColor = T.accent;
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+        <span style={{ fontSize: 11, color: T.inkLight, fontFamily: T.sans }}>
+          {label}
+          <span style={{ color: T.inkFaint, fontSize: 10, marginLeft: 4 }}>
+            {(weight * 100).toFixed(0)}%
+          </span>
+        </span>
+        <span style={{ fontSize: 12, fontFamily: T.mono, fontWeight: 600, color: score != null ? barColor : T.inkFaint }}>
+          {score != null ? fmt(score, 1) : "—"}
+        </span>
+      </div>
+      <div style={{ height: 4, background: T.ruleLight, borderRadius: 1 }}>
+        {score != null ? (
+          <div style={{ height: "100%", width: `${pct}%`, background: barColor, borderRadius: 1, transition: "width 0.6s ease" }} />
+        ) : (
+          <div style={{ height: "100%", width: "100%", background: `repeating-linear-gradient(90deg, ${T.ruleLight} 0, ${T.ruleLight} 4px, transparent 4px, transparent 8px)` }} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PsiDetailPanel({ protocol, mobile }) {
+  const cats = protocol.category_scores || {};
+  const score = protocol.score || protocol.overall_score;
+
+  return (
+    <div style={{
+      padding: mobile ? "16px 12px" : "20px 24px",
+      background: T.paperWarm,
+      borderBottom: `1px dotted ${T.ruleMid}`,
+      animation: "fadeIn 0.25s ease",
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 16 }}>
+        <span style={{ fontFamily: T.mono, fontSize: 15, fontWeight: 700 }}>
+          {protocol.protocol_name || protocol.protocol_slug}
+        </span>
+        <ChainBadge chain={protocol.chain} />
+        <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 600, color: T.inkMid, marginLeft: "auto" }}>
+          PSI {fmt(score, 1)}
+        </span>
+        <span style={{ fontFamily: T.sans, fontSize: 20, fontWeight: 700, color: gradeColor(protocol.grade) }}>
+          {protocol.grade || "—"}
+        </span>
+      </div>
+
+      {/* Two-column: Radar + Bars */}
+      <div style={{
+        display: "flex",
+        flexDirection: mobile ? "column" : "row",
+        gap: mobile ? 20 : 32,
+        alignItems: mobile ? "center" : "flex-start",
+      }}>
+        {/* Left: Radar chart */}
+        <div style={{ flexShrink: 0 }}>
+          <PsiRadarChart categoryScores={cats} size={mobile ? 200 : 220} />
+        </div>
+
+        {/* Right: Category bars */}
+        <div style={{ flex: 1, minWidth: 0, width: mobile ? "100%" : undefined }}>
+          {PSI_CATEGORIES.map((cat) => (
+            <PsiCategoryBar
+              key={cat.id}
+              label={cat.label}
+              score={cats[cat.id] != null ? Math.round(cats[cat.id] * 10) / 10 : null}
+              weight={cat.weight}
+            />
+          ))}
+          {/* Formula */}
+          <div style={{
+            marginTop: 12, padding: "8px 10px",
+            border: `1px solid ${T.ruleLight}`,
+            fontFamily: T.mono, fontSize: 9, color: T.inkFaint, lineHeight: 1.6,
+          }}>
+            PSI = 0.25×Balance + 0.20×Revenue + 0.20×Liquidity + 0.15×Security + 0.10×Governance + 0.10×Token
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PageHeader({ ts, mobile, coinCount, meta = {} }) {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
@@ -1831,6 +1999,7 @@ function ChainBadge({ chain }) {
 function ProtocolsView({ mobile }) {
   const { data: protocols, loading: psiLoading } = usePsiScores();
   const { data: cqiData, loading: cqiLoading } = useCqiMatrix();
+  const [expandedSlug, setExpandedSlug] = useState(null);
 
   const sorted = protocols ? [...protocols].sort((a, b) => (b.score || b.overall_score || 0) - (a.score || a.overall_score || 0)) : [];
 
@@ -1871,13 +2040,14 @@ function ProtocolsView({ mobile }) {
             {/* Header */}
             <div style={{
               display: "grid",
-              gridTemplateColumns: mobile ? "32px 1fr 60px 40px" : "32px 1fr 80px 80px 80px 80px 60px 40px",
+              gridTemplateColumns: mobile ? "16px 32px 1fr 60px 40px" : "16px 32px 1fr 80px 80px 80px 80px 60px 40px",
               padding: "8px 16px",
               background: T.paper,
               borderBottom: `3px solid ${T.ink}`,
               fontFamily: T.mono, fontSize: 9, textTransform: "uppercase",
               letterSpacing: 1.5, color: T.inkLight,
             }}>
+              <span></span>
               <span>#</span>
               <span>Protocol</span>
               {!mobile && <span>Balance</span>}
@@ -1890,25 +2060,36 @@ function ProtocolsView({ mobile }) {
             {/* Rows */}
             {sorted.map((p, i) => {
               const cats = p.category_scores || {};
+              const isExpanded = expandedSlug === p.protocol_slug;
               return (
-                <div key={p.protocol_slug} style={{
-                  display: "grid",
-                  gridTemplateColumns: mobile ? "32px 1fr 60px 40px" : "32px 1fr 80px 80px 80px 80px 60px 40px",
-                  padding: "11px 16px",
-                  borderBottom: `1px dotted ${T.ruleMid}`,
-                  alignItems: "center",
-                }}>
-                  <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint }}>{i + 1}</span>
-                  <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 700, color: T.ink }}>
-                    {p.protocol_name || p.protocol_slug}
-                    <ChainBadge chain={p.chain} />
-                  </span>
-                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.balance_sheet) }}>{fmt(cats.balance_sheet, 0)}</span>}
-                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.revenue) }}>{fmt(cats.revenue, 0)}</span>}
-                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.security) }}>{fmt(cats.security, 0)}</span>}
-                  {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.governance) }}>{fmt(cats.governance, 0)}</span>}
-                  <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 600, color: T.ink }}>{fmt(p.score || p.overall_score, 1)}</span>
-                  <span style={{ fontFamily: T.sans, fontSize: 18, fontWeight: 700, color: gradeColor(p.grade) }}>{p.grade || "—"}</span>
+                <div key={p.protocol_slug}>
+                  <div
+                    onClick={() => setExpandedSlug(isExpanded ? null : p.protocol_slug)}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: mobile ? "16px 32px 1fr 60px 40px" : "16px 32px 1fr 80px 80px 80px 80px 60px 40px",
+                      padding: "11px 16px",
+                      borderBottom: isExpanded ? "none" : `1px dotted ${T.ruleMid}`,
+                      alignItems: "center",
+                      cursor: "pointer",
+                      background: isExpanded ? T.paperWarm : "transparent",
+                      transition: "background 0.15s ease",
+                    }}
+                  >
+                    <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, transition: "transform 0.2s ease", display: "inline-block", transform: isExpanded ? "rotate(90deg)" : "none" }}>▶</span>
+                    <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint }}>{i + 1}</span>
+                    <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 700, color: T.ink }}>
+                      {p.protocol_name || p.protocol_slug}
+                      <ChainBadge chain={p.chain} />
+                    </span>
+                    {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.balance_sheet) }}>{fmt(cats.balance_sheet, 0)}</span>}
+                    {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.revenue) }}>{fmt(cats.revenue, 0)}</span>}
+                    {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.security) }}>{fmt(cats.security, 0)}</span>}
+                    {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.governance) }}>{fmt(cats.governance, 0)}</span>}
+                    <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 600, color: T.ink }}>{fmt(p.score || p.overall_score, 1)}</span>
+                    <span style={{ fontFamily: T.sans, fontSize: 18, fontWeight: 700, color: gradeColor(p.grade) }}>{p.grade || "—"}</span>
+                  </div>
+                  {isExpanded && <PsiDetailPanel protocol={p} mobile={mobile} />}
                 </div>
               );
             })}
