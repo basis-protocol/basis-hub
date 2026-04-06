@@ -2625,26 +2625,29 @@ function WitnessView({ mobile, onSelectIssuer }) {
       <div style={{ border: `1px solid ${T.ruleMid}` }}>
         {!mobile && (
           <div style={{
-            display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 1.8fr 28px",
+            display: "grid", gridTemplateColumns: "1.8fr 1fr 1fr 0.8fr 1.6fr 28px",
             padding: "10px 16px", borderBottom: `1px solid ${T.ruleMid}`,
             fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase",
             letterSpacing: 1, fontFamily: T.mono,
           }}>
             <span>Issuer</span>
-            <span>Last Attestation</span>
+            <span>Last Verified</span>
+            <span>Source Updated</span>
             <span>Method</span>
             <span>Witness Hash</span>
             <span />
           </div>
         )}
-        {issuers.map((iss, i) => (
+        {issuers.map((iss, i) => {
+          const isOnChain = iss.collection_method === "nav_oracle";
+          return (
           <div
             key={iss.asset_symbol}
             onClick={() => onSelectIssuer(iss.asset_symbol)}
             style={{
               display: mobile ? "flex" : "grid",
               flexDirection: mobile ? "column" : undefined,
-              gridTemplateColumns: mobile ? undefined : "2fr 1.2fr 1fr 1.8fr 28px",
+              gridTemplateColumns: mobile ? undefined : "1.8fr 1fr 1fr 0.8fr 1.6fr 28px",
               padding: mobile ? "12px 12px" : "12px 16px",
               borderBottom: i < issuers.length - 1 ? `1px dotted ${T.ruleMid}` : "none",
               cursor: "pointer",
@@ -2660,8 +2663,12 @@ function WitnessView({ mobile, onSelectIssuer }) {
               <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint, marginLeft: 8 }}>{iss.asset_symbol}</span>
             </div>
             <div style={{ fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
-              {mobile && <span style={{ fontSize: 10, color: T.inkLight, fontFamily: T.mono, marginRight: 6 }}>LAST:</span>}
-              {fmtRelative(iss.last_attestation)}
+              {mobile && <span style={{ fontSize: 10, color: T.inkLight, fontFamily: T.mono, marginRight: 6 }}>VERIFIED:</span>}
+              {fmtRelative(iss.last_verified || iss.last_attestation)}
+            </div>
+            <div style={{ fontFamily: T.mono, fontSize: 12, color: isOnChain ? "#2d6b45" : T.inkMid }}>
+              {mobile && <span style={{ fontSize: 10, color: T.inkLight, fontFamily: T.mono, marginRight: 6 }}>SOURCE:</span>}
+              {isOnChain ? "Live" : (iss.source_updated || "—")}
             </div>
             <div>
               <span style={{
@@ -2669,11 +2676,10 @@ function WitnessView({ mobile, onSelectIssuer }) {
                 border: `1px solid ${T.ruleLight}`, padding: "2px 6px",
                 display: "inline-block",
               }}>
-                {iss.collection_method === "nav_oracle" ? "on-chain" : (iss.collection_method || "—")}
+                {isOnChain ? "on-chain" : (iss.collection_method || "—")}
               </span>
-              {iss.collection_method === "nav_oracle" && (
+              {isOnChain && (
                 <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkLight, fontStyle: "italic", marginTop: 4 }}>
-                  Reserves verifiable on-chain —{" "}
                   {iss.transparency_url ? (
                     <a
                       href={iss.transparency_url}
@@ -2682,10 +2688,10 @@ function WitnessView({ mobile, onSelectIssuer }) {
                       onClick={(e) => e.stopPropagation()}
                       style={{ color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleMid}` }}
                     >
-                      verify directly ↗
+                      verify ↗
                     </a>
                   ) : (
-                    "no attestation needed"
+                    "on-chain"
                   )}
                 </div>
               )}
@@ -2709,7 +2715,8 @@ function WitnessView({ mobile, onSelectIssuer }) {
             </div>
             <div style={{ fontFamily: T.sans, fontSize: 12, color: T.inkFaint }}>→</div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{ marginTop: 28, fontSize: 11, color: T.inkLight, fontFamily: T.mono, lineHeight: 1.7, maxWidth: 640 }}>

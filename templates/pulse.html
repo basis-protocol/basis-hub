@@ -1,89 +1,80 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Daily Pulse {{ pulse_date }} | Basis Protocol</title>
+{% extends "_base.html" %}
+
+{% block title %}Daily Pulse {{ pulse_date }} | Basis Protocol{% endblock %}
+
+{% block meta %}
     <meta property="og:title" content="Basis Daily Pulse: {{ pulse_date }}">
     <meta property="og:description" content="{{ summary.wallets_indexed or 0 }} wallets tracked | {{ summary.alerts_today or 0 }} alerts">
     <meta property="og:type" content="article">
     <link rel="canonical" href="/pulse/{{ pulse_date }}">
     <link rel="alternate" type="application/json" href="/api/pulse/{{ pulse_date }}">
     <script type="application/ld+json">{{ json_ld | safe }}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; }
-        h1 { font-size: 1.4rem; color: #fff; }
-        h2 { font-size: 1.1rem; color: #ccc; margin-top: 32px; }
-        .stats { display: flex; gap: 24px; margin: 20px 0; }
-        .stat { background: #151515; border: 1px solid #222; border-radius: 8px; padding: 16px; flex: 1; text-align: center; }
-        .stat-label { font-size: 0.75rem; color: #666; text-transform: uppercase; }
-        .stat-value { font-size: 1.6rem; font-weight: 700; margin: 4px 0; color: #fff; }
-        table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-        th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #222; }
-        th { color: #666; font-size: 0.75rem; text-transform: uppercase; }
-        .grade-a { color: #22c55e; } .grade-b { color: #84cc16; } .grade-c { color: #eab308; } .grade-d { color: #f97316; } .grade-f { color: #ef4444; }
-        .delta-pos { color: #22c55e; } .delta-neg { color: #ef4444; }
-        .severity-alert { color: #f97316; } .severity-critical { color: #ef4444; }
-        footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #222; color: #444; font-size: 0.75rem; }
-    </style>
-</head>
-<body>
-    <h1>Daily Pulse</h1>
-    <p style="color: #666;">{{ pulse_date }}</p>
+{% endblock %}
 
-    <div class="stats">
-        <div class="stat">
-            <div class="stat-label">Wallets Indexed</div>
-            <div class="stat-value">{{ '{:,}'.format(summary.wallets_indexed or 0) }}</div>
+{% block content %}
+    <div style="height: 28px;"></div>
+
+    <div class="section-label">Daily Pulse</div>
+    <div style="font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--ink); margin-bottom: 4px;">
+        {{ pulse_date }}
+    </div>
+
+    <div class="metric-row">
+        <div class="metric-card">
+            <div class="metric-label">Wallets Indexed</div>
+            <div class="metric-value">{{ '{:,}'.format(summary.wallets_indexed or 0) }}</div>
         </div>
-        <div class="stat">
-            <div class="stat-label">Total Tracked</div>
-            <div class="stat-value">${{ '{:,.0f}'.format(summary.total_tracked or 0) }}</div>
+        <div class="metric-card">
+            <div class="metric-label">Total Tracked</div>
+            <div class="metric-value">${{ '{:,.0f}'.format(summary.total_tracked or 0) }}</div>
         </div>
-        <div class="stat">
-            <div class="stat-label">Alerts</div>
-            <div class="stat-value">{{ summary.alerts_today or 0 }}</div>
+        <div class="metric-card">
+            <div class="metric-label">Alerts</div>
+            <div class="metric-value">{{ summary.alerts_today or 0 }}</div>
         </div>
     </div>
 
-    <h2>SII Scores</h2>
-    <table>
-        <thead>
-            <tr><th>Asset</th><th>Score</th><th>Grade</th><th>24h Delta</th></tr>
-        </thead>
-        <tbody>
-        {% for s in summary.scores or [] %}
-            <tr>
-                <td><a href="/asset/{{ s.symbol }}" style="color: #e0e0e0;">{{ s.symbol | upper }}</a></td>
-                <td>{{ s.score }}</td>
-                <td class="{% if s.grade and s.grade[0] == 'A' %}grade-a{% elif s.grade and s.grade[0] == 'B' %}grade-b{% elif s.grade and s.grade[0] == 'C' %}grade-c{% elif s.grade and s.grade[0] == 'D' %}grade-d{% else %}grade-f{% endif %}">{{ s.grade }}</td>
-                <td class="{% if s.delta_24h and s.delta_24h > 0 %}delta-pos{% elif s.delta_24h and s.delta_24h < 0 %}delta-neg{% endif %}">{{ '%+.1f' | format(s.delta_24h or 0) }}</td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
+    {# === SII SCORES === #}
+    <div class="section">
+        <div class="section-label">SII Scores</div>
+        <table>
+            <thead>
+                <tr><th>Asset</th><th>Score</th><th>Grade</th><th>24h Delta</th></tr>
+            </thead>
+            <tbody>
+            {% for s in summary.scores or [] %}
+                <tr>
+                    <td><a class="link-subtle" href="/asset/{{ s.symbol | lower }}">{{ s.symbol | upper }}</a></td>
+                    <td>{{ s.score }}</td>
+                    <td class="{% if s.grade and s.grade[0] == 'A' %}grade-a{% elif s.grade and s.grade[0] == 'B' %}grade-b{% elif s.grade and s.grade[0] == 'C' %}grade-c{% elif s.grade and s.grade[0] == 'D' %}grade-d{% else %}grade-f{% endif %}">{{ s.grade }}</td>
+                    <td class="{% if s.delta_24h and s.delta_24h > 0 %}delta-pos{% elif s.delta_24h and s.delta_24h < 0 %}delta-neg{% endif %}">{{ '%+.1f' | format(s.delta_24h or 0) }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
 
+    {# === NOTABLE EVENTS === #}
     {% if summary.notable_events %}
-    <h2>Notable Events</h2>
-    <table>
-        <thead>
-            <tr><th>Wallet</th><th>Trigger</th><th>Severity</th><th>Score</th></tr>
-        </thead>
-        <tbody>
-        {% for e in summary.notable_events %}
-            <tr>
-                <td><a href="/wallet/{{ e.wallet }}" style="color: #888; font-family: monospace; font-size: 0.85rem;">{{ e.wallet[:10] }}...</a></td>
-                <td>{{ e.trigger }}</td>
-                <td class="severity-{{ e.severity }}">{{ e.severity }}</td>
-                <td>{{ e.risk_score or '—' }} ({{ e.risk_grade or '—' }})</td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
+    <div class="section">
+        <div class="section-label">Notable Events · {{ summary.notable_events | length }}</div>
+        <table>
+            <thead>
+                <tr><th>Wallet</th><th>Trigger</th><th>Severity</th><th>Score</th></tr>
+            </thead>
+            <tbody>
+            {% for e in summary.notable_events %}
+                <tr>
+                    <td><a class="link-subtle" href="/wallet/{{ e.wallet }}">{{ e.wallet[:10] }}...{{ e.wallet[-4:] }}</a></td>
+                    <td>{{ e.trigger }}</td>
+                    <td class="severity-{{ e.severity }}">{{ e.severity }}</td>
+                    <td>{{ e.risk_score or '—' }} ({{ e.risk_grade or '—' }})</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% endif %}
 
-    <footer>
-        <p>Basis Protocol | Generated at 07:00 UTC</p>
-    </footer>
-</body>
-</html>
+    <div style="height: 8px;"></div>
+{% endblock %}

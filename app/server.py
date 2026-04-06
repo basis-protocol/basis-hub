@@ -80,6 +80,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- x402 Agent Payment Layer ---
+try:
+    from app.payments import create_x402_middleware, paid_router
+    _x402_cls, _x402_kwargs = create_x402_middleware()
+    app.add_middleware(_x402_cls, **_x402_kwargs)
+    app.include_router(paid_router)
+    logger.info("x402 payment layer enabled on /api/paid/*")
+except ImportError:
+    logger.warning("x402 not installed — paid endpoints disabled. Run: pip install x402")
+except Exception as e:
+    logger.warning(f"x402 setup failed: {e} — paid endpoints disabled")
+
 
 # =============================================================================
 # Rate limiting + usage tracking middleware
@@ -2665,21 +2677,42 @@ async def cda_overview():
 
 @app.get("/api/cda/issuers")
 async def cda_issuers():
-    """List all CDA-tracked issuers with last attestation date."""
+    """List all CDA-tracked issuers with last verification and source update timestamps."""
     rows = fetch_all("""
         SELECT r.asset_symbol, r.issuer_name, r.transparency_url,
                r.collection_method, r.disclosure_type, r.created_at,
+               r.last_successful_collection,
                (
                    SELECT MAX(e.extracted_at)
                    FROM cda_vendor_extractions e
                    WHERE e.asset_symbol = r.asset_symbol
-               ) AS last_attestation
+               ) AS last_attestation,
+               (
+                   SELECT e.structured_data
+                   FROM cda_vendor_extractions e
+                   WHERE e.asset_symbol = r.asset_symbol
+                     AND e.structured_data IS NOT NULL
+                   ORDER BY e.extracted_at DESC
+                   LIMIT 1
+               ) AS latest_structured_data
         FROM cda_issuer_registry r
         WHERE r.is_active = TRUE
         ORDER BY last_attestation DESC NULLS LAST, r.asset_symbol
     """)
     issuers = []
     for r in rows:
+        # last_verified: when Basis last checked/extracted (extracted_at or last_successful_collection)
+        last_verified = r.get("last_attestation") or r.get("last_successful_collection")
+        # source_updated: when the underlying source data actually changed
+        source_updated = None
+        sd = r.get("latest_structured_data") or {}
+        if isinstance(sd, dict):
+            source_updated = (
+                sd.get("attestation_date")
+                or sd.get("report_date")
+                or sd.get("as_of_date")
+                or sd.get("publication_date")
+            )
         issuers.append({
             "asset_symbol": r["asset_symbol"],
             "issuer_name": r["issuer_name"],
@@ -2687,6 +2720,8 @@ async def cda_issuers():
             "collection_method": r["collection_method"],
             "disclosure_type": r.get("disclosure_type", "fiat-reserve"),
             "last_attestation": r["last_attestation"].isoformat() if r.get("last_attestation") else None,
+            "last_verified": last_verified.isoformat() if last_verified else None,
+            "source_updated": str(source_updated) if source_updated else None,
         })
     return {"issuers": issuers, "count": len(issuers)}
 

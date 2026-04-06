@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Basis Protocol{% endblock %}</title>
+    {% block meta %}{% endblock %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {% block head_extra %}{% endblock %}
+    <style>
+        :root {
+            --paper: #f5f2ec;
+            --paper-warm: #f0ece3;
+            --ink: #0a0a0a;
+            --ink-mid: #3a3a3a;
+            --ink-light: #6a6a6a;
+            --ink-faint: #9a9a9a;
+            --rule-mid: #c8c4bc;
+            --rule-light: #e0ddd6;
+            --accent: #c0392b;
+            --grade-a: #22c55e;
+            --grade-b: #84cc16;
+            --grade-c: #eab308;
+            --grade-d: #f97316;
+            --grade-f: #ef4444;
+            --mono: 'IBM Plex Mono', monospace;
+            --sans: 'IBM Plex Sans', system-ui, sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html { background: var(--paper); }
+        body {
+            font-family: var(--sans);
+            background: var(--paper);
+            color: var(--ink);
+            -webkit-font-smoothing: antialiased;
+        }
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: var(--paper); }
+        ::-webkit-scrollbar-thumb { background: var(--rule-mid); border-radius: 3px; }
+
+        .page-wrap {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 32px 24px 0;
+        }
+        .page-frame {
+            border: 3px solid var(--ink);
+            box-shadow: 6px 6px 0 0 var(--rule-mid);
+            background: var(--paper);
+        }
+
+        /* Nav */
+        .nav-bar {
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .nav-tabs {
+            display: flex;
+            gap: 16px;
+        }
+        .nav-tabs a {
+            padding: 4px 0;
+            border: none;
+            font-size: 12px;
+            font-weight: 400;
+            font-family: var(--sans);
+            color: var(--ink-light);
+            text-decoration: none;
+            border-bottom: 2px solid transparent;
+            transition: color 0.15s;
+        }
+        .nav-tabs a:hover { color: var(--ink); }
+        .nav-tabs a.active {
+            font-weight: 600;
+            color: var(--ink);
+            border-bottom: 2px solid var(--ink);
+        }
+        .nav-rule { border-top: 1px solid var(--rule-light); }
+
+        /* Content area */
+        .page-content {
+            padding: 0 24px 24px;
+        }
+
+        /* Section labels */
+        .section-label {
+            font-family: var(--mono);
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--ink-light);
+            margin-bottom: 10px;
+        }
+
+        /* Section divider */
+        .section { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--rule-light); }
+
+        /* Metric cards */
+        .metric-row { display: flex; gap: 0; margin: 16px 0; border: 1px solid var(--rule-mid); }
+        .metric-card {
+            flex: 1;
+            padding: 12px 20px;
+            border-right: 1px solid var(--rule-mid);
+        }
+        .metric-card:last-child { border-right: none; }
+        .metric-label {
+            font-family: var(--mono);
+            font-size: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--ink-faint);
+        }
+        .metric-value {
+            font-family: var(--mono);
+            font-size: 18px;
+            font-weight: 700;
+            margin-top: 2px;
+            color: var(--ink);
+        }
+        .metric-sub {
+            font-family: var(--mono);
+            font-size: 10px;
+            color: var(--ink-faint);
+            margin-top: 1px;
+        }
+
+        /* Signal grid */
+        .signal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0; border: 1px solid var(--rule-mid); }
+        .signal-item { padding: 12px 16px; border-right: 1px solid var(--rule-light); border-bottom: 1px solid var(--rule-light); }
+        .signal-label {
+            font-family: var(--mono);
+            font-size: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--ink-faint);
+        }
+        .signal-value {
+            font-family: var(--mono);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--ink);
+            margin-top: 2px;
+        }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; }
+        thead tr {
+            border-bottom: 3px solid var(--ink);
+        }
+        th {
+            text-align: left;
+            padding: 8px 12px;
+            font-family: var(--mono);
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--ink-light);
+            font-weight: 500;
+        }
+        td {
+            text-align: left;
+            padding: 10px 12px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--ink-mid);
+            border-bottom: 1px dotted var(--rule-light);
+        }
+
+        /* Links */
+        a { color: inherit; text-decoration: none; }
+        a:hover { border-bottom: 1px solid var(--rule-mid); }
+        .link-subtle { color: var(--ink-mid); }
+        .link-subtle:hover { color: var(--ink); border-bottom: 1px solid var(--rule-mid); }
+
+        /* Grade colors */
+        .grade-a { color: var(--grade-a); }
+        .grade-b { color: var(--grade-b); }
+        .grade-c { color: var(--grade-c); }
+        .grade-d { color: var(--grade-d); }
+        .grade-f { color: var(--grade-f); }
+        .trend-improving { color: var(--grade-a); }
+        .trend-stable { color: var(--ink-faint); }
+        .trend-deteriorating { color: var(--grade-f); }
+        .delta-pos { color: var(--grade-a); }
+        .delta-neg { color: var(--grade-f); }
+
+        /* Severity */
+        .severity-silent { color: var(--ink-faint); }
+        .severity-notable { color: var(--grade-c); }
+        .severity-alert { color: var(--grade-d); }
+        .severity-critical { color: var(--grade-f); }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            font-family: var(--mono);
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border: 1px solid var(--rule-mid);
+        }
+
+        /* Hash display */
+        .hash-text {
+            font-family: var(--mono);
+            font-size: 10px;
+            color: var(--ink-faint);
+            word-break: break-all;
+            margin-top: 6px;
+        }
+
+        /* Connection rows */
+        .connection-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px dotted var(--rule-light);
+            font-family: var(--mono);
+            font-size: 11px;
+        }
+        .connection-addr { color: var(--ink-mid); }
+        .connection-weight { color: var(--ink-faint); }
+
+        /* Footer */
+        .page-footer {
+            padding: 10px 24px;
+            border-top: 1px solid var(--rule-light);
+            display: flex;
+            justify-content: space-between;
+            font-family: var(--mono);
+            font-size: 10px;
+            color: var(--ink-faint);
+        }
+        .page-footer a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--rule-mid); }
+        .page-footer a:hover { color: var(--ink-light); }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .page-wrap { padding: 8px 6px 0; }
+            .page-frame { border-width: 2px; box-shadow: none; }
+            .nav-bar { padding: 10px 12px; }
+            .nav-tabs { gap: 12px; }
+            .nav-tabs a { font-size: 11px; }
+            .page-content { padding: 0 12px 16px; }
+            .metric-row { flex-direction: column; }
+            .metric-card { border-right: none; border-bottom: 1px solid var(--rule-light); padding: 10px 16px; }
+            .metric-card:last-child { border-bottom: none; }
+            .signal-grid { grid-template-columns: 1fr 1fr; }
+            .page-footer { flex-direction: column; gap: 4px; padding: 8px 12px; }
+            .metric-value { font-size: 16px; }
+        }
+
+        {% block extra_styles %}{% endblock %}
+    </style>
+</head>
+<body>
+    <div class="page-wrap">
+        <div class="page-frame">
+            {# === NAV BAR === #}
+            <div class="nav-bar">
+                <nav class="nav-tabs">
+                    <a href="/" {% if active_tab == 'stablecoins' %}class="active"{% endif %}>Stablecoins</a>
+                    <a href="/#protocols" {% if active_tab == 'protocols' %}class="active"{% endif %}>Protocols</a>
+                    <a href="/#wallets" {% if active_tab == 'wallets' %}class="active"{% endif %}>Wallets</a>
+                    <a href="/#witness" {% if active_tab == 'witness' %}class="active"{% endif %}>Witness</a>
+                    <a href="/developers" {% if active_tab == 'api' %}class="active"{% endif %}>API</a>
+                </nav>
+            </div>
+            <div class="nav-rule"></div>
+
+            {# === CONTENT === #}
+            <div class="page-content">
+                {% block content %}{% endblock %}
+            </div>
+
+            {# === FOOTER === #}
+            <div class="page-footer">
+                <span>Basis Protocol · Stablecoin Integrity Index</span>
+                <span><a href="/developers">API &amp; Pricing</a> · Risk surfaces for on-chain finance · basisprotocol.xyz</span>
+            </div>
+        </div>
+        <div style="height: 32px;"></div>
+    </div>
+</body>
+</html>

@@ -134,6 +134,7 @@ def register_page_routes(app: FastAPI) -> None:
         """, (address.lower(), address.lower(), address.lower()))
 
         context = {
+            "active_tab": "wallets",
             "address": address.lower(),
             "risk": dict(risk),
             "holdings": [dict(h) for h in holdings],
@@ -174,6 +175,7 @@ def register_page_routes(app: FastAPI) -> None:
         """, (symbol.lower(),))
 
         context = {
+            "active_tab": "stablecoins",
             "symbol": symbol.upper(),
             "score": dict(score),
             "history": [dict(h) for h in history],
@@ -209,6 +211,7 @@ def register_page_routes(app: FastAPI) -> None:
             return JSONResponse(content=data)
 
         context = {
+            "active_tab": "",
             "assessment": dict(row),
             "json_ld": _assessment_json_ld(row),
         }
@@ -245,6 +248,7 @@ def register_page_routes(app: FastAPI) -> None:
             return JSONResponse(content=data)
 
         context = {
+            "active_tab": "",
             "pulse_date": pulse_date,
             "summary": summary,
             "json_ld": _pulse_json_ld(pulse_date, summary),
@@ -418,6 +422,17 @@ def _pulse_json_ld(pulse_date: str, summary: dict) -> str:
 
 # --- Fallback HTML (when Jinja2 templates not available) ---
 
+_FALLBACK_STYLE = (
+    "font-family:'IBM Plex Sans',system-ui,sans-serif;max-width:800px;"
+    "margin:0 auto;padding:20px;background:#f5f2ec;color:#0a0a0a"
+)
+_FALLBACK_LABEL = (
+    "font-family:'IBM Plex Mono',monospace;font-size:9px;"
+    "text-transform:uppercase;letter-spacing:1.5px;color:#6a6a6a"
+)
+_FALLBACK_MONO = "font-family:'IBM Plex Mono',monospace;font-size:11px;color:#3a3a3a"
+
+
 def _fallback_wallet_html(ctx: dict) -> str:
     addr = ctx["address"]
     risk = ctx["risk"]
@@ -425,28 +440,29 @@ def _fallback_wallet_html(ctx: dict) -> str:
     parts = [
         f"""<!DOCTYPE html>
 <html><head><title>Wallet {addr[:10]}... | Basis Protocol</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;700&display=swap" rel="stylesheet">
 <script type="application/ld+json">{ctx['json_ld']}</script>
 <link rel="alternate" type="application/json" href="/api/wallets/{addr}">
-</head><body style="font-family:sans-serif;max-width:800px;margin:0 auto;padding:20px;background:#0a0a0a;color:#e0e0e0">
-<h1>Wallet Risk Profile</h1>
-<p style="font-family:monospace;color:#888;word-break:break-all">{addr}</p>
-<p>Risk Score: {risk.get('risk_score', 'N/A')} ({risk.get('risk_grade', 'N/A')})</p>
-<p>Concentration HHI: {risk.get('concentration_hhi', 'N/A')}</p>
-<p>Total Value: ${risk.get('total_stablecoin_value', 0):,.2f}</p>""",
+</head><body style="{_FALLBACK_STYLE}">
+<p style="{_FALLBACK_LABEL}">Wallet Risk Profile</p>
+<p style="{_FALLBACK_MONO};word-break:break-all">{addr}</p>
+<p style="{_FALLBACK_MONO}">Risk Score: {risk.get('risk_score', 'N/A')} ({risk.get('risk_grade', 'N/A')})</p>
+<p style="{_FALLBACK_MONO}">Concentration HHI: {risk.get('concentration_hhi', 'N/A')}</p>
+<p style="{_FALLBACK_MONO}">Total Value: ${risk.get('total_stablecoin_value', 0):,.2f}</p>""",
     ]
     if profile:
         bs = profile.get("behavioral_signals", {})
         qh = profile.get("quality_history", {})
-        parts.append("<h2>Behavioral Signals</h2>")
-        parts.append(f"<p>Days Tracked: {bs.get('days_tracked', '—')} · "
+        parts.append(f'<p style="{_FALLBACK_LABEL};margin-top:24px">Behavioral Signals</p>')
+        parts.append(f"<p style=\"{_FALLBACK_MONO}\">Days Tracked: {bs.get('days_tracked', '—')} · "
                      f"Score Stability (30d): {bs.get('score_stability_30d', '—')} · "
                      f"Avg Score (30d): {bs.get('avg_score_30d', '—')}</p>")
-        parts.append("<h2>Quality History</h2>")
-        parts.append(f"<p>A Grade: {qh.get('pct_days_a_grade', '—')}% · "
+        parts.append(f'<p style="{_FALLBACK_LABEL};margin-top:16px">Quality History</p>')
+        parts.append(f"<p style=\"{_FALLBACK_MONO}\">A Grade: {qh.get('pct_days_a_grade', '—')}% · "
                      f"Best: {qh.get('best_score_ever', '—')} · "
                      f"Worst: {qh.get('worst_score_ever', '—')}</p>")
         if profile.get("profile_hash"):
-            parts.append(f"<p style='font-family:monospace;font-size:0.75rem;color:#444'>Hash: {profile['profile_hash']}</p>")
+            parts.append(f"<p style='{_FALLBACK_MONO};font-size:10px;color:#9a9a9a'>Hash: {profile['profile_hash']}</p>")
     parts.append("</body></html>")
     return "\n".join(parts)
 
@@ -455,11 +471,13 @@ def _fallback_asset_html(ctx: dict) -> str:
     score = ctx["score"]
     return f"""<!DOCTYPE html>
 <html><head><title>{ctx['symbol']} | Basis Protocol</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;700&display=swap" rel="stylesheet">
 <script type="application/ld+json">{ctx['json_ld']}</script>
 <link rel="alternate" type="application/json" href="/api/scores/{ctx['symbol'].lower()}">
-</head><body>
-<h1>{ctx['symbol']} Stablecoin Integrity Index</h1>
-<p>Score: {score.get('overall_score', 'N/A')} ({score.get('grade', 'N/A')})</p>
+</head><body style="{_FALLBACK_STYLE}">
+<p style="{_FALLBACK_LABEL}">Stablecoin Integrity Index</p>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:700">{ctx['symbol']}</p>
+<p style="{_FALLBACK_MONO}">Score: {score.get('overall_score', 'N/A')} ({score.get('grade', 'N/A')})</p>
 </body></html>"""
 
 
@@ -467,14 +485,14 @@ def _fallback_assessment_html(ctx: dict) -> str:
     a = ctx["assessment"]
     return f"""<!DOCTYPE html>
 <html><head><title>Assessment {str(a.get('id', ''))[:8]}... | Basis Protocol</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;700&display=swap" rel="stylesheet">
 <script type="application/ld+json">{ctx['json_ld']}</script>
-</head><body>
-<h1>Assessment Event</h1>
-<p>Wallet: {a.get('wallet_address', 'N/A')}</p>
-<p>Trigger: {a.get('trigger_type', 'N/A')}</p>
-<p>Severity: {a.get('severity', 'N/A')}</p>
-<p>Risk Score: {a.get('wallet_risk_score', 'N/A')}</p>
-<p>Content Hash: {a.get('content_hash', 'N/A')}</p>
+</head><body style="{_FALLBACK_STYLE}">
+<p style="{_FALLBACK_LABEL}">Assessment Event</p>
+<p style="{_FALLBACK_MONO}">Wallet: {a.get('wallet_address', 'N/A')}</p>
+<p style="{_FALLBACK_MONO}">Trigger: {a.get('trigger_type', 'N/A')} · Severity: {a.get('severity', 'N/A')}</p>
+<p style="{_FALLBACK_MONO}">Risk Score: {a.get('wallet_risk_score', 'N/A')}</p>
+<p style="{_FALLBACK_MONO};font-size:10px;color:#9a9a9a">Content Hash: {a.get('content_hash', 'N/A')}</p>
 </body></html>"""
 
 
@@ -482,10 +500,12 @@ def _fallback_pulse_html(ctx: dict) -> str:
     summary = ctx["summary"]
     return f"""<!DOCTYPE html>
 <html><head><title>Pulse {ctx['pulse_date']} | Basis Protocol</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;700&display=swap" rel="stylesheet">
 <script type="application/ld+json">{ctx['json_ld']}</script>
-</head><body>
-<h1>Daily Pulse: {ctx['pulse_date']}</h1>
-<p>Wallets Indexed: {summary.get('wallets_indexed', 0)}</p>
-<p>Alerts Today: {summary.get('alerts_today', 0)}</p>
-<p>Total Tracked: ${summary.get('total_tracked', 0):,.2f}</p>
+</head><body style="{_FALLBACK_STYLE}">
+<p style="{_FALLBACK_LABEL}">Daily Pulse</p>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600">{ctx['pulse_date']}</p>
+<p style="{_FALLBACK_MONO}">Wallets Indexed: {summary.get('wallets_indexed', 0)}</p>
+<p style="{_FALLBACK_MONO}">Alerts Today: {summary.get('alerts_today', 0)}</p>
+<p style="{_FALLBACK_MONO}">Total Tracked: ${summary.get('total_tracked', 0):,.2f}</p>
 </body></html>"""

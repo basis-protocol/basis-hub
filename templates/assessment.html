@@ -1,94 +1,88 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Assessment {{ assessment.id | string | truncate(8, True, '') }} | Basis Protocol</title>
+{% extends "_base.html" %}
+
+{% block title %}Assessment {{ assessment.id | string | truncate(8, True, '') }} | Basis Protocol{% endblock %}
+
+{% block meta %}
     <meta property="og:title" content="Basis Assessment: {{ assessment.severity | upper }} — {{ assessment.trigger_type }}">
     <meta property="og:description" content="Wallet {{ assessment.wallet_address[:10] }}... | Score: {{ assessment.wallet_risk_score }}">
     <meta property="og:type" content="article">
     <link rel="canonical" href="/assessment/{{ assessment.id }}">
     <link rel="alternate" type="application/json" href="/api/assessments/{{ assessment.id }}">
     <script type="application/ld+json">{{ json_ld | safe }}</script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; }
-        h1 { font-size: 1.4rem; color: #fff; }
-        .address { font-family: monospace; font-size: 0.85rem; color: #888; }
-        .badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
-        .badge-silent { background: #222; color: #666; }
-        .badge-notable { background: #422006; color: #eab308; }
-        .badge-alert { background: #431407; color: #f97316; }
-        .badge-critical { background: #450a0a; color: #ef4444; }
-        .details { background: #151515; border: 1px solid #222; border-radius: 8px; padding: 16px; margin: 16px 0; }
-        .detail-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a1a1a; }
-        .detail-label { color: #666; }
-        .content-hash { font-family: monospace; font-size: 0.75rem; color: #666; word-break: break-all; margin-top: 16px; padding: 8px; background: #111; border-radius: 4px; }
-        table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-        th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #222; }
-        th { color: #666; font-size: 0.75rem; text-transform: uppercase; }
-        footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #222; color: #444; font-size: 0.75rem; }
-    </style>
-</head>
-<body>
-    <h1>Assessment Event</h1>
-    <p>
-        <span class="badge badge-{{ assessment.severity }}">{{ assessment.severity }}</span>
-        {{ assessment.trigger_type }}
-    </p>
-    <p class="address">Wallet: <a href="/wallet/{{ assessment.wallet_address }}" style="color: #888;">{{ assessment.wallet_address }}</a></p>
-    <p style="color: #666; font-size: 0.85rem;">{{ assessment.created_at.strftime('%Y-%m-%d %H:%M UTC') if assessment.created_at and assessment.created_at.strftime else assessment.created_at }}</p>
+{% endblock %}
 
-    <div class="details">
-        <div class="detail-row">
-            <span class="detail-label">Risk Score</span>
-            <span>{{ assessment.wallet_risk_score or 'N/A' }} ({{ assessment.wallet_risk_grade or '—' }})</span>
+{% block content %}
+    <div style="height: 28px;"></div>
+
+    <div class="section-label">Assessment Event</div>
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+        <span class="badge severity-{{ assessment.severity }}" style="border-color: currentColor;">{{ assessment.severity | upper }}</span>
+        <span style="font-family: var(--mono); font-size: 12px; color: var(--ink-mid);">{{ assessment.trigger_type }}</span>
+    </div>
+    <div style="font-family: var(--mono); font-size: 11px; color: var(--ink-mid); margin-bottom: 2px;">
+        Wallet: <a class="link-subtle" href="/wallet/{{ assessment.wallet_address }}">{{ assessment.wallet_address }}</a>
+    </div>
+    <div style="font-family: var(--mono); font-size: 10px; color: var(--ink-faint);">
+        {{ assessment.created_at.strftime('%Y-%m-%d %H:%M UTC') if assessment.created_at and assessment.created_at.strftime else assessment.created_at }}
+    </div>
+
+    {# === DETAILS === #}
+    <div class="metric-row" style="margin-top: 20px;">
+        <div class="metric-card">
+            <div class="metric-label">Risk Score</div>
+            <div class="metric-value">{{ assessment.wallet_risk_score or 'N/A' }}</div>
+            <div class="metric-sub">{{ assessment.wallet_risk_grade or '—' }}</div>
         </div>
         {% if assessment.wallet_risk_score_prev %}
-        <div class="detail-row">
-            <span class="detail-label">Previous Score</span>
-            <span>{{ assessment.wallet_risk_score_prev }}</span>
+        <div class="metric-card">
+            <div class="metric-label">Previous Score</div>
+            <div class="metric-value">{{ assessment.wallet_risk_score_prev }}</div>
         </div>
         {% endif %}
-        <div class="detail-row">
-            <span class="detail-label">Concentration HHI</span>
-            <span>{{ assessment.concentration_hhi or 'N/A' }}</span>
+        <div class="metric-card">
+            <div class="metric-label">Concentration</div>
+            <div class="metric-value">{{ assessment.concentration_hhi or 'N/A' }}</div>
+            <div class="metric-sub">HHI</div>
         </div>
-        <div class="detail-row">
-            <span class="detail-label">Coverage</span>
-            <span>{{ (assessment.coverage_ratio * 100) | round(1) if assessment.coverage_ratio else 'N/A' }}%</span>
+        <div class="metric-card">
+            <div class="metric-label">Coverage</div>
+            <div class="metric-value">{{ (assessment.coverage_ratio * 100) | round(1) if assessment.coverage_ratio else 'N/A' }}%</div>
         </div>
-        <div class="detail-row">
-            <span class="detail-label">Total Value</span>
-            <span>${{ '{:,.2f}'.format(assessment.total_stablecoin_value or 0) }}</span>
+        <div class="metric-card">
+            <div class="metric-label">Total Value</div>
+            <div class="metric-value">${{ '{:,.0f}'.format(assessment.total_stablecoin_value or 0) }}</div>
         </div>
     </div>
 
+    {# === HOLDINGS SNAPSHOT === #}
     {% if assessment.holdings_snapshot %}
-    <h2>Holdings Snapshot</h2>
-    <table>
-        <thead>
-            <tr><th>Asset</th><th>Value</th><th>% Wallet</th><th>SII</th><th>7d Delta</th></tr>
-        </thead>
-        <tbody>
-        {% for h in assessment.holdings_snapshot if h is mapping %}
-            <tr>
-                <td>{{ h.symbol }}</td>
-                <td>${{ '{:,.2f}'.format(h.value_usd or 0) }}</td>
-                <td>{{ h.pct_of_wallet }}%</td>
-                <td>{{ h.sii_score or '—' }} ({{ h.sii_grade or '—' }})</td>
-                <td>{{ '%+.1f' | format(h.sii_7d_delta or 0) }}</td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
+    <div class="section">
+        <div class="section-label">Holdings Snapshot</div>
+        <table>
+            <thead>
+                <tr><th>Asset</th><th>Value</th><th>% Wallet</th><th>SII</th><th>7d Delta</th></tr>
+            </thead>
+            <tbody>
+            {% for h in assessment.holdings_snapshot if h is mapping %}
+                <tr>
+                    <td><a class="link-subtle" href="/asset/{{ h.symbol | lower }}">{{ h.symbol }}</a></td>
+                    <td>${{ '{:,.2f}'.format(h.value_usd or 0) }}</td>
+                    <td>{{ h.pct_of_wallet }}%</td>
+                    <td>{{ h.sii_score or '—' }} ({{ h.sii_grade or '—' }})</td>
+                    <td class="{% if h.sii_7d_delta and h.sii_7d_delta > 0 %}delta-pos{% elif h.sii_7d_delta and h.sii_7d_delta < 0 %}delta-neg{% endif %}">{{ '%+.1f' | format(h.sii_7d_delta or 0) }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% endif %}
 
-    <div class="content-hash">
-        Content Hash: {{ assessment.content_hash or 'pending' }}
+    {# === CONTENT HASH === #}
+    <div class="section">
+        <div class="section-label">Verification</div>
+        <div class="hash-text">Content Hash: {{ assessment.content_hash or 'pending' }}</div>
+        <div class="hash-text">Methodology: {{ assessment.methodology_version or 'wallet-v1.0.0' }}</div>
     </div>
 
-    <footer>
-        <p>Basis Protocol | Methodology: {{ assessment.methodology_version or 'wallet-v1.0.0' }}</p>
-    </footer>
-</body>
-</html>
+    <div style="height: 8px;"></div>
+{% endblock %}

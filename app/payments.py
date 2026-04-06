@@ -1,0 +1,308 @@
+"""
+x402 Agent Payment Layer
+========================
+Middleware + paid route definitions for machine-native micropayments.
+Agents pay USDC on Base per-request via the x402 protocol (HTTP 402).
+Free endpoints are completely unaffected.
+"""
+
+import os
+import json
+import logging
+import hashlib
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Request, HTTPException, Query
+from typing import Optional
+
+from x402 import x402ResourceServer, FacilitatorConfig
+from x402.http.facilitator_client import HTTPFacilitatorClient
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
+from x402.http.types import RouteConfig, PaymentOption
+
+from app.database import fetch_one, fetch_all
+
+logger = logging.getLogger("payments")
+
+# --- Configuration ---
+BASIS_WALLET = os.environ.get("BASIS_PAYMENT_WALLET", "")
+X402_NETWORK = os.environ.get("X402_NETWORK", "eip155:84532")  # Base Sepolia testnet
+X402_FACILITATOR = os.environ.get("X402_FACILITATOR_URL", "https://x402.org/facilitator")
+
+
+def _route(price: str, description: str) -> RouteConfig:
+    """Helper to create a RouteConfig with standard options."""
+    return RouteConfig(
+        accepts=PaymentOption(
+            scheme="exact",
+            pay_to=BASIS_WALLET,
+            price=price,
+            network=X402_NETWORK,
+        ),
+        description=description,
+        mime_type="application/json",
+    )
+
+
+def create_x402_middleware():
+    """Create the x402 payment middleware for FastAPI.
+
+    Returns (middleware_class, kwargs) for app.add_middleware().
+    """
+    if not BASIS_WALLET:
+        raise ValueError("BASIS_PAYMENT_WALLET env var not set")
+
+    facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=X402_FACILITATOR))
+    server = x402ResourceServer(facilitator_clients=facilitator)
+
+    routes = {
+        "GET /api/paid/sii/rankings": _route(
+            "$0.005", "All stablecoin SII rankings with scores, grades, and category breakdowns"
+        ),
+        "GET /api/paid/sii/{coin}": _route(
+            "$0.001", "Single stablecoin SII score with full component breakdown"
+        ),
+        "GET /api/paid/psi/scores": _route(
+            "$0.005", "All protocol solvency scores"
+        ),
+        "GET /api/paid/psi/scores/{slug}": _route(
+            "$0.001", "Single protocol solvency score with component breakdown"
+        ),
+        "GET /api/paid/cqi": _route(
+            "$0.001", "Composite Quality Index for a stablecoin-protocol pair"
+        ),
+        "GET /api/paid/pulse/latest": _route(
+            "$0.002", "Latest daily system pulse with integrity status"
+        ),
+        "GET /api/paid/discovery/latest": _route(
+            "$0.005", "Latest cross-domain discovery signals"
+        ),
+        "GET /api/paid/wallets/{address}/profile": _route(
+            "$0.005", "Full wallet risk profile with behavioral signals and reputation"
+        ),
+    }
+
+    return PaymentMiddlewareASGI, {"routes": routes, "server": server}
+
+
+# =============================================================================
+# Paid Route Handlers
+# These call the same DB queries / functions as the free endpoints.
+# The x402 middleware handles 402 challenge/response before these run.
+# =============================================================================
+
+paid_router = APIRouter(prefix="/api/paid", tags=["paid"])
+
+
+@paid_router.get("/sii/rankings")
+async def paid_sii_rankings():
+    """Paid: All stablecoin SII scores."""
+    from app.scoring import FORMULA_VERSION
+    rows = fetch_all("""
+        SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
+        FROM scores s
+        JOIN stablecoins st ON st.id = s.stablecoin_id
+        ORDER BY s.overall_score DESC
+    """)
+    results = []
+    for row in rows:
+        results.append({
+            "id": row["stablecoin_id"],
+            "name": row["name"],
+            "symbol": row["symbol"],
+            "issuer": row["issuer"],
+            "score": float(row["overall_score"]),
+            "grade": row["grade"],
+            "price": float(row["current_price"]) if row.get("current_price") else None,
+            "categories": {
+                "peg": float(row["peg_score"]) if row.get("peg_score") else None,
+                "liquidity": float(row["liquidity_score"]) if row.get("liquidity_score") else None,
+                "flows": float(row["mint_burn_score"]) if row.get("mint_burn_score") else None,
+                "distribution": float(row["distribution_score"]) if row.get("distribution_score") else None,
+                "structural": float(row["structural_score"]) if row.get("structural_score") else None,
+            },
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        })
+    return {
+        "stablecoins": results,
+        "count": len(results),
+        "methodology_version": FORMULA_VERSION,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tier": "paid",
+    }
+
+
+@paid_router.get("/sii/{coin}")
+async def paid_sii_detail(coin: str):
+    """Paid: Single stablecoin detail."""
+    from app.scoring import SII_V1_WEIGHTS, FORMULA_VERSION
+    row = fetch_one("""
+        SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
+        FROM scores s
+        JOIN stablecoins st ON st.id = s.stablecoin_id
+        WHERE s.stablecoin_id = %s
+    """, (coin,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Stablecoin '{coin}' not found")
+    components = fetch_all("""
+        SELECT DISTINCT ON (component_id)
+          component_id, category, raw_value, normalized_score, data_source, collected_at
+        FROM component_readings
+        WHERE stablecoin_id = %s AND collected_at > NOW() - INTERVAL '48 hours'
+        ORDER BY component_id, collected_at DESC
+    """, (coin,))
+    return {
+        "id": row["stablecoin_id"],
+        "name": row["name"],
+        "symbol": row["symbol"],
+        "score": float(row["overall_score"]),
+        "grade": row["grade"],
+        "price": float(row["current_price"]) if row.get("current_price") else None,
+        "categories": {
+            "peg": {"score": float(row["peg_score"]) if row.get("peg_score") else None, "weight": SII_V1_WEIGHTS["peg_stability"]},
+            "liquidity": {"score": float(row["liquidity_score"]) if row.get("liquidity_score") else None, "weight": SII_V1_WEIGHTS["liquidity_depth"]},
+            "flows": {"score": float(row["mint_burn_score"]) if row.get("mint_burn_score") else None, "weight": SII_V1_WEIGHTS["mint_burn_dynamics"]},
+            "distribution": {"score": float(row["distribution_score"]) if row.get("distribution_score") else None, "weight": SII_V1_WEIGHTS["holder_distribution"]},
+            "structural": {"score": float(row["structural_score"]) if row.get("structural_score") else None, "weight": SII_V1_WEIGHTS["structural_risk_composite"]},
+        },
+        "components": [
+            {
+                "id": c["component_id"], "category": c["category"],
+                "raw_value": c["raw_value"],
+                "normalized_score": round(c["normalized_score"], 2) if c["normalized_score"] else None,
+                "data_source": c["data_source"],
+                "collected_at": c["collected_at"].isoformat() if c["collected_at"] else None,
+            }
+            for c in components
+        ],
+        "methodology_version": FORMULA_VERSION,
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        "tier": "paid",
+    }
+
+
+@paid_router.get("/psi/scores")
+async def paid_psi_all():
+    """Paid: All PSI scores."""
+    rows = fetch_all("""
+        SELECT DISTINCT ON (protocol_slug)
+            protocol_slug, protocol_name, overall_score, grade,
+            category_scores, formula_version, computed_at
+        FROM psi_scores ORDER BY protocol_slug, computed_at DESC
+    """)
+    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+    return {
+        "protocols": [
+            {
+                "protocol_slug": r["protocol_slug"],
+                "protocol_name": r["protocol_name"],
+                "score": float(r["overall_score"]) if r.get("overall_score") else None,
+                "grade": r["grade"],
+                "category_scores": r.get("category_scores"),
+                "computed_at": r["computed_at"].isoformat() if r.get("computed_at") else None,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+        "version": PSI_V01_DEFINITION["version"],
+        "tier": "paid",
+    }
+
+
+@paid_router.get("/psi/scores/{slug}")
+async def paid_psi_detail(slug: str):
+    """Paid: Single PSI detail."""
+    row = fetch_one("""
+        SELECT protocol_slug, protocol_name, overall_score, grade,
+               category_scores, component_scores, raw_values, formula_version, computed_at
+        FROM psi_scores WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1
+    """, (slug,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found")
+    return {
+        "protocol_slug": row["protocol_slug"],
+        "protocol_name": row["protocol_name"],
+        "score": float(row["overall_score"]) if row.get("overall_score") else None,
+        "grade": row["grade"],
+        "category_scores": row.get("category_scores"),
+        "component_scores": row.get("component_scores"),
+        "raw_values": row.get("raw_values"),
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        "tier": "paid",
+    }
+
+
+@paid_router.get("/cqi")
+async def paid_cqi(asset: str = Query(...), protocol: str = Query(...)):
+    """Paid: CQI score for an asset-in-protocol pair."""
+    from app.composition import compute_cqi
+    result = compute_cqi(asset, protocol)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    result["tier"] = "paid"
+    return result
+
+
+@paid_router.get("/pulse/latest")
+async def paid_pulse():
+    """Paid: Latest daily pulse."""
+    row = fetch_one("SELECT * FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1")
+    if not row:
+        raise HTTPException(status_code=404, detail="No pulse data available")
+    summary = row.get("summary", {})
+    if isinstance(summary, str):
+        summary = json.loads(summary)
+    canonical = json.dumps(summary, sort_keys=True, separators=(",", ":"), default=str)
+    content_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+    return {
+        "pulse_date": row["pulse_date"].isoformat() if hasattr(row["pulse_date"], "isoformat") else str(row["pulse_date"]),
+        "summary": summary,
+        "content_hash": content_hash,
+        "tier": "paid",
+    }
+
+
+@paid_router.get("/discovery/latest")
+async def paid_discovery():
+    """Paid: Latest cross-domain discovery signals."""
+    rows = fetch_all("""
+        SELECT id, signal_type, domain, title, description, entities,
+               novelty_score, direction, magnitude, baseline, detail,
+               methodology_version, detected_at, acknowledged, published
+        FROM discovery_signals
+        WHERE detected_at >= NOW() - INTERVAL '7 days'
+        ORDER BY novelty_score DESC LIMIT 20
+    """)
+    return {"signals": rows, "count": len(rows), "tier": "paid"}
+
+
+@paid_router.get("/wallets/{address}/profile")
+async def paid_wallet_profile(address: str):
+    """Paid: Full wallet risk profile with behavioral signals."""
+    from app.wallet_profile import generate_wallet_profile
+    profile = generate_wallet_profile(address)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Wallet not found in index")
+
+    addr = address.lower()
+    top_connections = fetch_all("""
+        SELECT
+            CASE WHEN from_address = %s THEN to_address ELSE from_address END AS counterparty,
+            weight, total_value_usd
+        FROM wallet_graph.wallet_edges
+        WHERE from_address = %s OR to_address = %s
+        ORDER BY weight DESC LIMIT 5
+    """, (addr, addr, addr))
+    edge_count = fetch_one(
+        "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges WHERE from_address = %s OR to_address = %s",
+        (addr, addr),
+    )
+    profile["connections_summary"] = {
+        "total_connections": edge_count["cnt"] if edge_count else 0,
+        "top_counterparties": [
+            {"address": c["counterparty"], "weight": round(float(c["weight"]), 4) if c.get("weight") else 0, "value": c["total_value_usd"]}
+            for c in top_connections
+        ],
+    }
+    profile["tier"] = "paid"
+    return profile
