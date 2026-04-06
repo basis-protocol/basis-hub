@@ -202,6 +202,29 @@ def run_daily_pulse():
         "psi_scores": psi_summary,
     }
 
+    # 8b. State accumulation — row counts from every state table
+    state_counts = {
+        "score_history": _safe_count("SELECT COUNT(*) AS count FROM score_history"),
+        "component_readings": _safe_count("SELECT COUNT(*) AS count FROM component_readings"),
+        "assessment_events": _safe_count("SELECT COUNT(*) AS count FROM assessment_events"),
+        "cda_extractions": _safe_count("SELECT COUNT(*) AS count FROM cda_vendor_extractions"),
+        "discovery_signals": _safe_count("SELECT COUNT(*) AS count FROM discovery_signals"),
+        "historical_prices": _safe_count("SELECT COUNT(*) AS count FROM historical_prices"),
+        "collateral_exposure": _safe_count("SELECT COUNT(*) AS count FROM protocol_collateral_exposure"),
+        "treasury_holdings": _safe_count("SELECT COUNT(*) AS count FROM protocol_treasury_holdings"),
+        "protocol_backlog": _safe_count("SELECT COUNT(*) AS count FROM protocol_backlog"),
+        "wallet_profiles": _safe_count("SELECT COUNT(*) AS count FROM wallet_graph.wallet_profiles"),
+        "daily_pulses": _safe_count("SELECT COUNT(*) AS count FROM daily_pulses"),
+    }
+    network = summary["network_state"]
+    state_counts["total_records"] = (
+        sum(state_counts.values())
+        + network.get("wallets_indexed", 0)
+        + network.get("wallets_scored", 0)
+        + network.get("edge_count", 0)
+    )
+    summary["state_accumulation"] = state_counts
+
     # 9. Embed integrity status
     try:
         from app.integrity import check_domain

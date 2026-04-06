@@ -1445,6 +1445,121 @@ async def ops_chain_spec(request: Request, chain: str):
         return JSONResponse(status_code=500, content={"error": str(e), "traceback": _traceback_mod.format_exc()})
 
 
+# =============================================================================
+# State Growth
+# =============================================================================
+
+@router.get("/state-growth")
+async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=90)):
+    """Day-over-day state accumulation from daily pulses."""
+    _check_admin_key(request)
+    try:
+        rows = fetch_all(
+            """SELECT pulse_date, summary
+               FROM daily_pulses
+               ORDER BY pulse_date DESC
+               LIMIT %s""",
+            (days,),
+        )
+        if not rows:
+            return {"days": [], "summary": {}}
+
+        # Parse summaries, newest first
+        parsed = []
+        for r in rows:
+            s = r["summary"]
+            if isinstance(s, str):
+                s = json.loads(s)
+            parsed.append({"date": str(r["pulse_date"]), "summary": s})
+
+        # Build the list of tracked fields from state_accumulation + network_state
+        def _extract_fields(summary: dict) -> dict:
+            fields = {}
+            sa = summary.get("state_accumulation", {})
+            ns = summary.get("network_state", {})
+            # state_accumulation fields (except total_records, computed separately)
+            for k, v in sa.items():
+                if k != "total_records":
+                    fields[k] = v if isinstance(v, (int, float)) else 0
+            # network_state fields
+            for k in ("wallets_indexed", "wallets_scored", "edge_count",
+                       "stablecoins_scored", "protocols_scored"):
+                fields[k] = ns.get(k, 0) if isinstance(ns.get(k), (int, float)) else 0
+            return fields
+
+        # Build day entries (newest first)
+        day_entries = []
+        for i, p in enumerate(parsed):
+            fields = _extract_fields(p["summary"])
+            sa = p["summary"].get("state_accumulation", {})
+            total = sa.get("total_records", sum(fields.values()))
+
+            # Delta vs previous day (next in list since sorted desc)
+            prev_fields = {}
+            prev_total = 0
+            if i + 1 < len(parsed):
+                prev_fields = _extract_fields(parsed[i + 1]["summary"])
+                prev_sa = parsed[i + 1]["summary"].get("state_accumulation", {})
+                prev_total = prev_sa.get("total_records", sum(prev_fields.values()))
+
+            breakdown = {}
+            for k, v in fields.items():
+                breakdown[k] = {
+                    "value": v,
+                    "delta": v - prev_fields.get(k, 0) if prev_fields else None,
+                }
+
+            day_entries.append({
+                "date": p["date"],
+                "total_records": total,
+                "delta": total - prev_total if prev_fields else None,
+                "breakdown": breakdown,
+            })
+
+        # Summary stats
+        newest = day_entries[0] if day_entries else {}
+        total_now = newest.get("total_records", 0)
+
+        # 7-day growth
+        growth_7d = 0
+        if len(day_entries) > 1:
+            window = day_entries[:min(8, len(day_entries))]
+            oldest_in_window = window[-1].get("total_records", 0)
+            growth_7d = total_now - oldest_in_window
+
+        # Average daily growth
+        deltas = [d["delta"] for d in day_entries if d.get("delta") is not None]
+        avg_daily = round(sum(deltas) / len(deltas)) if deltas else 0
+
+        # Fastest growing and stalled fields
+        if len(day_entries) >= 2 and day_entries[0].get("breakdown"):
+            field_totals = {}
+            for d in day_entries:
+                for k, v in d.get("breakdown", {}).items():
+                    if v.get("delta") is not None:
+                        field_totals[k] = field_totals.get(k, 0) + v["delta"]
+            fastest = max(field_totals, key=field_totals.get) if field_totals else None
+            stalled = sorted([k for k, v in field_totals.items() if v == 0])
+        else:
+            fastest = None
+            stalled = []
+
+        return {
+            "days": day_entries,
+            "summary": {
+                "total_records_now": total_now,
+                "total_growth_7d": growth_7d,
+                "avg_daily_growth": avg_daily,
+                "fastest_growing": fastest,
+                "stalled": stalled,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": _traceback_mod.format_exc()})
+
+
 def register_ops_routes(app):
     """Register the ops router with the main FastAPI app."""
     app.include_router(router)
