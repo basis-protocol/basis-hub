@@ -36,6 +36,43 @@ TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 RATE_LIMIT_DELAY = 0.15  # seconds between Helius calls
 
+# Estimated unique Solana SPL token account counts (from Solscan/Solana FM)
+# Updated periodically — serves as fallback since full enumeration is too expensive
+SOLANA_HOLDER_ESTIMATES = {
+    "usdc": 3_800_000,   # USDC is the dominant Solana stablecoin
+    "usdt": 1_200_000,
+}
+
+# =============================================================================
+# Static security config for Solana stablecoins
+# Mirrors app/collectors/smart_contract.py approach for EVM
+# =============================================================================
+
+# Program verification status — checked against OtterSec Verified / Solana Verify
+SOLANA_VERIFIED_PROGRAMS = {
+    "usdc": True,    # Circle's SPL token — standard SPL Token program (verified)
+    "usdt": True,    # Tether SPL token — standard SPL Token program (verified)
+}
+
+# Bug bounty programs (Solana-specific or cross-chain coverage)
+SOLANA_BUG_BOUNTY = {
+    "usdc": {"active": True, "max_payout": 250_000, "platform": "Immunefi", "note": "Cross-chain program covers Solana"},
+    "usdt": {"active": False, "max_payout": 0},
+}
+
+# Exploit history on Solana (separate from EVM incidents)
+SOLANA_EXPLOIT_HISTORY = {
+    # USDC and USDT on Solana: no direct Solana-specific exploits
+}
+
+# Pausability on Solana: mapped from freeze authority capability
+# If the token has a freeze authority, the issuer can freeze individual accounts (≈ pause)
+# This is detected live from on-chain data in section 4, but we need a static fallback
+SOLANA_PAUSABILITY = {
+    "usdc": True,    # Circle has freeze authority on Solana USDC
+    "usdt": True,    # Tether has freeze authority on Solana USDT
+}
+
 
 # =============================================================================
 # RPC helpers
@@ -64,7 +101,12 @@ async def get_solana_token_supply(client: httpx.AsyncClient, mint_address: str) 
 
 
 async def get_solana_largest_holders(client: httpx.AsyncClient, mint_address: str) -> dict:
-    """Get top 20 token holders via Solana RPC."""
+    """
+    Get top token holders via Solana RPC (getTokenLargestAccounts).
+    Falls back to Helius DAS getTokenAccounts for large tokens where
+    the standard RPC errors out due to too many accounts.
+    """
+    # --- Try standard RPC first ---
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -74,28 +116,95 @@ async def get_solana_largest_holders(client: httpx.AsyncClient, mint_address: st
     try:
         resp = await client.post(HELIUS_RPC_URL, json=payload, timeout=30)
         data = resp.json()
-        accounts = data.get("result", {}).get("value", [])
 
-        holders = []
-        for a in accounts:
-            amt = float(a.get("uiAmount", 0)) if a.get("uiAmount") is not None else 0
-            holders.append({
-                "address": a.get("address", ""),
-                "amount": amt,
-            })
+        if "error" not in data:
+            accounts = data.get("result", {}).get("value", [])
+            if accounts:
+                holders = []
+                for a in accounts:
+                    amt = float(a.get("uiAmount", 0)) if a.get("uiAmount") is not None else 0
+                    holders.append({"address": a.get("address", ""), "amount": amt})
 
-        total_top20 = sum(h["amount"] for h in holders)
-        largest = holders[0]["amount"] if holders else 0
+                total_top20 = sum(h["amount"] for h in holders)
+                largest = holders[0]["amount"] if holders else 0
+                return {
+                    "top_holders": holders,
+                    "top_20_total": total_top20,
+                    "largest_holder_amount": largest,
+                    "holder_count": len(holders),
+                }
 
-        return {
-            "top_holders": holders,
-            "top_20_total": total_top20,
-            "largest_holder_amount": largest,
-            "holder_count": len(holders),
-        }
+        # --- Fallback: Helius DAS getTokenAccounts (handles large tokens) ---
+        logger.info(f"getTokenLargestAccounts failed for {mint_address[:12]}…, falling back to DAS")
+        return await _get_holders_via_das(client, mint_address)
+
     except Exception as e:
         logger.error(f"Solana getTokenLargestAccounts error for {mint_address}: {e}")
+        # Try DAS as last resort
+        try:
+            return await _get_holders_via_das(client, mint_address)
+        except Exception as e2:
+            logger.error(f"Solana DAS holder fallback also failed: {e2}")
+            return {}
+
+
+async def _get_holders_via_das(client: httpx.AsyncClient, mint_address: str) -> dict:
+    """
+    Fetch token holders via Helius DAS getTokenAccounts API.
+    Retrieves up to 100 accounts, sorts by balance descending, returns top 20.
+    Also fetches total supply via getAsset for concentration calculations.
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTokenAccounts",
+        "params": {
+            "mint": mint_address,
+            "limit": 100,
+            "options": {"showZeroBalance": False},
+        },
+    }
+    resp = await client.post(HELIUS_RPC_URL, json=payload, timeout=30)
+    data = resp.json()
+    items = data.get("result", {}).get("token_accounts", [])
+
+    if not items:
         return {}
+
+    # Get decimals from getAsset for proper amount conversion
+    asset_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getAsset",
+        "params": {"id": mint_address},
+    }
+    await asyncio.sleep(RATE_LIMIT_DELAY)
+    asset_resp = await client.post(HELIUS_RPC_URL, json=asset_payload, timeout=30)
+    asset_data = asset_resp.json()
+    decimals = asset_data.get("result", {}).get("token_info", {}).get("decimals", 6)
+
+    # Convert raw amounts and sort descending
+    holders = []
+    for item in items:
+        raw_amount = item.get("amount", 0)
+        ui_amount = raw_amount / (10 ** decimals) if decimals > 0 else raw_amount
+        holders.append({
+            "address": item.get("owner", item.get("address", "")),
+            "amount": ui_amount,
+        })
+
+    holders.sort(key=lambda h: h["amount"], reverse=True)
+    top20 = holders[:20]
+
+    total_top20 = sum(h["amount"] for h in top20)
+    largest = top20[0]["amount"] if top20 else 0
+
+    return {
+        "top_holders": top20,
+        "top_20_total": total_top20,
+        "largest_holder_amount": largest,
+        "holder_count": len(holders),
+    }
 
 
 async def get_solana_token_transfers(
@@ -234,12 +343,13 @@ async def collect_solana_components(
         logger.error(f"Solana supply error for {stablecoin_id}: {e}")
     await asyncio.sleep(RATE_LIMIT_DELAY)
 
-    # --- 2. Top holder concentration ---
+    # --- 2. Top holder concentration (top-20 and top-10) ---
     try:
         holders = await get_solana_largest_holders(client, mint)
         if holders.get("top_20_total") and holders.get("top_holders"):
             top20_total = holders["top_20_total"]
             largest = holders["largest_holder_amount"]
+            top_holders = holders["top_holders"]
 
             if supply_val and supply_val > 0:
                 top20_pct = (top20_total / supply_val) * 100
@@ -269,6 +379,50 @@ async def collect_solana_components(
                     "top_20_total": top20_total,
                     "largest_holder": largest,
                     "holder_count_sampled": holders.get("holder_count", 0),
+                },
+            })
+
+            # 2b. Top-10 holder concentration (maps to EVM top_10_concentration)
+            top10 = top_holders[:10]
+            top10_total = sum(h["amount"] for h in top10)
+            if supply_val and supply_val > 0:
+                top10_pct = (top10_total / supply_val) * 100
+            else:
+                top10_pct = 0
+
+            from app.scoring import normalize_inverse_linear
+            top10_score = normalize_inverse_linear(top10_pct, 10, 80)
+
+            components.append({
+                "component_id": "solana_top_10_concentration",
+                "category": "holder_distribution",
+                "raw_value": round(top10_pct, 4),
+                "normalized_score": round(top10_score, 2),
+                "data_source": "helius",
+                "metadata": {
+                    "chain": "solana",
+                    "top_10_total": top10_total,
+                    "description": f"Top 10 Solana holders control {top10_pct:.2f}% of SPL supply",
+                },
+            })
+
+            # 2c. Unique holder count (static estimate — full enumeration too expensive)
+            holder_count = SOLANA_HOLDER_ESTIMATES.get(stablecoin_id, 50_000)
+            from app.scoring import normalize_log
+            holders_score = normalize_log(
+                holder_count,
+                thresholds={1000: 20, 10000: 40, 100000: 60, 1000000: 80, 10000000: 100},
+            )
+            components.append({
+                "component_id": "solana_unique_holders",
+                "category": "holder_distribution",
+                "raw_value": holder_count,
+                "normalized_score": round(holders_score, 2),
+                "data_source": "helius",
+                "metadata": {
+                    "chain": "solana",
+                    "source": "static_estimate",
+                    "description": f"{holder_count:,} estimated unique Solana token accounts",
                 },
             })
     except Exception as e:
@@ -425,8 +579,128 @@ async def collect_solana_components(
                     "interpretation": "Issuer can mint new tokens" if has_mint else "Mint authority revoked — fixed supply",
                 },
             })
+
+            # 4c. Admin key risk — composite of freeze + mint authority
+            # Both present = more centralized (lower score), neither = decentralized
+            if has_freeze and has_mint:
+                admin_score = 40.0   # centralized issuer with full control
+            elif has_mint:
+                admin_score = 55.0   # can mint but can't freeze
+            elif has_freeze:
+                admin_score = 60.0   # can freeze but fixed supply
+            else:
+                admin_score = 90.0   # fully decentralized
+
+            components.append({
+                "component_id": "solana_admin_key_risk",
+                "category": "smart_contract",
+                "raw_value": admin_score,
+                "normalized_score": admin_score,
+                "data_source": "helius",
+                "metadata": {
+                    "chain": "solana",
+                    "has_freeze": has_freeze,
+                    "has_mint": has_mint,
+                    "interpretation": "Composite admin risk from on-chain authority analysis",
+                },
+            })
+
+            # 4d. Pausability — derived from freeze authority (Solana equivalent of EVM pause)
+            pause_score = 60.0 if has_freeze else 100.0
+            components.append({
+                "component_id": "solana_pausability",
+                "category": "smart_contract",
+                "raw_value": 1 if has_freeze else 0,
+                "normalized_score": pause_score,
+                "data_source": "helius",
+                "metadata": {
+                    "chain": "solana",
+                    "interpretation": "Freeze authority = can pause individual accounts" if has_freeze else "No freeze capability — not pausable",
+                },
+            })
     except Exception as e:
         logger.error(f"Solana mint authority error for {stablecoin_id}: {e}")
+
+    # --- 5. Static smart contract components (mirrors EVM smart_contract.py) ---
+    try:
+        # 5a. Contract verified (program verification status)
+        verified = SOLANA_VERIFIED_PROGRAMS.get(stablecoin_id, False)
+        components.append({
+            "component_id": "solana_contract_verified",
+            "category": "smart_contract",
+            "raw_value": 1 if verified else 0,
+            "normalized_score": 100.0 if verified else 0.0,
+            "data_source": "config",
+            "metadata": {
+                "chain": "solana",
+                "interpretation": "SPL Token program — verified" if verified else "Verification status unknown",
+            },
+        })
+
+        # 5b. Bug bounty score
+        bounty_info = SOLANA_BUG_BOUNTY.get(stablecoin_id, {})
+        if bounty_info.get("active"):
+            if bounty_info.get("max_payout", 0) >= 100_000:
+                bounty_score = 100.0
+            else:
+                bounty_score = 70.0
+        else:
+            bounty_score = 20.0
+
+        components.append({
+            "component_id": "solana_bug_bounty",
+            "category": "smart_contract",
+            "raw_value": bounty_info.get("max_payout", 0),
+            "normalized_score": bounty_score,
+            "data_source": "config",
+            "metadata": {
+                "chain": "solana",
+                "active": bounty_info.get("active", False),
+                "platform": bounty_info.get("platform"),
+                "note": bounty_info.get("note"),
+            },
+        })
+
+        # 5c. Exploit history
+        exploits = SOLANA_EXPLOIT_HISTORY.get(stablecoin_id, [])
+        if not exploits:
+            exploit_score = 100.0
+        else:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            most_recent = None
+            for exp in exploits:
+                try:
+                    d = datetime.strptime(exp["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    if most_recent is None or d > most_recent:
+                        most_recent = d
+                except (ValueError, KeyError):
+                    continue
+            if most_recent is None:
+                exploit_score = 100.0
+            else:
+                days_ago = (now - most_recent).days
+                if days_ago < 90:
+                    exploit_score = 0.0
+                elif days_ago < 365:
+                    exploit_score = 20.0
+                else:
+                    exploit_score = 60.0
+
+        components.append({
+            "component_id": "solana_exploit_history",
+            "category": "smart_contract",
+            "raw_value": len(exploits),
+            "normalized_score": exploit_score,
+            "data_source": "config",
+            "metadata": {
+                "chain": "solana",
+                "exploit_count": len(exploits),
+                "interpretation": "No known Solana-specific exploits" if not exploits else f"{len(exploits)} incident(s)",
+            },
+        })
+    except Exception as e:
+        logger.error(f"Solana static smart contract error for {stablecoin_id}: {e}")
 
     if components:
         logger.info(f"Solana collector: {len(components)} components for {stablecoin_id}")

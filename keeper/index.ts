@@ -1,120 +1,253 @@
 /**
- * Keeper — main entry point for the dual-chain SII + PSI score publisher.
+ * Basis Keeper — main loop
  *
- * Each cycle:
- * 1. Fetch SII scores from hub API
- * 2. Fetch PSI scores from hub API
- * 3. Fetch on-chain state from both chains
- * 4. Diff API vs on-chain for both SII and PSI
- * 5. Publish deltas to both chains
+ * Flow: poll API → diff on-chain → publish deltas → log + alert
+ *
+ * Run:
+ *   npx tsx keeper/index.ts
+ *   npx tsx keeper/index.ts --dry-run
  */
 
-import { loadConfig, KeeperConfig } from "./config";
-import { convertSiiScore, convertPsiScore, ApiSiiScore, ApiPsiScore } from "./converter";
-import { diffSiiScores, diffPsiScores } from "./differ";
-import {
-  publishSiiUpdates,
-  publishPsiUpdates,
-  fetchOnChainSiiScores,
-  fetchOnChainPsiScores,
-  PublishResult,
-} from "./publisher";
+import { ethers } from "ethers";
+import { loadConfig } from "./config.js";
+import { logger } from "./logger.js";
+import { sendAlert, checkStaleness } from "./alerter.js";
+import { TOKEN_ADDRESSES } from "./converter.js";
+import { fetchOnChainScores, computeUpdates, type ApiScore } from "./differ.js";
+import { publishUpdates, sleep } from "./publisher.js";
 
-async function fetchApiSiiScores(config: KeeperConfig): Promise<ApiSiiScore[]> {
-  const url = `${config.apiBaseUrl}${config.apiSiiScoresEndpoint}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`SII API error: ${res.status} ${res.statusText}`);
-  const data = await res.json();
-  return data.scores ?? data;
+// Hub API response envelope
+interface HubScoresResponse {
+  stablecoins: ApiScore[];
+  count: number;
+  formula_version: string;
+  timestamp: string;
 }
 
-async function fetchApiPsiScores(config: KeeperConfig): Promise<ApiPsiScore[]> {
-  const url = `${config.apiBaseUrl}${config.apiPsiScoresEndpoint}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`PSI API error: ${res.status} ${res.statusText}`);
-  const data = await res.json();
-  return data.scores ?? data;
+const FORMULA_VERSION = 100; // v1.0.0
+
+async function fetchApiScores(apiUrl: string, endpoint: string): Promise<ApiScore[]> {
+  const url = `${apiUrl}${endpoint}`;
+  logger.info("Fetching scores from API", { url });
+
+  const res = await fetch(url, {
+    headers: { "Accept": "application/json" },
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`API returned HTTP ${res.status}: ${await res.text()}`);
+  }
+
+  const raw = await res.json() as ApiScore[] | HubScoresResponse;
+
+  // Hub returns a wrapped envelope; flat array is also supported for local dev
+  let scores: ApiScore[];
+  if (Array.isArray(raw)) {
+    scores = raw;
+  } else if (raw && typeof raw === "object" && Array.isArray((raw as HubScoresResponse).stablecoins)) {
+    scores = (raw as HubScoresResponse).stablecoins;
+  } else {
+    throw new Error(`Unexpected API response shape: ${JSON.stringify(raw).slice(0, 200)}`);
+  }
+
+  logger.info("Fetched API scores", { count: scores.length });
+  return scores;
 }
 
-async function runCycle(config: KeeperConfig): Promise<void> {
-  const now = Math.floor(Date.now() / 1000);
-  console.log(`[keeper] Starting cycle at ${new Date().toISOString()}`);
+/**
+ * Build a token address map from the API response.
+ * Uses id.toLowerCase() → token_contract (Ethereum L1 address).
+ * Falls back to the static TOKEN_ADDRESSES if any entry is missing the token_contract field.
+ */
+function buildTokenAddressMap(apiScores: ApiScore[]): Record<string, string> {
+  const dynamic: Record<string, string> = {};
+  let missingCount = 0;
 
-  // 1. Fetch scores from API (parallel)
-  const [apiSii, apiPsi] = await Promise.all([
-    fetchApiSiiScores(config),
-    fetchApiPsiScores(config),
-  ]);
-
-  console.log(`[keeper] Fetched ${apiSii.length} SII scores, ${apiPsi.length} PSI scores from API`);
-
-  // 2. Convert to on-chain format
-  const convertedSii = apiSii.map(convertSiiScore);
-  const convertedPsi = apiPsi.map(convertPsiScore);
-
-  // 3. Fetch on-chain state from both chains (parallel)
-  const chains = [
-    { name: "base", rpc: config.baseRpcUrl, oracle: config.baseOracleAddress },
-    { name: "arbitrum", rpc: config.arbitrumRpcUrl, oracle: config.arbitrumOracleAddress },
-  ];
-
-  for (const chain of chains) {
-    console.log(`[keeper] Processing chain: ${chain.name}`);
-
-    const [onChainSii, onChainPsi] = await Promise.all([
-      fetchOnChainSiiScores(chain.rpc, chain.oracle),
-      fetchOnChainPsiScores(chain.rpc, chain.oracle),
-    ]);
-
-    // 4. Diff
-    const siiDeltas = diffSiiScores(
-      convertedSii, onChainSii,
-      config.siiScoreDeltaThreshold, config.stalenessThreshold, now
-    );
-    const psiDeltas = diffPsiScores(
-      convertedPsi, onChainPsi,
-      config.psiScoreDeltaThreshold, config.stalenessThreshold, now
-    );
-
-    console.log(`[keeper] ${chain.name}: ${siiDeltas.length} SII deltas, ${psiDeltas.length} PSI deltas`);
-
-    // 5. Publish deltas (parallel per type)
-    const results: (PublishResult | null)[] = await Promise.all([
-      publishSiiUpdates(siiDeltas, chain.rpc, chain.oracle, config, chain.name),
-      publishPsiUpdates(psiDeltas, chain.rpc, chain.oracle, config, chain.name),
-    ]);
-
-    for (const result of results) {
-      if (result) {
-        console.log(
-          `[keeper] ${result.chain} ${result.type}: published ${result.updatedCount} updates (tx: ${result.txHash})`
-        );
-      }
+  for (const s of apiScores) {
+    if (s.token_contract) {
+      dynamic[s.id.toLowerCase()] = s.token_contract;
+    } else {
+      missingCount++;
     }
   }
 
-  console.log(`[keeper] Cycle complete`);
+  if (missingCount > 0) {
+    logger.warn(
+      "Some API entries are missing the token_contract field — falling back to static TOKEN_ADDRESSES",
+      { missingCount, totalEntries: apiScores.length }
+    );
+    return TOKEN_ADDRESSES;
+  }
+
+  const newIds = Object.keys(dynamic).filter((id) => !(id in TOKEN_ADDRESSES));
+  if (newIds.length > 0) {
+    logger.info("Dynamic token map includes new tokens not in static map", { newIds });
+  }
+
+  return dynamic;
+}
+
+async function runCycle(
+  config: ReturnType<typeof loadConfig>,
+  walletBase: ethers.Wallet,
+  walletArb: ethers.Wallet,
+  providerBase: ethers.JsonRpcProvider,
+  providerArb: ethers.JsonRpcProvider
+): Promise<void> {
+  const cycleStart = Date.now();
+  const cycleTimestamp = Math.floor(cycleStart / 1000);
+
+  logger.info("=== Keeper cycle start ===", { cycleTimestamp });
+
+  // 1. Poll API — on failure, warn and fall back to static TOKEN_ADDRESSES so the
+  //    cycle can still push staleness-detected updates for known tokens.
+  let apiScores: ApiScore[] = [];
+  let tokenAddresses: Record<string, string> = TOKEN_ADDRESSES;
+
+  try {
+    apiScores = await fetchApiScores(config.apiUrl, config.apiScoresEndpoint);
+
+    // Build dynamic token address map from the API response.
+    // Falls back to static TOKEN_ADDRESSES if any entry lacks the contract field.
+    tokenAddresses = buildTokenAddressMap(apiScores);
+  } catch (err) {
+    logger.warn(
+      "Failed to fetch API scores — skipping score updates, using static TOKEN_ADDRESSES for staleness check",
+      { error: err instanceof Error ? err.message : String(err) }
+    );
+    await sendAlert(`Basis keeper: API fetch failed — ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 2. Diff on-chain state for both chains in parallel
+  const [onChainBase, onChainArb] = await Promise.all([
+    fetchOnChainScores(providerBase, config.chains.base.oracleAddress),
+    fetchOnChainScores(providerArb, config.chains.arbitrum.oracleAddress),
+  ]);
+
+  const updatesBase = computeUpdates(
+    apiScores,
+    onChainBase,
+    tokenAddresses,
+    config.scoreChangeThreshold,
+    FORMULA_VERSION,
+    cycleTimestamp
+  );
+
+  const updatesArb = computeUpdates(
+    apiScores,
+    onChainArb,
+    tokenAddresses,
+    config.scoreChangeThreshold,
+    FORMULA_VERSION,
+    cycleTimestamp
+  );
+
+  logger.info("Diff complete", {
+    baseUpdates: updatesBase.length,
+    arbUpdates: updatesArb.length,
+  });
+
+  // 3. Publish deltas to both chains in parallel
+  const [resultBase, resultArb] = await Promise.all([
+    publishUpdates(
+      updatesBase,
+      providerBase,
+      walletBase,
+      config.chains.base.oracleAddress,
+      "base",
+      config
+    ),
+    publishUpdates(
+      updatesArb,
+      providerArb,
+      walletArb,
+      config.chains.arbitrum.oracleAddress,
+      "arbitrum",
+      config
+    ),
+  ]);
+
+  // 4. Log results
+  const results = [resultBase, resultArb].filter(Boolean);
+  if (results.length > 0) {
+    logger.info("Cycle publish summary", {
+      results: results.map((r) => ({
+        chain: r!.chain,
+        txHash: r!.txHash,
+        updatesCount: r!.updatesCount,
+      })),
+    });
+  } else {
+    logger.info("No on-chain updates needed this cycle");
+  }
+
+  // 5. Staleness check (if configured)
+  if (config.alertOnStaleness) {
+    const maxAge = config.pollIntervalSeconds * 2;
+    const knownTokens = Object.values(tokenAddresses);
+
+    const oracleBaseAbi = [
+      "function isStale(address token, uint256 maxAge) external view returns (bool)",
+    ];
+    const oracleBase = new ethers.Contract(
+      config.chains.base.oracleAddress,
+      oracleBaseAbi,
+      providerBase
+    );
+
+    await checkStaleness(oracleBase as Parameters<typeof checkStaleness>[0], knownTokens, maxAge);
+  }
+
+  const cycleDuration = Date.now() - cycleStart;
+  logger.info("=== Keeper cycle complete ===", { durationMs: cycleDuration });
 }
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  console.log("[keeper] Starting Basis Protocol keeper");
-  console.log(`[keeper] Cycle interval: ${config.cycleIntervalMs}ms`);
 
-  // Run first cycle immediately
-  await runCycle(config);
+  logger.info("Basis Keeper starting", {
+    apiUrl: config.apiUrl,
+    baseOracle: config.chains.base.oracleAddress,
+    arbOracle: config.chains.arbitrum.oracleAddress,
+    pollIntervalSeconds: config.pollIntervalSeconds,
+    threshold: config.scoreChangeThreshold,
+    dryRun: config.dryRun,
+  });
 
-  // Then run on interval
-  setInterval(async () => {
+  const providerBase = new ethers.JsonRpcProvider(
+    config.chains.base.rpcUrl,
+    config.chains.base.chainId
+  );
+  const providerArb = new ethers.JsonRpcProvider(
+    config.chains.arbitrum.rpcUrl,
+    config.chains.arbitrum.chainId
+  );
+
+  const walletBase = new ethers.Wallet(config.keeperPrivateKey, providerBase);
+  const walletArb  = new ethers.Wallet(config.keeperPrivateKey, providerArb);
+
+  logger.info("Keeper wallet address", { address: walletBase.address });
+
+  const intervalMs = config.pollIntervalSeconds * 1000;
+
+  // Run first cycle immediately, then on schedule
+  while (true) {
     try {
-      await runCycle(config);
+      await runCycle(config, walletBase, walletArb, providerBase, providerArb);
     } catch (err) {
-      console.error("[keeper] Cycle failed:", err);
+      const msg = `Unhandled error in keeper cycle`;
+      logger.error(msg, { error: err instanceof Error ? err.message : String(err) });
+      await sendAlert(msg, err);
     }
-  }, config.cycleIntervalMs);
+
+    logger.info(`Sleeping ${config.pollIntervalSeconds}s until next cycle`);
+    await sleep(intervalMs);
+  }
 }
 
-main().catch((err) => {
-  console.error("[keeper] Fatal error:", err);
+main().catch(async (err) => {
+  logger.error("Fatal keeper error", { error: err instanceof Error ? err.message : String(err) });
+  await sendAlert("Keeper crashed — fatal error", err);
   process.exit(1);
 });

@@ -1,78 +1,78 @@
-/**
- * Converter — maps API responses to on-chain data types.
- *
- * SII scores are keyed by token address. PSI scores are keyed by protocol slug string.
- * Grades are converted from string ("A+", "B") to bytes2 for on-chain storage.
- */
+import { ethers } from "ethers";
 
-// ─── Types ───
+// ============================================================
+// Score conversion: API 0-100 float → on-chain uint16 0-10000
+// ============================================================
 
-export interface ApiSiiScore {
-  token_address: string;  // 0x... checksummed
-  score: number;          // 0-100 (float)
-  grade: string;          // "A+", "B", "C-", etc.
-  timestamp: number;      // Unix epoch seconds
-  version: number;        // Formula version
+export function scoreToUint16(apiScore: number): number {
+  return Math.round(apiScore * 100); // 78.45 → 7845
 }
 
-export interface ApiPsiScore {
-  protocol_slug: string;  // "aave", "drift", "compound", etc.
-  score: number;          // 0-100 (float)
-  grade: string;          // "A+", "B", etc.
-  timestamp: number;      // Unix epoch seconds
-  version: number;        // Formula version
+export function uint16ToScore(raw: number): number {
+  return raw / 100; // 7845 → 78.45
 }
 
-export interface OnChainSiiScore {
-  token: string;          // address
-  score: number;          // 0-10000 (basis points)
-  grade: string;          // hex bytes2
-  timestamp: number;
-  version: number;
-}
+// ============================================================
+// Grade conversion: API string → bytes2 hex
+// ============================================================
 
-export interface OnChainPsiScore {
-  slug: string;
-  score: number;          // 0-10000
-  grade: string;          // hex bytes2
-  timestamp: number;
-  version: number;
-}
-
-// ─── Converters ───
-
-/** Convert a human-readable grade to a 2-byte hex string for on-chain storage. */
 export function gradeToBytes2(grade: string): string {
-  // Pad to 2 chars: "A+" stays "A+", "B" becomes "B "
-  const padded = grade.padEnd(2, " ");
-  const byte1 = padded.charCodeAt(0);
-  const byte2 = padded.charCodeAt(1);
-  return "0x" + byte1.toString(16).padStart(2, "0") + byte2.toString(16).padStart(2, "0");
+  const byte1 = grade.charCodeAt(0); // 'A' = 0x41
+  const byte2 = grade.length > 1 ? grade.charCodeAt(1) : 0; // '+' = 0x2B, '-' = 0x2D
+  const combined = (byte1 << 8) | byte2;
+  return ethers.zeroPadBytes(ethers.toBeHex(combined), 2);
 }
 
-/** Convert a score from 0-100 float to 0-10000 basis points. */
-export function scoreToBasisPoints(score: number): number {
-  return Math.round(score * 100);
+export function bytes2ToGrade(raw: string): string {
+  // raw is like "0x412b"
+  const hex = raw.replace("0x", "");
+  const byte1 = parseInt(hex.slice(0, 2), 16);
+  const byte2 = parseInt(hex.slice(2, 4), 16);
+  const char1 = String.fromCharCode(byte1);
+  const char2 = byte2 !== 0 ? String.fromCharCode(byte2) : "";
+  return char1 + char2;
 }
 
-/** Convert API SII score to on-chain format. */
-export function convertSiiScore(api: ApiSiiScore): OnChainSiiScore {
-  return {
-    token: api.token_address,
-    score: scoreToBasisPoints(api.score),
-    grade: gradeToBytes2(api.grade),
-    timestamp: api.timestamp,
-    version: api.version,
-  };
+// ============================================================
+// Token address mapping: API stablecoin ID → Ethereum L1 address
+// Source of truth: app/config.py STABLECOIN_REGISTRY
+// ============================================================
+
+export const TOKEN_ADDRESSES: Record<string, string> = {
+  usdc:  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+  usdt:  "0xdac17f958d2ee523a2206206994597c13d831ec7",
+  dai:   "0x6b175474e89094c44da98b954eedeac495271d0f",
+  frax:  "0x853d955acef822db058eb8505911ed77f175b99e",
+  pyusd: "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+  fdusd: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409",
+  tusd:  "0x0000000000085d4780B73119b644AE5ecd22b376",
+  usdd:  "0x0C10bF8FcB7Bf5412187A595ab97a3609160b5c6",
+  usde:  "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
+  usd1:  "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+};
+
+export function tokenIdToAddress(id: string): string | undefined {
+  return TOKEN_ADDRESSES[id.toLowerCase()];
 }
 
-/** Convert API PSI score to on-chain format. */
-export function convertPsiScore(api: ApiPsiScore): OnChainPsiScore {
-  return {
-    slug: api.protocol_slug,
-    score: scoreToBasisPoints(api.score),
-    grade: gradeToBytes2(api.grade),
-    timestamp: api.timestamp,
-    version: api.version,
-  };
+// ============================================================
+// Grade→bytes2 lookup table (for reference/validation)
+// ============================================================
+
+export const GRADE_BYTES2: Record<string, string> = {
+  "A+": "0x412b",
+  "A":  "0x4100",
+  "A-": "0x412d",
+  "B+": "0x422b",
+  "B":  "0x4200",
+  "B-": "0x422d",
+  "C+": "0x432b",
+  "C":  "0x4300",
+  "C-": "0x432d",
+  "D":  "0x4400",
+  "F":  "0x4600",
+};
+
+export function validateGrade(grade: string): boolean {
+  return grade in GRADE_BYTES2;
 }

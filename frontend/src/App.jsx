@@ -109,18 +109,30 @@ function TabHeader({ title, formId, stats, formulaLine, versionLabel, accent, mo
       )}
 
       {showOnChain && (
-        <div style={{ borderTop: `1px solid #b8d9c4`, background: "#f0f7f2", padding: mobile ? "8px 12px" : "10px 24px", display: "flex", flexDirection: mobile ? "column" : "row", justifyContent: "space-between", alignItems: mobile ? "flex-start" : "center", gap: mobile ? 4 : 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#2d7a3a", flexShrink: 0, animation: "pulse 2s ease-in-out infinite" }} />
-            <span style={{ fontFamily: T.mono, fontSize: mobile ? 9 : 10.5, color: "#2a5c38" }}>
-              {mobile ? "On-chain \u00b7 Block #21847293" : "Scores committed to Ethereum mainnet \u00b7 Block #21847293 \u00b7 Merkle root: 0x7f3a...c4e1"}
-            </span>
+        <div style={{ borderTop: `1px solid #b8d9c4`, background: "#f0f7f2", padding: mobile ? "8px 12px" : "10px 24px", display: "flex", flexDirection: "column", gap: mobile ? 6 : 8 }}>
+          <div style={{ display: "flex", flexDirection: mobile ? "column" : "row", justifyContent: "space-between", alignItems: mobile ? "flex-start" : "center", gap: mobile ? 4 : 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#2d7a3a", flexShrink: 0, animation: "pulse 2s ease-in-out infinite" }} />
+              <span style={{ fontFamily: T.mono, fontSize: mobile ? 9 : 10.5, color: "#2a5c38" }}>
+                {mobile ? "On-chain \u00b7 Block #21847293" : "Scores committed to Ethereum mainnet \u00b7 Block #21847293 \u00b7 Merkle root: 0x7f3a...c4e1"}
+              </span>
+            </div>
+            {!mobile && (
+              <span style={{ fontFamily: T.mono, fontSize: 10, color: "#4a8060" }}>
+                {"Methodology v1.0 \u00b7 public \u00b7 immutable \u00b7 verify on-chain \u2197"}
+              </span>
+            )}
           </div>
-          {!mobile && (
-            <span style={{ fontFamily: T.mono, fontSize: 10, color: "#4a8060" }}>
-              {"Methodology v1.0 · public · immutable · verify on-chain ↗"}
-            </span>
-          )}
+          <div style={{ display: "flex", flexDirection: mobile ? "column" : "row", gap: mobile ? 4 : 16, paddingLeft: mobile ? 0 : 14 }}>
+            <a href="https://basescan.org/address/0x01aaa1d20fe68d55d0c5b6b42399b91024f8cd99" target="_blank" rel="noopener noreferrer" style={{ fontFamily: T.mono, fontSize: mobile ? 8.5 : 10, color: "#2a5c38", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#3b82f6", display: "inline-block" }} />
+              {mobile ? "Base Oracle \u00b7 0x01aA...cD99" : "Live scores on Base \u00b7 0x01aAa1D2...cD99 \u00b7 17 stablecoins \u2197"}
+            </a>
+            <a href="https://arbiscan.io/address/0x01aaa1d20fe68d55d0c5b6b42399b91024f8cd99" target="_blank" rel="noopener noreferrer" style={{ fontFamily: T.mono, fontSize: mobile ? 8.5 : 10, color: "#2a5c38", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#9945ff", display: "inline-block" }} />
+              {mobile ? "Arbitrum Oracle \u00b7 0x01aA...cD99" : "Live scores on Arbitrum \u00b7 0x01aAa1D2...cD99 \u00b7 17 stablecoins \u2197"}
+            </a>
+          </div>
         </div>
       )}
     </div>

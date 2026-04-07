@@ -75,7 +75,14 @@
       "Bash(export PATH=\"/home/runner/workspace/.config/.foundry/bin:$PATH\")",
       "Bash(forge install:*)",
       "Bash(forge build:*)",
-      "Bash(forge test:*)"
+      "Bash(forge test:*)",
+      "WebSearch",
+      "WebFetch(domain:www.drift.trade)",
+      "WebFetch(domain:drift.foundation)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:app.realms.today)",
+      "WebFetch(domain:docs.tribeca.so)",
+      "WebFetch(domain:anchor.so)"
     ]
   }
 }
