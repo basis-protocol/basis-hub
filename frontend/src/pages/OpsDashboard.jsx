@@ -1306,6 +1306,126 @@ function MilestonesPanel() {
   );
 }
 
+// ─── State Growth Panel ──────────────────────────────────────────────
+
+function StateGrowthPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState({});
+  const [flash, showFlash] = useFlash();
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await opsFetch("/api/ops/state-growth?days=14");
+      setData(res);
+    } catch (e) {
+      showFlash(e.message, false);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const fmtNum = (n) => n != null ? n.toLocaleString() : "—";
+  const deltaColor = (d) => d > 0 ? "#27ae60" : d < 0 ? "#e74c3c" : T.inkFaint;
+  const deltaPrefix = (d) => d > 0 ? "+" : "";
+
+  const s = data?.summary;
+
+  return (
+    <Section title="STATE GROWTH" actions={
+      <button onClick={load} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+        {loading ? "Loading..." : "Refresh"}
+      </button>
+    }>
+      <Flash flash={flash} />
+      <div style={{ padding: "0 10px" }}>
+        {!data && loading && <div style={{ color: T.inkFaint, fontSize: 12 }}>Loading state growth...</div>}
+        {!data && !loading && <div style={{ color: T.inkFaint, fontSize: 12 }}>No data</div>}
+
+        {/* Summary bar */}
+        {s && (
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12, padding: "8px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+            <div>
+              <Lbl>Total Records</Lbl>
+              <div style={{ fontSize: 18, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>{fmtNum(s.total_records_now)}</div>
+            </div>
+            <div>
+              <Lbl>7d Growth</Lbl>
+              <div style={{ fontSize: 18, fontFamily: T.mono, fontWeight: 700, color: deltaColor(s.total_growth_7d) }}>{deltaPrefix(s.total_growth_7d)}{fmtNum(s.total_growth_7d)}</div>
+            </div>
+            <div>
+              <Lbl>Avg Daily</Lbl>
+              <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 600, color: T.inkMid }}>{deltaPrefix(s.avg_daily_growth)}{fmtNum(s.avg_daily_growth)}</div>
+            </div>
+            <div>
+              <Lbl>Fastest</Lbl>
+              <div style={{ fontSize: 12, fontFamily: T.mono, color: "#27ae60" }}>{s.fastest_growing || "—"}</div>
+            </div>
+            {s.stalled && s.stalled.length > 0 && (
+              <div>
+                <Lbl>Stalled</Lbl>
+                <div style={{ fontSize: 11, fontFamily: T.mono, color: "#e74c3c" }}>{s.stalled.join(", ")}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Day-by-day table */}
+        {data?.days && data.days.length > 0 && (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: T.mono }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${T.ruleMid}` }}>
+                <th style={{ textAlign: "left", padding: "4px 6px", fontWeight: 600, color: T.inkLight, fontSize: 10 }}>DATE</th>
+                <th style={{ textAlign: "right", padding: "4px 6px", fontWeight: 600, color: T.inkLight, fontSize: 10 }}>TOTAL</th>
+                <th style={{ textAlign: "right", padding: "4px 6px", fontWeight: 600, color: T.inkLight, fontSize: 10 }}>DELTA</th>
+                <th style={{ width: 24 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.days.map((day) => {
+                const isExp = expanded[day.date];
+                const bk = day.breakdown || {};
+                return (
+                  <>
+                    <tr key={day.date} style={{ borderBottom: `1px solid ${T.ruleLight}`, cursor: "pointer" }} onClick={() => setExpanded((p) => ({ ...p, [day.date]: !p[day.date] }))}>
+                      <td style={{ padding: "4px 6px", color: T.inkMid }}>{day.date}</td>
+                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtNum(day.total_records)}</td>
+                      <td style={{ padding: "4px 6px", textAlign: "right", color: deltaColor(day.delta) }}>
+                        {day.delta != null ? `${deltaPrefix(day.delta)}${fmtNum(day.delta)}` : "—"}
+                      </td>
+                      <td style={{ textAlign: "center", color: T.inkFaint, fontSize: 10 }}>{isExp ? "\u25BC" : "\u25B6"}</td>
+                    </tr>
+                    {isExp && Object.keys(bk).length > 0 && (
+                      <tr key={day.date + "-detail"}>
+                        <td colSpan={4} style={{ padding: "2px 6px 8px 20px", background: T.paperWarm }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: "1px 12px" }}>
+                            {Object.entries(bk).map(([field, info]) => (
+                              <div key={field} style={{ display: "contents" }}>
+                                <span style={{ color: T.inkMid, padding: "2px 0" }}>{field.replace(/_/g, " ")}</span>
+                                <span style={{ textAlign: "right", padding: "2px 0" }}>{fmtNum(info.value)}</span>
+                                <span style={{ textAlign: "right", padding: "2px 0", color: deltaColor(info.delta) }}>
+                                  {info.delta != null ? `${deltaPrefix(info.delta)}${fmtNum(info.delta)}` : "—"}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+
 // ─── Analytics Panel ──────────────────────────────────────────────────
 
 function AnalyticsPanel() {
@@ -2296,6 +2416,7 @@ export default function OpsDashboard() {
             <DiscoveryPanel />
             <ChainExpansionPanel />
             <MilestonesPanel />
+            <StateGrowthPanel />
           </>
         )}
 

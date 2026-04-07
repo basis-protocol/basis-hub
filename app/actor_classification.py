@@ -323,20 +323,19 @@ def classify_all_active(limit: int = 2000) -> dict:
         """
         SELECT DISTINCT w.address
         FROM wallet_graph.wallets w
-        WHERE w.address LIKE '0x%%'
-          AND EXISTS (
+        WHERE EXISTS (
               SELECT 1 FROM wallet_graph.wallet_edges e
-              WHERE (e.from_address = w.address OR e.to_address = w.address)
+              WHERE (LOWER(e.from_address) = LOWER(w.address) OR LOWER(e.to_address) = LOWER(w.address))
                 AND e.last_transfer_at > NOW() - INTERVAL '90 days'
           )
           AND (
               NOT EXISTS (
                   SELECT 1 FROM wallet_graph.actor_classifications ac
-                  WHERE ac.wallet_address = w.address
+                  WHERE ac.wallet_address = LOWER(w.address)
               )
               OR EXISTS (
                   SELECT 1 FROM wallet_graph.actor_classifications ac
-                  WHERE ac.wallet_address = w.address
+                  WHERE ac.wallet_address = LOWER(w.address)
                     AND ac.classified_at < NOW() - INTERVAL '24 hours'
               )
           )
