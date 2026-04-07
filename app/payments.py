@@ -19,6 +19,7 @@ from x402 import x402ResourceServer, FacilitatorConfig
 from x402.http.facilitator_client import HTTPFacilitatorClient
 from x402.http.middleware.fastapi import PaymentMiddlewareASGI
 from x402.http.types import RouteConfig, PaymentOption
+from x402.mechanisms.evm.exact import ExactEvmServerScheme
 
 from app.database import fetch_one, fetch_all
 
@@ -54,6 +55,7 @@ def create_x402_middleware():
 
     facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=X402_FACILITATOR))
     server = x402ResourceServer(facilitator_clients=facilitator)
+    server.register(X402_NETWORK, ExactEvmServerScheme())
 
     routes = {
         "GET /api/paid/sii/rankings": _route(
