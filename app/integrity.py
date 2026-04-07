@@ -280,6 +280,31 @@ def _pulse_summary_coherence():
         return [{"rule": "pulse_summary_check", "field": "summary", "value": None, "level": "warning", "message": f"check failed: {e}"}]
 
 
+# -- Actor classification coherence rules (Primitive #21) --
+
+def _actor_probability_range():
+    """All agent_probability values must be between 0 and 1."""
+    return _count_check(
+        "SELECT COUNT(*) AS cnt FROM wallet_graph.actor_classifications WHERE agent_probability < 0 OR agent_probability > 1",
+        threshold=0, level="error",
+        rule="actor_probability_out_of_range", field="agent_probability",
+        message="agent_probability values outside [0, 1] range",
+    )
+
+
+def _actor_type_consistency():
+    """actor_type must match threshold applied to agent_probability."""
+    return _count_check(
+        """
+        SELECT COUNT(*) AS cnt FROM wallet_graph.actor_classifications
+        WHERE actor_type NOT IN ('autonomous_agent', 'human', 'contract_vault', 'unknown')
+        """,
+        threshold=0, level="error",
+        rule="actor_type_invalid", field="actor_type",
+        message="actor_type values outside valid enum",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Domain registry
 # ---------------------------------------------------------------------------
@@ -319,6 +344,11 @@ DOMAINS = {
         "freshness_query": "SELECT COUNT(*) AS cnt, MAX(created_at) AS latest FROM daily_pulses",
         "max_age_hours": 26,
         "coherence_rules": [_pulse_summary_coherence],
+    },
+    "actor_classification": {
+        "freshness_query": "SELECT COUNT(*) AS cnt, MAX(classified_at) AS latest FROM wallet_graph.actor_classifications WHERE actor_type != 'unknown'",
+        "max_age_hours": 48,
+        "coherence_rules": [_actor_probability_range, _actor_type_consistency],
     },
 }
 

@@ -391,6 +391,99 @@ def detect_cross_index_divergence():
     return results
 
 
+# ---------------------------------------------------------------------------
+# Primitive #21: Actor-flow divergence
+# ---------------------------------------------------------------------------
+
+def detect_actor_flow_divergence():
+    """Detect when agents and humans flow in opposite directions for a stablecoin.
+
+    Agents exiting while humans entering = information asymmetry signal.
+    Uses wallet_graph.wallet_edges joined with actor_classifications to compute
+    net flow direction by actor type over the last 7 days.
+    """
+    results = []
+
+    # Get all scored stablecoins with contract addresses
+    coins = fetch_all(
+        """
+        SELECT s.stablecoin_id, st.symbol, st.contract
+        FROM scores s
+        JOIN stablecoins st ON st.id = s.stablecoin_id
+        WHERE st.contract IS NOT NULL AND st.contract != ''
+        """
+    )
+
+    for coin in coins:
+        contract = coin["contract"].lower()
+        symbol = coin["symbol"]
+
+        # Compute net flow by actor type over last 7 days
+        # Positive = net inflow (more received than sent), Negative = net outflow
+        flow_rows = fetch_all(
+            """
+            SELECT
+                COALESCE(ac.actor_type, 'unknown') AS actor_type,
+                SUM(CASE WHEN LOWER(e.to_address) = wh.wallet_address THEN e.total_value_usd
+                         WHEN LOWER(e.from_address) = wh.wallet_address THEN -e.total_value_usd
+                         ELSE 0 END) AS net_flow_usd,
+                COUNT(DISTINCT wh.wallet_address) AS wallet_count
+            FROM wallet_graph.wallet_holdings wh
+            JOIN wallet_graph.wallet_edges e
+                ON (LOWER(e.from_address) = wh.wallet_address OR LOWER(e.to_address) = wh.wallet_address)
+            LEFT JOIN wallet_graph.actor_classifications ac
+                ON ac.wallet_address = wh.wallet_address
+            WHERE LOWER(wh.token_address) = %s
+              AND wh.indexed_at > NOW() - INTERVAL '7 days'
+              AND e.last_transfer_at > NOW() - INTERVAL '7 days'
+            GROUP BY COALESCE(ac.actor_type, 'unknown')
+            """,
+            (contract,),
+        )
+
+        if len(flow_rows) < 2:
+            continue
+
+        flows = {r["actor_type"]: float(r["net_flow_usd"] or 0) for r in flow_rows}
+        agent_flow = flows.get("autonomous_agent", 0)
+        human_flow = flows.get("human", 0)
+
+        # Detect opposing flows with meaningful magnitude
+        if abs(agent_flow) < 1000 or abs(human_flow) < 1000:
+            continue
+
+        # Agents exiting, humans entering = information asymmetry (most concerning)
+        if agent_flow < 0 and human_flow > 0:
+            magnitude = min(abs(agent_flow), abs(human_flow))
+            severity = "critical" if magnitude > 100000 else "alert" if magnitude > 10000 else "notable"
+            results.append({
+                "type": "actor_flow_divergence",
+                "symbol": symbol,
+                "agent_net_flow_usd": round(agent_flow, 2),
+                "human_net_flow_usd": round(human_flow, 2),
+                "signal": f"Agents net-exiting {symbol} (${abs(agent_flow):,.0f}) while humans net-entering (${human_flow:,.0f})",
+                "direction": "agent_exit_human_enter",
+                "magnitude": round(magnitude, 2),
+                "severity": severity,
+            })
+        # Humans exiting, agents entering = potential accumulation
+        elif human_flow < 0 and agent_flow > 0:
+            magnitude = min(abs(agent_flow), abs(human_flow))
+            severity = "notable"
+            results.append({
+                "type": "actor_flow_divergence",
+                "symbol": symbol,
+                "agent_net_flow_usd": round(agent_flow, 2),
+                "human_net_flow_usd": round(human_flow, 2),
+                "signal": f"Agents net-entering {symbol} (${agent_flow:,.0f}) while humans net-exiting (${abs(human_flow):,.0f})",
+                "direction": "agent_enter_human_exit",
+                "magnitude": round(magnitude, 2),
+                "severity": severity,
+            })
+
+    return results
+
+
 def detect_all_divergences():
     """Run all divergence detectors and return combined results."""
     asset_divs = []
@@ -424,7 +517,13 @@ def detect_all_divergences():
     except Exception as e:
         logger.warning(f"Cross-index divergence detection failed: {e}")
 
-    all_signals = asset_divs + wallet_divs + flow_divs + protocol_divs + cross_divs
+    actor_divs = []
+    try:
+        actor_divs = detect_actor_flow_divergence()
+    except Exception as e:
+        logger.warning(f"Actor-flow divergence detection failed: {e}")
+
+    all_signals = asset_divs + wallet_divs + flow_divs + protocol_divs + cross_divs + actor_divs
     all_signals.sort(
         key=lambda s: _SEVERITY_ORDER.get(s.get("severity", "silent"), 0),
         reverse=True,
@@ -439,11 +538,12 @@ def detect_all_divergences():
             "quality_flow": len(flow_divs),
             "protocol_solvency": len(protocol_divs),
             "cross_index": len(cross_divs),
+            "actor_flow": len(actor_divs),
             "alerts": sum(1 for s in all_signals if s.get("severity") == "alert"),
             "critical": sum(1 for s in all_signals if s.get("severity") == "critical"),
         },
         "detected_at": datetime.now(timezone.utc).isoformat(),
-        "version": "divergence-v1.1.0",
+        "version": "divergence-v1.2.0",
     }
 
 

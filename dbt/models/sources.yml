@@ -23,3 +23,5 @@ sources:
       - name: wallet_edges
       - name: edge_build_status
       - name: unscored_assets
+      - name: actor_classifications
+      - name: actor_classification_history

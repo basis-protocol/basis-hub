@@ -377,31 +377,44 @@ COMPONENT_NORMALIZATIONS = {
     },
 
     # =========================================================================
-    # Holder Distribution (4 components, weights sum to 1.0)
+    # Holder Distribution (6 components, weights sum to 1.0)
     # =========================================================================
     "top_10_concentration": {
         "fn": normalize_inverse_linear,
         "params": {"perfect": 10, "threshold": 80},
         "category": "holder_distribution",
-        "weight": 0.30,
+        "weight": 0.22,
     },
     "unique_holders": {
         "fn": normalize_log,
         "params": {"thresholds": {1000: 20, 10000: 40, 100000: 60, 1000000: 80, 10000000: 100}},
         "category": "holder_distribution",
-        "weight": 0.25,
+        "weight": 0.19,
     },
     "exchange_concentration": {
         "fn": normalize_centered,
         "params": {"center": 30, "tolerance": 15, "extreme": 40},
         "category": "holder_distribution",
-        "weight": 0.20,
+        "weight": 0.15,
     },
     "stablecoin_market_share": {
         "fn": normalize_linear,
         "params": {"min_val": 0.1, "max_val": 30},
         "category": "holder_distribution",
-        "weight": 0.25,
+        "weight": 0.19,
+    },
+    # Primitive #21: Actor Classification — agent concentration components
+    "agent_holder_share": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 5, "threshold": 60},
+        "category": "holder_distribution",
+        "weight": 0.15,
+    },
+    "correlated_response_risk": {
+        "fn": normalize_inverse_linear,
+        "params": {"perfect": 0, "threshold": 50},
+        "category": "holder_distribution",
+        "weight": 0.10,
     },
 
     # =========================================================================

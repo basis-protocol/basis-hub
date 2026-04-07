@@ -14,3 +14,5 @@ UNION ALL
 SELECT * FROM {{ ref('disc_divergence_signals') }}
 UNION ALL
 SELECT * FROM {{ ref('disc_attestation_signals') }}
+UNION ALL
+SELECT * FROM {{ ref('disc_actor_signals') }}

@@ -398,17 +398,30 @@ def register_wallet_routes(app: FastAPI) -> None:
             chain_clause = ""
             base_params = (addr, addr, addr, addr, addr, depth, MAX_NODES + 1)
 
+        # Actor-type weight multipliers (Primitive #21):
+        # agent→agent: 1.5x (correlated response), human→human: 1.0x, cross-type: 0.7x
         query = f"""
             WITH RECURSIVE contagion_path AS (
                 SELECT
                     CASE WHEN from_address = %s THEN to_address ELSE from_address END AS node,
-                    weight,
+                    weight * CASE
+                        WHEN src_ac.actor_type = 'autonomous_agent'
+                         AND dst_ac.actor_type = 'autonomous_agent' THEN 1.5
+                        WHEN src_ac.actor_type != dst_ac.actor_type
+                         AND src_ac.actor_type IS NOT NULL
+                         AND dst_ac.actor_type IS NOT NULL THEN 0.7
+                        ELSE 1.0
+                    END AS weight,
                     total_value_usd,
                     1 AS depth,
                     ARRAY[%s,
                         CASE WHEN from_address = %s THEN to_address ELSE from_address END
                     ] AS path
                 FROM wallet_graph.wallet_edges
+                LEFT JOIN wallet_graph.actor_classifications src_ac
+                    ON src_ac.wallet_address = %s
+                LEFT JOIN wallet_graph.actor_classifications dst_ac
+                    ON dst_ac.wallet_address = CASE WHEN from_address = %s THEN to_address ELSE from_address END
                 WHERE (from_address = %s OR to_address = %s)
                   {chain_clause}
                   AND weight > 0.05
@@ -417,12 +430,23 @@ def register_wallet_routes(app: FastAPI) -> None:
 
                 SELECT
                     CASE WHEN e.from_address = cp.node THEN e.to_address ELSE e.from_address END,
-                    e.weight,
+                    e.weight * CASE
+                        WHEN prev_ac.actor_type = 'autonomous_agent'
+                         AND next_ac.actor_type = 'autonomous_agent' THEN 1.5
+                        WHEN prev_ac.actor_type != next_ac.actor_type
+                         AND prev_ac.actor_type IS NOT NULL
+                         AND next_ac.actor_type IS NOT NULL THEN 0.7
+                        ELSE 1.0
+                    END,
                     e.total_value_usd,
                     cp.depth + 1,
                     cp.path || CASE WHEN e.from_address = cp.node THEN e.to_address ELSE e.from_address END
                 FROM wallet_graph.wallet_edges e
                 JOIN contagion_path cp ON (e.from_address = cp.node OR e.to_address = cp.node)
+                LEFT JOIN wallet_graph.actor_classifications prev_ac
+                    ON prev_ac.wallet_address = cp.node
+                LEFT JOIN wallet_graph.actor_classifications next_ac
+                    ON next_ac.wallet_address = CASE WHEN e.from_address = cp.node THEN e.to_address ELSE e.from_address END
                 WHERE cp.depth < %s
                   {chain_clause}
                   AND NOT (CASE WHEN e.from_address = cp.node THEN e.to_address ELSE e.from_address END) = ANY(cp.path)
@@ -439,15 +463,22 @@ def register_wallet_routes(app: FastAPI) -> None:
             LIMIT %s
         """
 
+        # Extra params for the source-address joins in base case
+        if chain:
+            base_params = (addr, addr, addr, addr, addr, addr, addr, chain, depth, chain, MAX_NODES + 1)
+        else:
+            base_params = (addr, addr, addr, addr, addr, addr, addr, depth, MAX_NODES + 1)
+
         rows = fetch_all(query, base_params)
 
         truncated = len(rows) > MAX_NODES
         if truncated:
             rows = rows[:MAX_NODES]
 
-        # Batch-fetch risk grades for all discovered nodes
+        # Batch-fetch risk grades + actor types for all discovered nodes
         node_addrs = [r["address"] for r in rows]
         risk_map = {}
+        actor_map = {}
         if node_addrs:
             risk_rows = fetch_all(
                 """
@@ -461,18 +492,34 @@ def register_wallet_routes(app: FastAPI) -> None:
             )
             risk_map = {r["wallet_address"]: r for r in risk_rows}
 
+            actor_rows = fetch_all(
+                """
+                SELECT wallet_address, actor_type, agent_probability
+                FROM wallet_graph.actor_classifications
+                WHERE wallet_address = ANY(%s)
+                """,
+                (node_addrs,),
+            )
+            actor_map = {r["wallet_address"]: r for r in actor_rows}
+
         nodes = []
         total_exposed = 0.0
+        actor_composition = {"autonomous_agent": 0, "human": 0, "contract_vault": 0, "unknown": 0}
         for r in rows:
             risk = risk_map.get(r["address"])
+            actor = actor_map.get(r["address"])
             exposure = float(r["exposure_usd"]) if r["exposure_usd"] else 0
             total_exposed += exposure
+            atype = actor["actor_type"] if actor else "unknown"
+            actor_composition[atype] = actor_composition.get(atype, 0) + 1
             nodes.append({
                 "address": r["address"],
                 "depth": r["depth"],
                 "edge_weight": round(float(r["edge_weight"]), 4) if r["edge_weight"] else 0,
                 "exposure_usd": exposure,
                 "risk_grade": risk["risk_grade"] if risk else None,
+                "actor_type": atype,
+                "agent_probability": round(float(actor["agent_probability"]), 3) if actor else None,
                 "path": r["path"],
             })
 
@@ -485,6 +532,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             "nodes": nodes,
             "total_exposed_usd": round(total_exposed, 2),
             "node_count": len(nodes),
+            "actor_composition": actor_composition,
         }
         if truncated:
             result["truncated"] = True
@@ -800,4 +848,144 @@ def register_wallet_routes(app: FastAPI) -> None:
             "entity_id": entity_id,
             "label": entity_label,
             "wallets_merged": merged,
+        }
+
+    # -- Actor Classification routes (Primitive #21) --
+
+    @app.get("/api/wallets/{address}/actor")
+    async def wallet_actor(address: str):
+        """Actor classification for a single wallet."""
+        addr = address.lower()
+        row = fetch_one(
+            """
+            SELECT wallet_address, actor_type, agent_probability, confidence,
+                   feature_vector, tx_count_basis, methodology_version,
+                   classification_hash, classified_at
+            FROM wallet_graph.actor_classifications
+            WHERE wallet_address = %s
+            """,
+            (addr,),
+        )
+        if not row:
+            # Try to classify on-demand
+            from app.actor_classification import classify_wallet
+            result = classify_wallet(addr)
+            if not result:
+                raise HTTPException(status_code=404, detail="Insufficient data to classify wallet")
+            row = fetch_one(
+                "SELECT * FROM wallet_graph.actor_classifications WHERE wallet_address = %s",
+                (addr,),
+            )
+        return {
+            "wallet_address": row["wallet_address"],
+            "actor_type": row["actor_type"],
+            "agent_probability": round(float(row["agent_probability"]), 4),
+            "confidence": row["confidence"],
+            "feature_vector": row["feature_vector"],
+            "tx_count_basis": row["tx_count_basis"],
+            "methodology_version": row["methodology_version"],
+            "classification_hash": row["classification_hash"],
+            "classified_at": row["classified_at"].isoformat() if row["classified_at"] else None,
+        }
+
+    @app.get("/api/actor/stats")
+    async def actor_stats():
+        """Aggregate actor classification statistics."""
+        rows = fetch_all(
+            """
+            SELECT actor_type, COUNT(*) AS cnt,
+                   AVG(agent_probability) AS avg_prob,
+                   AVG(tx_count_basis) AS avg_tx
+            FROM wallet_graph.actor_classifications
+            GROUP BY actor_type
+            ORDER BY cnt DESC
+            """
+        )
+        total = sum(r["cnt"] for r in rows)
+        breakdown = {
+            r["actor_type"]: {
+                "count": r["cnt"],
+                "pct": round(r["cnt"] / total * 100, 1) if total else 0,
+                "avg_probability": round(float(r["avg_prob"] or 0), 3),
+                "avg_tx_count": round(float(r["avg_tx"] or 0), 0),
+            }
+            for r in rows
+        }
+        return {
+            "total_classified": total,
+            "breakdown": breakdown,
+            "methodology": "ACL-v1.0",
+        }
+
+    @app.get("/api/actor/stats/{symbol}")
+    async def actor_stats_by_symbol(symbol: str):
+        """Actor composition for a stablecoin's holder base."""
+        sym = symbol.upper()
+        rows = fetch_all(
+            """
+            SELECT ac.actor_type,
+                   COUNT(DISTINCT wh.wallet_address) AS wallets,
+                   COALESCE(SUM(wh.value_usd), 0) AS total_usd
+            FROM wallet_graph.wallet_holdings wh
+            JOIN wallet_graph.actor_classifications ac
+                ON ac.wallet_address = wh.wallet_address
+            WHERE UPPER(wh.symbol) = %s
+              AND wh.indexed_at > NOW() - INTERVAL '7 days'
+              AND wh.value_usd >= 0.01
+            GROUP BY ac.actor_type
+            ORDER BY total_usd DESC
+            """,
+            (sym,),
+        )
+        total_usd = sum(float(r["total_usd"]) for r in rows)
+        composition = {
+            r["actor_type"]: {
+                "wallets": r["wallets"],
+                "value_usd": round(float(r["total_usd"]), 2),
+                "pct_value": round(float(r["total_usd"]) / total_usd * 100, 1) if total_usd else 0,
+            }
+            for r in rows
+        }
+        return {
+            "symbol": sym,
+            "total_value_usd": round(total_usd, 2),
+            "actor_composition": composition,
+        }
+
+    @app.get("/api/actor/population/{symbol}")
+    async def actor_population(symbol: str, days: int = Query(default=30, ge=1, le=365)):
+        """Time series of actor composition for a stablecoin (compounding dataset)."""
+        sym = symbol.upper()
+        rows = fetch_all(
+            """
+            SELECT
+                public.immutable_date(wh.indexed_at) AS day,
+                ac.actor_type,
+                COUNT(DISTINCT wh.wallet_address) AS wallets,
+                COALESCE(SUM(wh.value_usd), 0) AS total_usd
+            FROM wallet_graph.wallet_holdings wh
+            JOIN wallet_graph.actor_classifications ac
+                ON ac.wallet_address = wh.wallet_address
+            WHERE UPPER(wh.symbol) = %s
+              AND wh.indexed_at > NOW() - INTERVAL '%s days'
+              AND wh.value_usd >= 0.01
+            GROUP BY day, ac.actor_type
+            ORDER BY day, ac.actor_type
+            """,
+            (sym, days),
+        )
+        # Pivot into {day: {actor_type: {wallets, value_usd}}}
+        timeline = {}
+        for r in rows:
+            day_str = str(r["day"])
+            if day_str not in timeline:
+                timeline[day_str] = {}
+            timeline[day_str][r["actor_type"]] = {
+                "wallets": r["wallets"],
+                "value_usd": round(float(r["total_usd"]), 2),
+            }
+        return {
+            "symbol": sym,
+            "days": days,
+            "timeline": timeline,
         }

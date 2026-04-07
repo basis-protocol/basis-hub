@@ -119,6 +119,12 @@ def _mark_scoring_status(coingecko_id: str, status: str) -> None:
 # Core: Collect all components for one stablecoin
 # =============================================================================
 
+async def _collect_actor_metrics(client, stablecoin_id):
+    """Lazy wrapper for actor metrics collector."""
+    from app.collectors.actor_metrics import collect_actor_metrics
+    return await collect_actor_metrics(client, stablecoin_id)
+
+
 async def collect_all_components(
     client: httpx.AsyncClient, stablecoin_id: str
 ) -> list[dict]:
@@ -157,6 +163,7 @@ async def collect_all_components(
         safe_collect("flows", collect_flows_components(client, stablecoin_id)),
         safe_collect("smart_contract", collect_smart_contract_components(client, stablecoin_id)),
         safe_collect("solana", collect_solana_components(client, stablecoin_id)),
+        safe_collect("actor_metrics", _collect_actor_metrics(client, stablecoin_id)),
     )
     
     for result in results:
@@ -522,7 +529,18 @@ async def run_scoring_cycle():
     except Exception as e:
         logger.warning(f"Daily pulse generation failed: {e}")
 
-    # Run discovery layer after pulse
+    # Run actor classification after pulse, before discovery
+    try:
+        from app.actor_classification import classify_all_active
+        actor_result = classify_all_active()
+        logger.info(
+            f"Actor classification: {actor_result.get('classified', 0)} classified, "
+            f"{actor_result.get('reclassified', 0)} reclassified"
+        )
+    except Exception as e:
+        logger.warning(f"Actor classification failed: {e}")
+
+    # Run discovery layer after actor classification
     try:
         from app.discovery import run_discovery_cycle
         run_discovery_cycle()
