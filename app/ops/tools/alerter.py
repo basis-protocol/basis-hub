@@ -37,8 +37,7 @@ async def send_alert(alert_type: str, message: str, context: dict = None):
                 await _send_telegram(ch["config"], message)
                 sent_any = True
             elif ch["channel"] == "email":
-                # Email integration placeholder — would use SendGrid/SES
-                logger.info(f"Email alert (not implemented): {message[:100]}")
+                await _send_email(ch.get("config") or {}, message, alert_type)
                 sent_any = True
         except Exception as e:
             logger.error(f"Alert send failed ({ch['channel']}): {e}")
@@ -78,6 +77,42 @@ async def _send_telegram(config: dict, message: str):
             logger.error(f"Telegram send failed: {resp.status_code} {resp.text[:200]}")
         else:
             logger.info(f"Telegram alert sent to {chat_id}")
+
+
+async def _send_email(config: dict, message: str, alert_type: str = "alert"):
+    """Send alert email via Resend API."""
+    api_key = config.get("api_key") or os.getenv("RESEND_API_KEY")
+    to_email = config.get("to") or os.getenv("ALERT_EMAIL", "shlok@basisprotocol.xyz")
+    from_email = config.get("from") or "alerts@basisprotocol.xyz"
+
+    if not api_key:
+        logger.warning("Resend not configured (missing RESEND_API_KEY)")
+        return
+
+    subject = f"Basis Alert: {alert_type.replace('_', ' ').title()}"
+    body_text = message.replace("*", "")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": from_email,
+                    "to": [to_email],
+                    "subject": subject,
+                    "text": body_text,
+                },
+            )
+            if resp.status_code not in (200, 201):
+                logger.error(f"Resend send failed: {resp.status_code} {resp.text[:200]}")
+            else:
+                logger.info(f"Email alert sent to {to_email}")
+    except Exception as e:
+        logger.error(f"Email delivery error: {e}")
 
 
 async def check_and_alert_health(health_results: list):

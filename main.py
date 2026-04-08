@@ -99,6 +99,19 @@ def run_worker_loop():
     except Exception as e:
         logger.warning(f"Wallet seeding skipped: {e}")
 
+    # Ensure email alert channel is configured
+    try:
+        from app.database import fetch_one as _fone, execute as _exec
+        existing = _fone("SELECT id FROM ops_alert_config WHERE channel = 'email'")
+        if not existing:
+            _exec(
+                "INSERT INTO ops_alert_config (channel, config, alert_types, enabled) VALUES (%s, %s, %s, TRUE)",
+                ("email", "{}", ["health_failure", "engagement_response", "state_growth"]),
+            )
+            logger.info("Email alert channel configured")
+    except Exception as e:
+        logger.debug(f"Alert config seed skipped: {e}")
+
     from app.worker import run_scoring_cycle
 
     cda_interval_hours = int(os.environ.get("CDA_COLLECTION_INTERVAL_HOURS", "24"))
@@ -251,6 +264,67 @@ def run_worker_loop():
                 logger.info(f"Edge prune: {prune_result.get('edges_archived', 0)} archived")
             except Exception as e:
                 logger.warning(f"Edge decay/prune failed: {e}")
+
+        # Health sweep — run after every scoring cycle, alert on transitions
+        try:
+            from app.ops.tools.health_checker import run_all_checks
+            logger.info("Running health sweep...")
+            health_results = run_all_checks()
+            healthy_count = sum(1 for r in health_results if r.get("status") == "healthy")
+            total_count = len(health_results)
+            logger.info(f"Health sweep: {healthy_count}/{total_count} healthy")
+
+            failures = [r for r in health_results if r.get("status") in ("degraded", "down")]
+            if failures:
+                try:
+                    from app.ops.tools.alerter import check_and_alert_health
+                    _aloop = asyncio.new_event_loop()
+                    _aloop.run_until_complete(check_and_alert_health(health_results))
+                    _aloop.close()
+                    logger.info(f"Health alerts dispatched for {len(failures)} failing system(s)")
+                except Exception as alert_err:
+                    logger.warning(f"Health alert dispatch failed: {alert_err}")
+        except Exception as e:
+            logger.warning(f"Health sweep failed: {e}")
+
+        # Daily state growth check (midnight UTC hour)
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            current_hour = _dt.now(_tz.utc).hour
+            if current_hour == 0:
+                from app.ops.tools.health_checker import _safe_fetch_one
+                stale_tables = []
+                for tname, sql in [
+                    ("scores", "SELECT MAX(computed_at) as ts FROM scores"),
+                    ("psi_scores", "SELECT MAX(computed_at) as ts FROM psi_scores"),
+                    ("wallet_risk_scores", "SELECT MAX(computed_at) as ts FROM wallet_graph.wallet_risk_scores"),
+                    ("wallet_edges", "SELECT MAX(created_at) as ts FROM wallet_graph.wallet_edges"),
+                    ("cda_extractions", "SELECT MAX(extracted_at) as ts FROM cda_vendor_extractions"),
+                    ("assessment_events", "SELECT MAX(created_at) as ts FROM assessment_events"),
+                ]:
+                    row = _safe_fetch_one(sql)
+                    if row and row.get("ts"):
+                        ts = row["ts"]
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=_tz.utc)
+                        age_h = (_dt.now(_tz.utc) - ts).total_seconds() / 3600
+                        if age_h > 48:
+                            stale_tables.append(f"{tname}: {age_h:.0f}h stale")
+
+                if stale_tables:
+                    from app.ops.tools.alerter import send_alert
+                    msg = "STATE GROWTH WARNING\n\n"
+                    msg += "The following tables haven't updated in 48+ hours:\n\n"
+                    msg += "\n".join(f"  - {t}" for t in stale_tables)
+                    msg += "\n\nThis means data is not accumulating. Check worker logs."
+                    _aloop = asyncio.new_event_loop()
+                    _aloop.run_until_complete(send_alert("state_growth", msg, {"stale_tables": stale_tables}))
+                    _aloop.close()
+                    logger.warning(f"State growth alert: {len(stale_tables)} stale tables")
+                else:
+                    logger.info("Daily state growth check: all tables fresh")
+        except Exception as e:
+            logger.warning(f"Daily state growth check failed: {e}")
 
         logger.info(f"Worker sleeping {WORKER_INTERVAL} minutes...")
         time.sleep(WORKER_INTERVAL * 60)
