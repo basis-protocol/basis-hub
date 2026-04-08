@@ -167,18 +167,15 @@ const coverageColor = (q) => {
 const confidenceBadge = (conf, tag, populated, total, missing) => {
   if (!conf || conf === "high") return null;
   const isStandard = conf === "standard";
-  const bg = isStandard ? "rgba(234,179,8,0.12)" : "rgba(239,68,68,0.10)";
-  const color = isStandard ? "#b8860b" : "#c0392b";
-  const label = tag || (isStandard ? "STANDARD" : "LIMITED DATA");
   const tip = isStandard
     ? `Scored with standard data coverage (${populated || "?"} of ${total || "?"} components)`
     : `Scored with limited data coverage (${populated || "?"} of ${total || "?"} components)${missing && missing.length ? ". " + missing.join(", ") + " categories have incomplete data" : ""}`;
   return (
     <span title={tip} style={{
-      fontFamily: T.mono, fontSize: 8, letterSpacing: 0.6, fontWeight: 600,
-      color, background: bg, padding: "1px 4px", borderRadius: 2,
-      marginLeft: 4, cursor: "help", whiteSpace: "nowrap",
-    }}>{label}</span>
+      fontFamily: T.sans, fontSize: 10, fontWeight: 500,
+      color: "#854F0B", background: "#FAEEDA", padding: "2px 8px", borderRadius: 100,
+      marginLeft: 6, cursor: "help", whiteSpace: "nowrap",
+    }}>partial coverage</span>
   );
 };
 const fmtB = (n) => {
@@ -1565,7 +1562,7 @@ function MethodologyView({ mobile }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                   <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 700, color: t.color }}>{t.level}</span>
                   {t.level !== "High" && (
-                    <span style={{ fontFamily: T.mono, fontSize: 8, letterSpacing: 0.6, fontWeight: 600, color: t.color, background: t.bg, padding: "1px 4px", borderRadius: 2 }}>{t.level === "Standard" ? "STANDARD" : "LIMITED DATA"}</span>
+                    <span style={{ fontFamily: T.sans, fontSize: 10, fontWeight: 500, color: "#854F0B", background: "#FAEEDA", padding: "2px 8px", borderRadius: 100 }}>partial coverage</span>
                   )}
                 </div>
                 <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, marginBottom: 4 }}>{t.range}</div>
@@ -1669,11 +1666,13 @@ function WalletRow({ wallet, rank, mobile, lowScoreHighlight }) {
       {!mobile && (
         <>
           <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMid }}>
-            {wallet.dominant_asset_pct != null && wallet.dominant_asset_pct >= 95
-              ? `100% ${wallet.dominant_asset || "?"}`
-              : wallet.dominant_asset_pct != null && wallet.dominant_asset_pct >= 50
-                ? `${Math.round(wallet.dominant_asset_pct)}% ${wallet.dominant_asset || "?"}`
-                : "Mixed"
+            {wallet.concentration_hhi != null && wallet.concentration_hhi >= 5000
+              ? "Concentrated"
+              : wallet.concentration_hhi != null && wallet.concentration_hhi >= 1500
+                ? "Mixed"
+                : wallet.concentration_hhi != null
+                  ? "Diversified"
+                  : "—"
             }
           </span>
           <span style={{ fontFamily: T.mono, fontSize: 11, color: coverageColor(wallet.coverage_quality), textTransform: "uppercase" }}>
@@ -1780,7 +1779,7 @@ function WalletSearchPanel({ mobile }) {
               {[
                 { label: "Risk Score", value: fmt(r.risk_score, 1), valueStyle: { color: subScoreColor(r.risk_score), fontWeight: 600 } },
                 { label: "Grade", value: r.risk_grade || "—", valueStyle: { color: gradeColor(r.risk_grade), fontWeight: 700, fontSize: 14 } },
-                { label: "HHI", value: fmtHHI(r.concentration_hhi) },
+                { label: "HHI", value: `${fmtHHI(r.concentration_hhi)} · ${r.concentration_hhi != null && r.concentration_hhi >= 5000 ? "Concentrated" : r.concentration_hhi != null && r.concentration_hhi >= 1500 ? "Mixed" : r.concentration_hhi != null ? "Diversified" : "—"}` },
                 { label: "Coverage", value: r.coverage_quality || "—", valueStyle: { color: coverageColor(r.coverage_quality), textTransform: "uppercase" } },
                 { label: "Dominant Asset", value: `${r.dominant_asset || "—"} (${r.dominant_asset_pct != null ? fmt(r.dominant_asset_pct, 1) + "%" : "—"})` },
                 { label: "Holdings", value: `${r.num_scored_holdings || 0} scored · ${r.num_unscored_holdings || 0} unscored` },

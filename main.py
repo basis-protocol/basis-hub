@@ -13,10 +13,15 @@ import logging
 import signal
 import sys
 
+import subprocess
+
 import uvicorn
 
 from app.database import init_pool, close_pool, health_check as db_health_check
 from app.server import app
+
+# Module-level keeper process ref for watchdog access
+_keeper_process = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,6 +81,17 @@ def free_port(port: int) -> None:
                 pass
     except Exception as e:
         logger.warning(f"free_port({port}) failed: {e}")
+
+
+def _forward_keeper_logs(process):
+    """Read keeper stdout and forward to Python logger."""
+    try:
+        for line in iter(process.stdout.readline, b""):
+            line_str = line.decode().strip()
+            if line_str:
+                logger.info(f"[keeper] {line_str}")
+    except Exception:
+        pass
 
 
 def run_worker_loop():
@@ -326,6 +342,34 @@ def run_worker_loop():
         except Exception as e:
             logger.warning(f"Daily state growth check failed: {e}")
 
+        # Keeper watchdog — restart if it died
+        global _keeper_process
+        if _keeper_process is not None:
+            poll = _keeper_process.poll()
+            if poll is not None:
+                try:
+                    stdout = _keeper_process.stdout.read().decode() if _keeper_process.stdout else ""
+                    if stdout:
+                        logger.warning(f"Keeper died (exit code {poll}), last output: {stdout[-500:]}")
+                except Exception:
+                    pass
+                logger.warning(f"Keeper process died (exit code {poll}) — restarting...")
+                try:
+                    keeper_dir = os.path.join(os.path.dirname(__file__), "keeper")
+                    _keeper_process = subprocess.Popen(
+                        ["npx", "tsx", "index.ts"],
+                        cwd=keeper_dir,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                    )
+                    logger.info(f"Keeper restarted (new PID {_keeper_process.pid})")
+                    keeper_log_thread = threading.Thread(
+                        target=_forward_keeper_logs, args=(_keeper_process,), daemon=True
+                    )
+                    keeper_log_thread.start()
+                except Exception as e:
+                    logger.error(f"Failed to restart keeper: {e}")
+
         logger.info(f"Worker sleeping {WORKER_INTERVAL} minutes...")
         time.sleep(WORKER_INTERVAL * 60)
 
@@ -560,6 +604,33 @@ def main():
         logger.info("Background worker thread started")
     else:
         logger.info("Worker disabled (set WORKER_ENABLED=true to enable)")
+
+    # 2b. Start keeper subprocess (on-chain oracle publisher)
+    global _keeper_process
+    keeper_enabled = os.environ.get("KEEPER_ENABLED", "true").lower() == "true"
+    if keeper_enabled and os.environ.get("KEEPER_PRIVATE_KEY"):
+        try:
+            keeper_dir = os.path.join(os.path.dirname(__file__), "keeper")
+            if os.path.exists(os.path.join(keeper_dir, "index.ts")):
+                _keeper_process = subprocess.Popen(
+                    ["npx", "tsx", "index.ts"],
+                    cwd=keeper_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+                logger.info(f"Keeper subprocess started (PID {_keeper_process.pid})")
+                keeper_log_thread = threading.Thread(
+                    target=_forward_keeper_logs, args=(_keeper_process,), daemon=True
+                )
+                keeper_log_thread.start()
+            else:
+                logger.warning("Keeper not found at keeper/index.ts — skipping")
+        except Exception as e:
+            logger.warning(f"Failed to start keeper subprocess: {e}")
+    elif not os.environ.get("KEEPER_PRIVATE_KEY"):
+        logger.info("Keeper disabled (KEEPER_PRIVATE_KEY not set)")
+    else:
+        logger.info("Keeper disabled (set KEEPER_ENABLED=true to enable)")
 
     # 3. Start API server (always port 5000 — mapped to :80 by Replit)
     port = 5000
