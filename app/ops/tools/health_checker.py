@@ -282,6 +282,54 @@ def check_integrity():
         return {"system": "integrity", "status": "down", "details": {"error": str(e)}}
 
 
+def check_treasury_freshness():
+    """Check treasury flow detection freshness and registry health."""
+    # Check registry
+    registry = _safe_fetch_one(
+        "SELECT COUNT(*) as cnt, MAX(added_at) as newest FROM wallet_graph.treasury_registry WHERE monitoring_enabled = TRUE"
+    )
+    if registry is None:
+        return {"system": "treasury_flows", "status": "down", "details": {"error": "query_failed_or_no_table"}}
+
+    registry_count = registry.get("cnt", 0)
+    if registry_count == 0:
+        return {"system": "treasury_flows", "status": "down", "details": {"error": "registry_empty", "monitored": 0}}
+
+    registry_newest = registry.get("newest")
+    registry_age = _age_hours(registry_newest) if registry_newest else None
+
+    # Check events
+    events = _safe_fetch_one(
+        "SELECT COUNT(*) as cnt, MAX(detected_at) as latest FROM wallet_graph.treasury_events"
+    )
+    event_count = events.get("cnt", 0) if events else 0
+    last_event = events.get("latest") if events else None
+    event_age = _age_hours(last_event) if last_event else None
+
+    # Status logic:
+    # healthy: events exist with age < 48h, OR no events but registry just seeded (< 48h)
+    # degraded: > 48h since last event and registry > 48h old
+    # down: registry empty (handled above)
+    if event_age is not None and event_age < 48:
+        status = "healthy"
+    elif event_age is None and registry_age is not None and registry_age < 48:
+        status = "healthy"  # just seeded, no events yet is fine
+    else:
+        status = "degraded"
+
+    return {
+        "system": "treasury_flows",
+        "status": status,
+        "details": {
+            "monitored_treasuries": registry_count,
+            "total_events": event_count,
+            "last_event": last_event.isoformat() if last_event else None,
+            "event_age_hours": round(event_age, 1) if event_age else None,
+            "registry_age_hours": round(registry_age, 1) if registry_age else None,
+        },
+    }
+
+
 ALL_CHECKS = [
     check_sii_freshness,
     check_psi_freshness,
@@ -293,6 +341,7 @@ ALL_CHECKS = [
     check_discovery_freshness,
     check_coingecko_usage,
     check_integrity,
+    check_treasury_freshness,
 ]
 
 

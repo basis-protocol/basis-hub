@@ -1544,6 +1544,30 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
             fastest = None
             stalled = []
 
+        # Treasury status
+        treasury_status = {}
+        try:
+            reg_count = fetch_one(
+                "SELECT COUNT(*) as cnt FROM wallet_graph.treasury_registry WHERE monitoring_enabled = TRUE"
+            )
+            total_events = fetch_one(
+                "SELECT COUNT(*) as cnt FROM wallet_graph.treasury_events"
+            )
+            events_24h = fetch_one(
+                "SELECT COUNT(*) as cnt FROM wallet_graph.treasury_events WHERE detected_at > NOW() - INTERVAL '24 hours'"
+            )
+            severity_breakdown = fetch_all(
+                "SELECT severity, COUNT(*) as cnt FROM wallet_graph.treasury_events GROUP BY severity ORDER BY severity"
+            ) or []
+            treasury_status = {
+                "registered_treasuries": reg_count["cnt"] if reg_count else 0,
+                "total_events": total_events["cnt"] if total_events else 0,
+                "events_24h": events_24h["cnt"] if events_24h else 0,
+                "by_severity": {r["severity"]: r["cnt"] for r in severity_breakdown},
+            }
+        except Exception as e:
+            treasury_status = {"error": str(e)}
+
         return {
             "days": day_entries,
             "summary": {
@@ -1553,6 +1577,7 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
                 "fastest_growing": fastest,
                 "stalled": stalled,
             },
+            "treasury": treasury_status,
         }
     except HTTPException:
         raise

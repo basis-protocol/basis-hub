@@ -305,6 +305,22 @@ def _actor_type_consistency():
     )
 
 
+def _treasury_registry_nonempty():
+    return _min_count_check(
+        "SELECT COUNT(*) AS cnt FROM wallet_graph.treasury_registry WHERE monitoring_enabled = TRUE",
+        minimum=1, rule="treasury_registry_empty", field="row_count", level="warning",
+        message="No monitoring-enabled treasuries in registry",
+    )
+
+
+def _treasury_events_severity_valid():
+    return _count_check(
+        "SELECT COUNT(*) AS cnt FROM wallet_graph.treasury_events WHERE severity NOT IN ('info', 'warning', 'critical')",
+        rule="treasury_severity_invalid", field="severity", level="error",
+        message="Treasury events with invalid severity values",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Domain registry
 # ---------------------------------------------------------------------------
@@ -349,6 +365,11 @@ DOMAINS = {
         "freshness_query": "SELECT COUNT(*) AS cnt, MAX(classified_at) AS latest FROM wallet_graph.actor_classifications WHERE actor_type != 'unknown'",
         "max_age_hours": 48,
         "coherence_rules": [_actor_probability_range, _actor_type_consistency],
+    },
+    "treasury": {
+        "freshness_query": "SELECT COUNT(*) AS cnt, MAX(detected_at) AS latest FROM wallet_graph.treasury_events",
+        "max_age_hours": 48,
+        "coherence_rules": [_treasury_registry_nonempty, _treasury_events_severity_valid],
     },
 }
 
