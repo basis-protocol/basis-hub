@@ -1756,7 +1756,7 @@ function WalletSearchPanel({ mobile }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {[
                 { label: "Address", value: w.address, isLink: true },
-                { label: "Value", value: fmtB(r.total_stablecoin_value || w.total_stablecoin_value) },
+                { label: "Value", value: fmtB(data.holdings_value ?? r.total_stablecoin_value ?? w.total_stablecoin_value) },
                 { label: "Size Tier", value: (w.size_tier || "—").toUpperCase() },
                 { label: "Source", value: w.source || "—" },
                 { label: "Contract", value: w.is_contract ? "Yes" : "No" },

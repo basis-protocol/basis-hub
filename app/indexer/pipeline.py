@@ -184,9 +184,9 @@ def get_coverage_diagnostic() -> dict:
         row = fetch_one(
             """
             SELECT
-                COUNT(*) AS total_wallets,
-                COUNT(*) FILTER (WHERE last_indexed_at IS NOT NULL) AS indexed_wallets,
-                COUNT(*) FILTER (WHERE total_stablecoin_value > 0) AS wallets_with_value
+                COUNT(DISTINCT address) AS total_wallets,
+                COUNT(DISTINCT address) FILTER (WHERE last_indexed_at IS NOT NULL) AS indexed_wallets,
+                COUNT(DISTINCT address) FILTER (WHERE total_stablecoin_value > 0) AS wallets_with_value
             FROM wallet_graph.wallets
             """
         )
@@ -199,7 +199,7 @@ def get_coverage_diagnostic() -> dict:
         )
         no_holdings_row = fetch_one(
             """
-            SELECT COUNT(*) AS wallets_no_holdings
+            SELECT COUNT(DISTINCT w.address) AS wallets_no_holdings
             FROM wallet_graph.wallets w
             WHERE NOT EXISTS (
                 SELECT 1 FROM wallet_graph.wallet_holdings wh
@@ -601,7 +601,7 @@ def get_reindex_status() -> dict:
 
     # Active wallet count
     try:
-        row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallets")
+        row = fetch_one("SELECT COUNT(DISTINCT address) AS cnt FROM wallet_graph.wallets")
         status["active_wallet_count"] = row["cnt"] if row else 0
     except Exception:
         status["active_wallet_count"] = 0

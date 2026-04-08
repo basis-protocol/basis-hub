@@ -35,26 +35,36 @@ def register_wallet_routes(app: FastAPI) -> None:
         rows = fetch_all(
             """
             SELECT
-                wh.wallet_address AS address,
-                SUM(wh.value_usd) AS total_stablecoin_value,
+                agg.address,
+                agg.total_stablecoin_value,
                 w.label, w.is_contract, w.last_indexed_at, w.source,
                 wrs.risk_score, wrs.risk_grade, wrs.concentration_hhi,
                 wrs.coverage_quality, wrs.num_total_holdings, wrs.dominant_asset
-            FROM wallet_graph.wallet_holdings wh
-            JOIN wallet_graph.wallets w ON w.address = wh.wallet_address
+            FROM (
+                SELECT wallet_address AS address, SUM(value_usd) AS total_stablecoin_value
+                FROM wallet_graph.wallet_holdings
+                WHERE indexed_at > NOW() - INTERVAL '7 days'
+                  AND value_usd >= 0.01
+                GROUP BY wallet_address
+                HAVING SUM(value_usd) > 0
+                ORDER BY SUM(value_usd) DESC
+                LIMIT %s
+            ) agg
             LEFT JOIN LATERAL (
-                SELECT * FROM wallet_graph.wallet_risk_scores
-                WHERE wallet_address = wh.wallet_address
+                SELECT label, is_contract, last_indexed_at, source
+                FROM wallet_graph.wallets
+                WHERE address = agg.address
+                ORDER BY total_stablecoin_value DESC NULLS LAST
+                LIMIT 1
+            ) w ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT risk_score, risk_grade, concentration_hhi,
+                       coverage_quality, num_total_holdings, dominant_asset
+                FROM wallet_graph.wallet_risk_scores
+                WHERE wallet_address = agg.address
                 ORDER BY computed_at DESC LIMIT 1
             ) wrs ON TRUE
-            WHERE wh.indexed_at > NOW() - INTERVAL '7 days'
-              AND wh.value_usd >= 0.01
-            GROUP BY wh.wallet_address, w.label, w.is_contract, w.last_indexed_at,
-                     w.source, wrs.risk_score, wrs.risk_grade, wrs.concentration_hhi,
-                     wrs.coverage_quality, wrs.num_total_holdings, wrs.dominant_asset
-            HAVING SUM(wh.value_usd) > 0
-            ORDER BY SUM(wh.value_usd) DESC
-            LIMIT %s
+            ORDER BY agg.total_stablecoin_value DESC
             """,
             (limit,),
         )
@@ -77,9 +87,9 @@ def register_wallet_routes(app: FastAPI) -> None:
         """Wallets with lowest risk scores that currently hold stablecoins."""
         rows = fetch_all(
             """
-            SELECT w.address,
+            SELECT wrs.wallet_address AS address,
                    (SELECT COALESCE(SUM(value_usd), 0) FROM wallet_graph.wallet_holdings
-                    WHERE wallet_address = w.address
+                    WHERE wallet_address = wrs.wallet_address
                     AND indexed_at > NOW() - INTERVAL '7 days'
                     AND value_usd >= 0.01) AS total_stablecoin_value,
                    w.label,
@@ -88,7 +98,12 @@ def register_wallet_routes(app: FastAPI) -> None:
                    wrs.dominant_asset, wrs.dominant_asset_pct,
                    wrs.num_total_holdings, wrs.computed_at
             FROM wallet_graph.wallet_risk_scores wrs
-            JOIN wallet_graph.wallets w ON w.address = wrs.wallet_address
+            LEFT JOIN LATERAL (
+                SELECT label FROM wallet_graph.wallets
+                WHERE address = wrs.wallet_address
+                ORDER BY total_stablecoin_value DESC NULLS LAST
+                LIMIT 1
+            ) w ON TRUE
             WHERE wrs.risk_score IS NOT NULL
               AND wrs.computed_at = (
                   SELECT MAX(wrs2.computed_at) FROM wallet_graph.wallet_risk_scores wrs2
@@ -96,7 +111,7 @@ def register_wallet_routes(app: FastAPI) -> None:
               )
               AND EXISTS (
                   SELECT 1 FROM wallet_graph.wallet_holdings wh
-                  WHERE wh.wallet_address = w.address
+                  WHERE wh.wallet_address = wrs.wallet_address
                   AND wh.indexed_at > NOW() - INTERVAL '7 days'
                   AND wh.value_usd >= 0.01
               )
@@ -146,11 +161,11 @@ def register_wallet_routes(app: FastAPI) -> None:
         stats = fetch_one(
             """
             SELECT
-                COUNT(*) AS total_wallets,
-                COUNT(*) FILTER (WHERE last_indexed_at IS NOT NULL) AS indexed_wallets,
-                COUNT(*) FILTER (WHERE size_tier = 'whale') AS whale_count,
-                COUNT(*) FILTER (WHERE size_tier = 'institutional') AS institutional_count,
-                COUNT(*) FILTER (WHERE size_tier = 'retail') AS retail_count
+                COUNT(DISTINCT address) AS total_wallets,
+                COUNT(DISTINCT address) FILTER (WHERE last_indexed_at IS NOT NULL) AS indexed_wallets,
+                COUNT(DISTINCT address) FILTER (WHERE size_tier = 'whale') AS whale_count,
+                COUNT(DISTINCT address) FILTER (WHERE size_tier = 'institutional') AS institutional_count,
+                COUNT(DISTINCT address) FILTER (WHERE size_tier = 'retail') AS retail_count
             FROM wallet_graph.wallets
             """
         )
@@ -264,10 +279,17 @@ def register_wallet_routes(app: FastAPI) -> None:
         MIN_DISPLAY_VALUE_USD = 0.01
         holdings = [h for h in holdings_raw if float(h.get("value_usd") or 0) >= MIN_DISPLAY_VALUE_USD]
 
+        # Compute actual holdings value and fix pct_of_wallet from current balances
+        holdings_value = sum(float(h.get("value_usd") or 0) for h in holdings)
+        if holdings_value > 0:
+            for h in holdings:
+                h["pct_of_wallet"] = round((float(h.get("value_usd") or 0) / holdings_value) * 100, 2)
+
         result = {
             "wallet": wallet,
             "risk": risk,
             "holdings": holdings,
+            "holdings_value": round(holdings_value, 2),
             "methodology_version": current_wallet_version,
             "methodology_version_pinned": pinned,
         }
@@ -658,7 +680,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             FROM wallet_graph.edge_build_status
             """
         )
-        wallets_total_row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallets")
+        wallets_total_row = fetch_one("SELECT COUNT(DISTINCT address) AS cnt FROM wallet_graph.wallets")
         wallets_total = wallets_total_row["cnt"] if wallets_total_row else 0
 
         # Per-chain breakdown
