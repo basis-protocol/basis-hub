@@ -2394,7 +2394,225 @@ function SeedMetricsPanel() {
   );
 }
 
+function ProtocolDeepDive({ slug }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [expandedCat, setExpandedCat] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await opsFetch(`/api/ops/protocol/${slug}/deep-dive`);
+        setData(res);
+      } catch (e) { setError(e.message); }
+      setLoading(false);
+    })();
+  }, [slug]);
+
+  if (loading) return <div style={{ padding: 20, fontFamily: T.mono, fontSize: 12, color: T.inkLight }}>Loading protocol deep dive...</div>;
+  if (error) return <div style={{ padding: 20, fontFamily: T.mono, fontSize: 12, color: T.accent }}>Error: {error}</div>;
+  if (!data) return null;
+
+  const confColor = (c) => c === "high" ? "#22c55e" : c === "standard" ? "#eab308" : "#ef4444";
+  const statusDot = (s) => s === "available" ? "#22c55e" : "#9a9a9a";
+
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: 20, fontFamily: T.sans, color: T.ink, background: T.paper, minHeight: "100vh" }}>
+      <div style={{ marginBottom: 16 }}>
+        <a href="/ops" style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, textDecoration: "none" }}>&larr; Back to Ops</a>
+      </div>
+
+      {/* Header */}
+      <div style={{ marginBottom: 24, borderBottom: `1px solid ${T.ruleMid}`, paddingBottom: 16 }}>
+        <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight }}>Protocol Deep Dive</div>
+        <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{data.protocol_name}</div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, fontFamily: T.mono, fontSize: 13 }}>
+          <span>PSI Score: <strong>{data.score}</strong></span>
+          <span>Grade: <strong>{data.grade}</strong></span>
+          <span style={{ color: confColor(data.confidence) }}>Confidence: {data.confidence}{data.confidence_tag ? ` (${data.confidence_tag})` : ""}</span>
+          <span style={{ color: T.inkFaint }}>Coverage: {(data.component_coverage * 100).toFixed(0)}% ({data.components_populated}/{data.components_total})</span>
+        </div>
+        {data.missing_categories.length > 0 && (
+          <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, marginTop: 4 }}>
+            Missing categories: {data.missing_categories.join(", ")}
+          </div>
+        )}
+      </div>
+
+      {/* Category Breakdown */}
+      <Section title="CATEGORY BREAKDOWN">
+        <div style={{ padding: "0 10px" }}>
+          {Object.entries(data.category_breakdown || {}).map(([catId, cat]) => (
+            <div key={catId} style={{ marginBottom: 8 }}>
+              <div
+                onClick={() => setExpandedCat(expandedCat === catId ? null : catId)}
+                style={{ display: "flex", justifyContent: "space-between", cursor: "pointer", padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}
+              >
+                <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 600 }}>
+                  {expandedCat === catId ? "\u25BC" : "\u25B6"} {cat.name}
+                  <span style={{ fontWeight: 400, color: T.inkLight, marginLeft: 8 }}>weight: {(cat.weight * 100).toFixed(0)}%</span>
+                </span>
+                <span style={{ fontFamily: T.mono, fontSize: 12 }}>
+                  {cat.score != null ? cat.score.toFixed(1) : "—"}
+                  <span style={{ fontSize: 10, color: T.inkFaint, marginLeft: 6 }}>{cat.components_populated}/{cat.components_total} components</span>
+                </span>
+              </div>
+              {expandedCat === catId && (
+                <table style={{ width: "100%", fontSize: 10, fontFamily: T.mono, borderCollapse: "collapse", marginTop: 4 }}>
+                  <thead>
+                    <tr style={{ color: T.inkLight, textAlign: "left", borderBottom: `1px solid ${T.ruleMid}` }}>
+                      <th style={{ padding: "3px 0" }}>Component</th><th>Raw</th><th>Score</th><th>Source</th><th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cat.components.map((c) => (
+                      <tr key={c.id} style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+                        <td style={{ padding: "3px 0" }}>{c.name}</td>
+                        <td>{c.raw_value != null ? (typeof c.raw_value === "number" ? c.raw_value.toLocaleString() : String(c.raw_value)) : "—"}</td>
+                        <td>{c.normalized_score != null ? c.normalized_score.toFixed(1) : "—"}</td>
+                        <td style={{ color: T.inkFaint }}>{c.data_source}</td>
+                        <td><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: statusDot(c.status) }} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* Score History */}
+      {data.score_history && data.score_history.length > 0 && (
+        <Section title={`SCORE HISTORY (${data.score_history.length} entries)`}>
+          <div style={{ padding: "0 10px" }}>
+            <div style={{ display: "flex", gap: 4, alignItems: "flex-end", height: 80, marginBottom: 8 }}>
+              {[...data.score_history].reverse().slice(-30).map((h, i) => {
+                const barH = Math.max(4, ((h.score || 0) / 100) * 76);
+                return (
+                  <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+                    <div style={{ fontFamily: T.mono, fontSize: 7, color: T.inkFaint }}>{h.score ? Math.round(h.score) : ""}</div>
+                    <div style={{ width: "100%", height: barH, background: T.ink, borderRadius: 1 }} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </Section>
+      )}
+
+      {/* Stablecoin Exposure */}
+      <Section title="STABLECOIN EXPOSURE">
+        <div style={{ padding: "0 10px" }}>
+          {(data.stablecoin_exposure?.treasury || []).length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Treasury Holdings</div>
+              <table style={{ width: "100%", fontSize: 10, fontFamily: T.mono, borderCollapse: "collapse" }}>
+                <thead><tr style={{ borderBottom: `1px solid ${T.ruleMid}`, color: T.inkLight, textAlign: "left" }}>
+                  <th style={{ padding: "3px 0" }}>Token</th><th style={{ textAlign: "right" }}>USD Value</th><th>SII Score</th><th>Grade</th>
+                </tr></thead>
+                <tbody>
+                  {data.stablecoin_exposure.treasury.map((t, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+                      <td style={{ padding: "3px 0" }}>{t.token_symbol}</td>
+                      <td style={{ textAlign: "right" }}>${(t.usd_value || 0).toLocaleString()}</td>
+                      <td>{t.sii_score ?? "—"}</td>
+                      <td>{t.sii_grade ?? <span style={{ color: "#ef4444" }}>unscored</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {(data.stablecoin_exposure?.collateral || []).length > 0 && (
+            <div>
+              <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Collateral Accepted</div>
+              <table style={{ width: "100%", fontSize: 10, fontFamily: T.mono, borderCollapse: "collapse" }}>
+                <thead><tr style={{ borderBottom: `1px solid ${T.ruleMid}`, color: T.inkLight, textAlign: "left" }}>
+                  <th style={{ padding: "3px 0" }}>Stablecoin</th><th style={{ textAlign: "right" }}>TVL</th><th>Pools</th>
+                </tr></thead>
+                <tbody>
+                  {data.stablecoin_exposure.collateral.map((c, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+                      <td style={{ padding: "3px 0" }}>{c.stablecoin_symbol}</td>
+                      <td style={{ textAlign: "right" }}>${(c.tvl_usd || 0).toLocaleString()}</td>
+                      <td>{c.pool_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {(data.stablecoin_exposure?.treasury || []).length === 0 && (data.stablecoin_exposure?.collateral || []).length === 0 && (
+            <div style={{ color: T.inkFaint, fontSize: 11 }}>No stablecoin exposure data available.</div>
+          )}
+        </div>
+      </Section>
+
+      {/* CQI Matrix Row */}
+      {data.cqi_matrix_row && data.cqi_matrix_row.length > 0 && (
+        <Section title="CQI MATRIX">
+          <div style={{ padding: "0 10px" }}>
+            <table style={{ width: "100%", fontSize: 10, fontFamily: T.mono, borderCollapse: "collapse" }}>
+              <thead><tr style={{ borderBottom: `1px solid ${T.ruleMid}`, color: T.inkLight, textAlign: "left" }}>
+                <th style={{ padding: "3px 0" }}>Asset</th><th>SII</th><th>PSI</th><th>CQI</th><th>Grade</th><th>Confidence</th>
+              </tr></thead>
+              <tbody>
+                {data.cqi_matrix_row.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+                    <td style={{ padding: "3px 0", fontWeight: 600 }}>{r.asset}</td>
+                    <td>{r.sii_score?.toFixed(1)}</td>
+                    <td>{r.psi_score?.toFixed(1)}</td>
+                    <td style={{ fontWeight: 600 }}>{r.cqi_score?.toFixed(1)}</td>
+                    <td>{r.cqi_grade}</td>
+                    <td style={{ color: confColor(r.cqi_confidence) }}>{r.cqi_confidence}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+
+      {/* Risk Summary */}
+      <Section title="RISK SUMMARY">
+        <div style={{ padding: "0 10px", fontSize: 11, fontFamily: T.mono }}>
+          {data.risk_summary?.lowest_category && (
+            <div>Weakest category: <strong>{data.risk_summary.lowest_category}</strong> ({data.risk_summary.lowest_category_score?.toFixed(1)})</div>
+          )}
+          {data.discovery_signals && data.discovery_signals.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Discovery Signals</div>
+              {data.discovery_signals.map((s, i) => (
+                <div key={i} style={{ fontSize: 10, padding: "2px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <span style={{ color: s.severity === "critical" ? "#ef4444" : s.severity === "alert" ? "#f97316" : T.inkMid }}>[{s.severity}]</span>
+                  {" "}{s.signal_type} — {typeof s.details === "object" ? JSON.stringify(s.details) : s.details}
+                </div>
+              ))}
+            </div>
+          )}
+          {(!data.discovery_signals || data.discovery_signals.length === 0) && !data.risk_summary?.lowest_category && (
+            <div style={{ color: T.inkFaint }}>No risk signals.</div>
+          )}
+        </div>
+      </Section>
+
+      <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, textAlign: "center", marginTop: 24 }}>
+        Basis Protocol · Protocol Deep Dive · Internal Use Only
+      </div>
+    </div>
+  );
+}
+
 export default function OpsDashboard() {
+  // Check for protocol deep-dive route
+  const pathMatch = window.location.pathname.match(/^\/ops\/protocol\/([^/]+)/);
+  if (pathMatch) {
+    const slug = pathMatch[1];
+    return <ProtocolDeepDive slug={slug} />;
+  }
+
   const [authed, setAuthed] = useState(!!getAdminKey());
   const [health, setHealth] = useState([]);
   const [queue, setQueue] = useState([]);

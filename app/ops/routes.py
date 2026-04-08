@@ -1594,6 +1594,305 @@ async def keeper_history(request: Request, limit: int = Query(default=50, ge=1, 
         return JSONResponse(status_code=500, content={"error": str(e), "traceback": _traceback_mod.format_exc()})
 
 
+@router.get("/coverage-report")
+async def coverage_report(request: Request):
+    """Data availability report — what's scored, what's blocked, and why."""
+    _check_admin_key(request)
+    try:
+        from datetime import timezone
+
+        # SII coverage
+        sii_discovered = fetch_one(
+            "SELECT COUNT(*) as c FROM wallet_graph.unscored_assets WHERE token_type = 'stablecoin' AND coingecko_id IS NOT NULL"
+        )
+        sii_scored = fetch_one(
+            "SELECT COUNT(*) as c FROM stablecoins WHERE scoring_enabled = TRUE"
+        )
+        sii_scores = fetch_all(
+            "SELECT s.component_count FROM scores s"
+        ) or []
+
+        sii_components_total = 39  # from COMPONENT_NORMALIZATIONS
+        sii_by_confidence = {"high": 0, "standard": 0, "limited": 0}
+        for row in sii_scores:
+            cc = row.get("component_count") or 0
+            cov = cc / max(sii_components_total, 1)
+            if cov >= 0.80:
+                sii_by_confidence["high"] += 1
+            elif cov >= 0.60:
+                sii_by_confidence["standard"] += 1
+            else:
+                sii_by_confidence["limited"] += 1
+
+        # SII blocked analysis — check which categories are commonly missing
+        # We look at unscored assets that have been attempted but skipped
+        sii_category_gaps = {}
+        try:
+            # Check recent component_readings for non-scored stablecoins
+            gap_rows = fetch_all("""
+                SELECT cr.stablecoin_id, cr.category, COUNT(*) as cnt
+                FROM component_readings cr
+                LEFT JOIN scores s ON s.stablecoin_id = cr.stablecoin_id
+                WHERE s.stablecoin_id IS NULL
+                  AND cr.collected_at > NOW() - INTERVAL '7 days'
+                GROUP BY cr.stablecoin_id, cr.category
+            """) or []
+            # Invert: find which v1 categories are missing for each stablecoin
+            # This is approximate — just report totals
+        except Exception:
+            pass
+
+        # PSI coverage
+        psi_discovered = fetch_one(
+            "SELECT COUNT(*) as c FROM protocol_backlog"
+        )
+        psi_scored_count = fetch_one(
+            "SELECT COUNT(DISTINCT protocol_slug) as c FROM psi_scores"
+        )
+        psi_category_complete = fetch_one(
+            "SELECT COUNT(*) as c FROM protocol_backlog WHERE enrichment_status IN ('ready', 'promoted')"
+        )
+        psi_scores = fetch_all(
+            "SELECT DISTINCT ON (protocol_slug) component_scores FROM psi_scores ORDER BY protocol_slug, computed_at DESC"
+        ) or []
+
+        psi_components_total = 27  # from PSI_V01_DEFINITION
+        psi_by_confidence = {"high": 0, "standard": 0, "limited": 0}
+        for row in psi_scores:
+            cs = row.get("component_scores") or {}
+            cov = len(cs) / max(psi_components_total, 1)
+            if cov >= 0.80:
+                psi_by_confidence["high"] += 1
+            elif cov >= 0.60:
+                psi_by_confidence["standard"] += 1
+            else:
+                psi_by_confidence["limited"] += 1
+
+        # PSI blocked — which categories are most commonly missing
+        psi_blocked = {}
+        try:
+            blocked_rows = fetch_all("""
+                SELECT slug, name, coverage_pct, components_available, components_total
+                FROM protocol_backlog
+                WHERE enrichment_status IN ('discovered', 'enriching')
+                ORDER BY stablecoin_exposure_usd DESC LIMIT 50
+            """) or []
+            # Just report count
+            psi_blocked["count"] = len(blocked_rows)
+        except Exception:
+            psi_blocked["count"] = 0
+
+        # CQI pairs
+        sii_count = len(sii_scores)
+        psi_count = psi_scored_count["c"] if psi_scored_count else 0
+        cqi_pairs = sii_count * psi_count
+
+        return {
+            "sii": {
+                "discovered": sii_discovered["c"] if sii_discovered else 0,
+                "scored": len(sii_scores),
+                "scoring_enabled": sii_scored["c"] if sii_scored else 0,
+                "by_confidence": sii_by_confidence,
+                "gate": "category_completeness",
+                "gate_description": "Every v1 category (peg, liquidity, flows, distribution, structural) must have >= 1 populated component",
+            },
+            "psi": {
+                "discovered": psi_discovered["c"] if psi_discovered else 0,
+                "category_complete": psi_category_complete["c"] if psi_category_complete else 0,
+                "scored": psi_count,
+                "by_confidence": psi_by_confidence,
+                "blocked": psi_blocked,
+                "gate": "category_completeness",
+                "gate_description": "Every PSI category (balance_sheet, revenue, liquidity, security, governance, token_health) must have >= 1 populated component",
+            },
+            "cqi_pairs": cqi_pairs,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Coverage report error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": _traceback_mod.format_exc()})
+
+
+@router.get("/protocol/{slug}/deep-dive")
+async def protocol_deep_dive(slug: str, request: Request):
+    """Aggregated deep dive for a single protocol — ops-only."""
+    _check_admin_key(request)
+    try:
+        from datetime import timezone
+        from app.scoring_engine import compute_confidence_tag
+
+        # PSI score
+        psi_row = fetch_one("""
+            SELECT id, protocol_slug, protocol_name, overall_score, grade,
+                   category_scores, component_scores, raw_values,
+                   formula_version, computed_at
+            FROM psi_scores
+            WHERE protocol_slug = %s
+            ORDER BY computed_at DESC LIMIT 1
+        """, (slug,))
+        if not psi_row:
+            raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in PSI scores")
+
+        from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+        cat_scores = psi_row.get("category_scores") or {}
+        comp_scores = psi_row.get("component_scores") or {}
+        raw_vals = psi_row.get("raw_values") or {}
+        psi_comps_total = len(PSI_V01_DEFINITION["components"])
+        psi_coverage = round(len(comp_scores) / max(psi_comps_total, 1), 2)
+        psi_missing = sorted(set(PSI_V01_DEFINITION["categories"].keys()) - set(cat_scores.keys()))
+        psi_conf = compute_confidence_tag(
+            len(PSI_V01_DEFINITION["categories"]) - len(psi_missing),
+            len(PSI_V01_DEFINITION["categories"]),
+            psi_coverage, psi_missing
+        )
+
+        # Category breakdown with component details
+        category_breakdown = {}
+        for cat_id, cat_def in PSI_V01_DEFINITION["categories"].items():
+            cat_comps = {
+                cid: cdef for cid, cdef in PSI_V01_DEFINITION["components"].items()
+                if cdef["category"] == cat_id
+            }
+            components_detail = []
+            for cid, cdef in cat_comps.items():
+                components_detail.append({
+                    "id": cid,
+                    "name": cdef.get("name", cid),
+                    "weight": cdef.get("weight", 0),
+                    "raw_value": raw_vals.get(cid),
+                    "normalized_score": comp_scores.get(cid),
+                    "data_source": cdef.get("data_source", "unknown"),
+                    "status": "available" if cid in comp_scores else "unavailable",
+                })
+            populated = sum(1 for c in components_detail if c["status"] == "available")
+            category_breakdown[cat_id] = {
+                "name": cat_def["name"] if isinstance(cat_def, dict) else cat_id,
+                "weight": cat_def["weight"] if isinstance(cat_def, dict) else 0,
+                "score": cat_scores.get(cat_id),
+                "components_populated": populated,
+                "components_total": len(cat_comps),
+                "components": components_detail,
+            }
+
+        # Score history (last 30 days)
+        score_history = fetch_all("""
+            SELECT overall_score, grade, category_scores, computed_at, scored_date
+            FROM psi_scores
+            WHERE protocol_slug = %s
+            ORDER BY computed_at DESC LIMIT 30
+        """, (slug,)) or []
+
+        # Stablecoin exposure (treasury + collateral)
+        treasury = []
+        try:
+            treasury = fetch_all("""
+                SELECT token_symbol, token_address, usd_value, is_stablecoin,
+                       sii_score, sii_grade
+                FROM protocol_treasury_holdings
+                WHERE protocol_slug = %s
+                ORDER BY usd_value DESC
+            """, (slug,)) or []
+        except Exception:
+            pass
+
+        collateral = []
+        try:
+            collateral = fetch_all("""
+                SELECT stablecoin_symbol, tvl_usd, pool_count
+                FROM protocol_collateral_exposure
+                WHERE protocol_slug = %s
+                ORDER BY tvl_usd DESC
+            """, (slug,)) or []
+        except Exception:
+            pass
+
+        # CQI matrix row for this protocol
+        cqi_row = []
+        try:
+            from app.composition import compose_geometric_mean, _sii_confidence, _psi_confidence, _lower_confidence
+            psi_score_val = float(psi_row["overall_score"]) if psi_row.get("overall_score") else None
+            psi_c = _psi_confidence(comp_scores)
+            stablecoins = fetch_all("""
+                SELECT st.symbol, s.overall_score, s.grade, s.component_count
+                FROM scores s JOIN stablecoins st ON st.id = s.stablecoin_id
+                WHERE s.overall_score IS NOT NULL
+                ORDER BY s.overall_score DESC
+            """) or []
+            for coin in stablecoins:
+                sii = float(coin["overall_score"]) if coin.get("overall_score") else None
+                if sii and psi_score_val:
+                    cqi = compose_geometric_mean([sii, psi_score_val])
+                    sii_c = _sii_confidence(coin.get("component_count") or 0)
+                    cqi_c = _lower_confidence(sii_c, psi_c)
+                    cqi_row.append({
+                        "asset": coin["symbol"],
+                        "sii_score": sii,
+                        "sii_grade": coin["grade"],
+                        "sii_confidence": sii_c["confidence"],
+                        "psi_score": psi_score_val,
+                        "cqi_score": cqi,
+                        "cqi_grade": score_to_grade(cqi) if cqi else None,
+                        "cqi_confidence": cqi_c["confidence"],
+                    })
+            cqi_row.sort(key=lambda x: x.get("cqi_score", 0), reverse=True)
+        except Exception as e:
+            logger.debug(f"CQI matrix row failed for {slug}: {e}")
+
+        # Discovery signals
+        discovery_signals = []
+        try:
+            discovery_signals = fetch_all("""
+                SELECT signal_type, severity, details, discovered_at
+                FROM discovery_signals
+                WHERE entity_type = 'protocol' AND entity_id = %s
+                ORDER BY discovered_at DESC LIMIT 10
+            """, (slug,)) or []
+        except Exception:
+            pass
+
+        from app.scoring import score_to_grade
+
+        return {
+            "protocol_slug": slug,
+            "protocol_name": psi_row["protocol_name"],
+            "score": float(psi_row["overall_score"]) if psi_row.get("overall_score") else None,
+            "grade": psi_row["grade"],
+            "confidence": psi_conf["confidence"],
+            "confidence_tag": psi_conf["tag"],
+            "missing_categories": psi_conf["missing_categories"],
+            "component_coverage": psi_coverage,
+            "components_populated": len(comp_scores),
+            "components_total": psi_comps_total,
+            "formula_version": psi_row.get("formula_version"),
+            "computed_at": psi_row["computed_at"].isoformat() if psi_row.get("computed_at") else None,
+            "category_breakdown": category_breakdown,
+            "score_history": [
+                {
+                    "score": float(h["overall_score"]) if h.get("overall_score") else None,
+                    "grade": h["grade"],
+                    "category_scores": h.get("category_scores"),
+                    "date": str(h["scored_date"]) if h.get("scored_date") else (h["computed_at"].isoformat() if h.get("computed_at") else None),
+                }
+                for h in score_history
+            ],
+            "stablecoin_exposure": {
+                "treasury": [dict(t) for t in treasury],
+                "collateral": [dict(c) for c in collateral],
+            },
+            "cqi_matrix_row": cqi_row,
+            "risk_summary": {
+                "lowest_category": min(cat_scores.items(), key=lambda x: x[1])[0] if cat_scores else None,
+                "lowest_category_score": min(cat_scores.values()) if cat_scores else None,
+            },
+            "discovery_signals": [dict(s) for s in discovery_signals],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Protocol deep-dive error for {slug}: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": _traceback_mod.format_exc()})
+
+
 @router.get("/seed-metrics")
 async def seed_metrics(request: Request):
     """Aggregated metrics for seed fundraise conversations. No auth required for read-only summary."""

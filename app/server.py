@@ -138,6 +138,8 @@ async def rate_limit_and_track(request: Request, call_next):
     ]
     INTERNAL_IP_PREFIXES = [
         "35.191.",             # GCP load balancer (Replit proxy)
+        "10.81.",              # Replit internal network
+        "127.0.0.",            # Localhost
     ]
     is_internal = (
         any(pat in ua.lower() for pat in INTERNAL_UA_PATTERNS)
@@ -663,8 +665,19 @@ async def get_scores(methodology_version: Optional[str] = Query(default=None)):
         ORDER BY s.overall_score DESC
     """)
     
+    from app.scoring_engine import compute_confidence_tag
+    SII_COMPONENTS_TOTAL = len(COMPONENT_NORMALIZATIONS)
+
     results = []
     for row in rows:
+        comp_count = row.get("component_count") or 0
+        coverage = round(comp_count / max(SII_COMPONENTS_TOTAL, 1), 2)
+        # Determine missing categories from null category scores
+        sii_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
+                       "distribution": "distribution_score", "structural": "structural_score"}
+        missing = [cat for cat, col in sii_cat_map.items() if not row.get(col)]
+        conf = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
+
         results.append({
             "id": row["stablecoin_id"],
             "name": row["name"],
@@ -673,6 +686,12 @@ async def get_scores(methodology_version: Optional[str] = Query(default=None)):
             "token_contract": row.get("token_contract"),
             "score": float(row["overall_score"]),
             "grade": row["grade"],
+            "confidence": conf["confidence"],
+            "confidence_tag": conf["tag"],
+            "missing_categories": conf["missing_categories"],
+            "component_coverage": coverage,
+            "components_populated": comp_count,
+            "components_total": SII_COMPONENTS_TOTAL,
             "price": float(row["current_price"]) if row.get("current_price") else None,
             "market_cap": row.get("market_cap"),
             "volume_24h": row.get("volume_24h"),
@@ -692,7 +711,7 @@ async def get_scores(methodology_version: Optional[str] = Query(default=None)):
                 "governance": float(row["governance_score"]) if row.get("governance_score") else None,
                 "network": float(row["network_score"]) if row.get("network_score") else None,
             },
-            "component_count": row.get("component_count"),
+            "component_count": comp_count,
             "formula_version": row.get("formula_version"),
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         })
@@ -754,6 +773,15 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
         ORDER BY component_id, collected_at DESC
     """, (coin,))
     
+    from app.scoring_engine import compute_confidence_tag
+    SII_COMPONENTS_TOTAL = len(COMPONENT_NORMALIZATIONS)
+    comp_count = row.get("component_count") or 0
+    detail_coverage = round(comp_count / max(SII_COMPONENTS_TOTAL, 1), 2)
+    detail_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
+                      "distribution": "distribution_score", "structural": "structural_score"}
+    detail_missing = [cat for cat, col in detail_cat_map.items() if not row.get(col)]
+    detail_conf = compute_confidence_tag(5 - len(detail_missing), 5, detail_coverage, detail_missing)
+
     return {
         "id": row["stablecoin_id"],
         "name": row["name"],
@@ -762,6 +790,12 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
         "token_contract": row.get("token_contract"),
         "score": float(row["overall_score"]),
         "grade": row["grade"],
+        "confidence": detail_conf["confidence"],
+        "confidence_tag": detail_conf["tag"],
+        "missing_categories": detail_conf["missing_categories"],
+        "component_coverage": detail_coverage,
+        "components_populated": comp_count,
+        "components_total": SII_COMPONENTS_TOTAL,
         "price": float(row["current_price"]) if row.get("current_price") else None,
         "market_cap": row.get("market_cap"),
         "volume_24h": row.get("volume_24h"),
@@ -797,7 +831,7 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
         ],
         "attestation": row.get("attestation_config"),
         "regulatory_licenses": row.get("regulatory_licenses"),
-        "component_count": row.get("component_count"),
+        "component_count": comp_count,
         "formula_version": row.get("formula_version"),
         "methodology_version": FORMULA_VERSION,
         "methodology_version_pinned": pinned,
@@ -1077,6 +1111,15 @@ async def get_methodology(methodology_version: Optional[str] = Query(default=Non
             "CoinGecko Pro", "DeFiLlama", "Etherscan", "Curve Finance",
             "Issuer attestation reports", "On-chain contract analysis",
         ],
+        "confidence_system": {
+            "description": "Scores include a confidence tag based on data coverage",
+            "levels": {
+                "high": ">=80% component coverage — full confidence",
+                "standard": ">=60% component coverage — reliable with minor gaps",
+                "limited": "<60% component coverage — score computed from partial data",
+            },
+            "fields": ["confidence", "confidence_tag", "missing_categories", "component_coverage"],
+        },
         "methodology_version": FORMULA_VERSION,
         "methodology_version_pinned": pinned,
     }
@@ -3532,20 +3575,37 @@ async def psi_scores():
         FROM psi_scores
         ORDER BY protocol_slug, computed_at DESC
     """)
+    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+    from app.scoring_engine import compute_confidence_tag
+    psi_cats_total = len(PSI_V01_DEFINITION["categories"])
+    psi_comps_total = len(PSI_V01_DEFINITION["components"])
+
     results = []
     for row in rows:
         slug = row["protocol_slug"]
+        cat_scores = row.get("category_scores") or {}
+        comp_scores = row.get("component_scores") or {}
+        comps_populated = len(comp_scores)
+        psi_coverage = round(comps_populated / max(psi_comps_total, 1), 2)
+        psi_missing = sorted(set(PSI_V01_DEFINITION["categories"].keys()) - set(cat_scores.keys()))
+        psi_conf = compute_confidence_tag(psi_cats_total - len(psi_missing), psi_cats_total, psi_coverage, psi_missing)
+
         results.append({
             "protocol_slug": slug,
             "protocol_name": row["protocol_name"],
             "score": float(row["overall_score"]) if row.get("overall_score") else None,
             "grade": row["grade"],
+            "confidence": psi_conf["confidence"],
+            "confidence_tag": psi_conf["tag"],
+            "missing_categories": psi_conf["missing_categories"],
+            "component_coverage": psi_coverage,
+            "components_populated": comps_populated,
+            "components_total": psi_comps_total,
             "chain": "solana" if slug in _SOLANA_PROTOCOL_SLUGS else "ethereum",
-            "category_scores": row.get("category_scores"),
+            "category_scores": cat_scores,
             "formula_version": row.get("formula_version"),
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         })
-    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
     return {
         "protocols": results,
         "count": len(results),
@@ -3752,13 +3812,34 @@ async def psi_score_detail(slug: str):
     """, (slug,))
     if not row:
         raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in PSI scores")
+
+    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+    from app.scoring_engine import compute_confidence_tag
+    psi_cat_scores = row.get("category_scores") or {}
+    psi_comp_scores = row.get("component_scores") or {}
+    psi_comps_populated = len(psi_comp_scores)
+    psi_comps_total = len(PSI_V01_DEFINITION["components"])
+    psi_det_coverage = round(psi_comps_populated / max(psi_comps_total, 1), 2)
+    psi_det_missing = sorted(set(PSI_V01_DEFINITION["categories"].keys()) - set(psi_cat_scores.keys()))
+    psi_det_conf = compute_confidence_tag(
+        len(PSI_V01_DEFINITION["categories"]) - len(psi_det_missing),
+        len(PSI_V01_DEFINITION["categories"]),
+        psi_det_coverage, psi_det_missing
+    )
+
     return {
         "protocol_slug": row["protocol_slug"],
         "protocol_name": row["protocol_name"],
         "score": float(row["overall_score"]) if row.get("overall_score") else None,
         "grade": row["grade"],
-        "category_scores": row.get("category_scores"),
-        "component_scores": row.get("component_scores"),
+        "confidence": psi_det_conf["confidence"],
+        "confidence_tag": psi_det_conf["tag"],
+        "missing_categories": psi_det_conf["missing_categories"],
+        "component_coverage": psi_det_coverage,
+        "components_populated": psi_comps_populated,
+        "components_total": psi_comps_total,
+        "category_scores": psi_cat_scores,
+        "component_scores": psi_comp_scores,
         "raw_values": row.get("raw_values"),
         "formula_version": row.get("formula_version"),
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
@@ -4795,6 +4876,7 @@ def _render_rankings_html() -> str:
     <nav>
         <a href="/">Rankings</a>
         <a href="/witness">Witness</a>
+        <a href="/proof/sii/usdc">Proof</a>
         <a href="/developers">API</a>
     </nav>
     <table>
@@ -4901,6 +4983,7 @@ def _render_witness_html() -> str:
     <nav>
         <a href="/">Rankings</a>
         <a href="/witness">Witness</a>
+        <a href="/proof/sii/usdc">Proof</a>
         <a href="/developers">API</a>
     </nav>
     <p>Structured, timestamped, hash-verified archive of stablecoin issuer disclosures. Basis does not modify source documents.</p>
@@ -4922,6 +5005,315 @@ def _render_witness_html() -> str:
     </footer>
 </body>
 </html>"""
+
+def _render_proof_html(identifier: str, surface: str) -> str:
+    """Server-rendered score proof page — shows every input, weight, and component."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    if surface == "sii":
+        row = fetch_one("""
+            SELECT s.*, st.name, st.symbol, st.issuer
+            FROM scores s JOIN stablecoins st ON st.id = s.stablecoin_id
+            WHERE s.stablecoin_id = %s
+        """, (identifier,))
+        if not row:
+            return f"<html><body><h1>Not found</h1><p>No SII score for '{identifier}'</p></body></html>"
+
+        symbol = (row.get("symbol") or identifier).upper()
+        name = row.get("name") or symbol
+        issuer = row.get("issuer") or ""
+        score = float(row.get("overall_score", 0))
+        grade = row.get("grade", "—")
+        computed = row["computed_at"].strftime("%Y-%m-%d %H:%M UTC") if row.get("computed_at") else "—"
+        formula_version = row.get("formula_version") or FORMULA_VERSION
+        comp_count = row.get("component_count") or 0
+
+        cats = [
+            ("Peg Stability", "peg_stability", 0.30, row.get("peg_score")),
+            ("Liquidity Depth", "liquidity_depth", 0.25, row.get("liquidity_score")),
+            ("Mint/Burn Flows", "mint_burn_dynamics", 0.15, row.get("mint_burn_score")),
+            ("Holder Distribution", "holder_distribution", 0.10, row.get("distribution_score")),
+            ("Structural Risk", "structural_risk_composite", 0.20, row.get("structural_score")),
+        ]
+
+        components = fetch_all("""
+            SELECT DISTINCT ON (component_id)
+              component_id, category, raw_value, normalized_score, data_source, collected_at
+            FROM component_readings
+            WHERE stablecoin_id = %s AND collected_at > NOW() - INTERVAL '48 hours'
+            ORDER BY component_id, collected_at DESC
+        """, (identifier,))
+
+        title = f"{symbol} — Score Proof"
+        desc = f"Full score derivation for {symbol}. SII {score:.1f} ({grade}). {comp_count} components."
+        canon = f"{CANONICAL_BASE_URL}/proof/sii/{identifier}"
+        json_api = f"/api/scores/{identifier}"
+        history_api = f"/api/scores/{identifier}/history"
+        formula_str = "SII = 0.30×Peg + 0.25×Liquidity + 0.15×Flows + 0.10×Distribution + 0.20×Structural"
+
+    elif surface == "psi":
+        row = fetch_one("""
+            SELECT * FROM psi_scores
+            WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1
+        """, (identifier,))
+        if not row:
+            return f"<html><body><h1>Not found</h1><p>No PSI score for '{identifier}'</p></body></html>"
+
+        from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+        symbol = identifier
+        name = row.get("protocol_name") or identifier
+        issuer = ""
+        score = float(row.get("overall_score", 0))
+        grade = row.get("grade", "—")
+        computed = row["computed_at"].strftime("%Y-%m-%d %H:%M UTC") if row.get("computed_at") else "—"
+        formula_version = row.get("formula_version") or "psi-v0.2.0"
+        cat_scores = row.get("category_scores") or {}
+        comp_scores = row.get("component_scores") or {}
+        raw_values = row.get("raw_values") or {}
+        comp_count = len(comp_scores)
+
+        psi_cats = PSI_V01_DEFINITION["categories"]
+        cats = []
+        for cat_id, cat_def in psi_cats.items():
+            w = cat_def["weight"] if isinstance(cat_def, dict) else 0
+            s = cat_scores.get(cat_id)
+            cats.append((cat_def["name"] if isinstance(cat_def, dict) else cat_id, cat_id, w, s))
+
+        # Build components from PSI definition + stored data
+        components = []
+        for comp_id, comp_def in PSI_V01_DEFINITION["components"].items():
+            components.append({
+                "component_id": comp_id,
+                "category": comp_def.get("category", ""),
+                "raw_value": raw_values.get(comp_id),
+                "normalized_score": comp_scores.get(comp_id),
+                "data_source": comp_def.get("data_source", ""),
+                "collected_at": row.get("computed_at"),
+            })
+
+        title = f"{name} — Score Proof"
+        desc = f"Full score derivation for {name}. PSI {score:.1f} ({grade}). {comp_count} components."
+        canon = f"{CANONICAL_BASE_URL}/proof/psi/{identifier}"
+        json_api = f"/api/psi/scores/{identifier}"
+        history_api = None
+        formula_str = "PSI = 0.25×Balance + 0.20×Revenue + 0.20×Liquidity + 0.15×Security + 0.10×Governance + 0.10×Token"
+    else:
+        return "<html><body><h1>Not found</h1></body></html>"
+
+    # Build formula table rows
+    formula_rows = ""
+    running_total = 0.0
+    for cat_name, cat_id, weight, cat_score in cats:
+        cs = float(cat_score) if cat_score else 0
+        contribution = weight * cs
+        running_total += contribution
+        bar_w = max(0, min(100, cs))
+        score_str = f"{cs:.1f}" if cat_score else "—"
+        contrib_str = f"{contribution:.2f}" if cat_score else "—"
+        formula_rows += f"""
+        <tr>
+            <td>{cat_name}</td>
+            <td class="num">{weight:.2f}</td>
+            <td class="num">{score_str}</td>
+            <td class="num">{contrib_str}</td>
+            <td><div class="bar" style="width:{bar_w}%"></div></td>
+        </tr>"""
+
+    formula_rows += f"""
+        <tr style="border-top:2px solid #0B090A">
+            <td><strong>Total</strong></td>
+            <td></td>
+            <td class="num"><strong>{score:.1f}</strong></td>
+            <td class="num"><strong>{running_total:.2f}</strong></td>
+            <td></td>
+        </tr>"""
+
+    # Build component readings grouped by category
+    by_cat = {}
+    for c in components:
+        cat = c.get("category") or "other"
+        by_cat.setdefault(cat, []).append(c)
+
+    comp_rows = ""
+    for cat in sorted(by_cat.keys()):
+        comp_rows += f"""
+        <tr class="cat-header"><td colspan="6">{cat.replace("_", " ").title()}</td></tr>"""
+        for c in sorted(by_cat[cat], key=lambda x: x["component_id"]):
+            raw = c.get("raw_value")
+            raw_str = f"{float(raw):.4g}" if raw is not None else "—"
+            norm = c.get("normalized_score")
+            norm_str = f"{float(norm):.1f}" if norm is not None else "—"
+            src = c.get("data_source") or "—"
+            src_type = (
+                "cda" if str(src).startswith("cda_") else
+                "live" if src in ("coingecko", "etherscan", "curve", "defillama") else
+                "static"
+            )
+            src_class = f"src-{src_type}"
+            ts_str = c["collected_at"].strftime("%Y-%m-%d %H:%M") if c.get("collected_at") else "—"
+            comp_rows += f"""
+        <tr>
+            <td class="comp-id">{c["component_id"]}</td>
+            <td class="num">{raw_str}</td>
+            <td class="num">{norm_str}</td>
+            <td class="{src_class}">{src}</td>
+            <td class="{src_class}">{src_type}</td>
+            <td class="ts">{ts_str}</td>
+        </tr>"""
+
+    total_target = len(COMPONENT_NORMALIZATIONS) if surface == "sii" else len(PSI_V01_DEFINITION["components"]) if surface == "psi" else 0
+
+    # Evidence links
+    evidence = f'<a href="{json_api}">Raw JSON</a>'
+    if history_api:
+        evidence += f' · <a href="{history_api}">Score History</a>'
+    evidence += ' · <a href="/witness">Witness Archive</a> · <a href="/api/methodology">Methodology Spec</a>'
+
+    # Compute inputs hash if available
+    hash_section = ""
+    try:
+        import hashlib
+        if components:
+            inputs = {c["component_id"]: c.get("raw_value") for c in components if c.get("raw_value") is not None}
+            if inputs:
+                canonical = json.dumps(dict(sorted(inputs.items())), sort_keys=True, default=str)
+                h = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+                hash_section = f"""
+    <div class="section">
+        <h3>Re-derivation</h3>
+        <p>Inputs hash: <code>{h}</code></p>
+        <p>You can verify this score independently by calling <code>GET {json_api}</code> and applying the published formula to the component readings. The same inputs always produce the same output.</p>
+    </div>"""
+    except Exception:
+        pass
+
+    json_ld = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": f"{title} — Basis Protocol",
+        "description": desc,
+        "url": canon,
+        "dateModified": datetime.now(timezone.utc).isoformat(),
+        "creator": {"@type": "Organization", "name": "Basis Protocol", "url": CANONICAL_BASE_URL},
+    }, cls=_DecimalEncoder)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title} — Basis Protocol</title>
+    <meta name="description" content="{desc}">
+    <meta property="og:title" content="{title} — Basis Protocol">
+    <meta property="og:description" content="{desc}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{canon}">
+    <link rel="canonical" href="{canon}">
+    <link rel="alternate" type="application/json" href="{CANONICAL_BASE_URL}{json_api}">
+    <script type="application/ld+json">{json_ld}</script>
+    <style>
+        body {{ font-family: 'Georgia', serif; max-width: 960px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+        h1 {{ font-size: 1.6rem; font-weight: 400; margin-bottom: 4px; }}
+        h3 {{ font-family: monospace; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1.5px; color: #6a6a6a; margin: 0 0 12px; }}
+        .meta {{ font-family: monospace; font-size: 0.75rem; color: #6a6a6a; margin-bottom: 6px; }}
+        .intro {{ font-size: 0.9rem; color: #3a3a3a; line-height: 1.6; margin-bottom: 24px; }}
+        nav {{ margin-bottom: 24px; font-family: monospace; font-size: 0.8rem; }}
+        nav a {{ color: #0B090A; margin-right: 16px; text-decoration: none; }}
+        .section {{ border: 1px solid #ccc; padding: 16px 20px; margin-bottom: 20px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.8rem; }}
+        th {{ text-align: left; padding: 6px 8px; border-bottom: 2px solid #0B090A; font-family: monospace; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 1px; color: #6a6a6a; }}
+        td {{ padding: 6px 8px; border-bottom: 1px dotted #ccc; }}
+        .num {{ font-family: monospace; text-align: right; }}
+        .comp-id {{ font-family: monospace; font-size: 0.75rem; }}
+        .ts {{ font-family: monospace; font-size: 0.7rem; color: #9a9a9a; }}
+        .cat-header td {{ font-family: monospace; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #6a6a6a; padding-top: 14px; border-bottom: 1px solid #0B090A; }}
+        .src-live {{ color: #2d6b45; }}
+        .src-cda {{ color: #6b5b2d; }}
+        .src-static {{ color: #9a9a9a; }}
+        .bar {{ height: 4px; background: #0B090A; border-radius: 1px; }}
+        .grade {{ font-size: 1.4rem; font-weight: 700; }}
+        .score {{ font-family: monospace; font-size: 1.8rem; font-weight: 700; }}
+        code {{ font-family: monospace; font-size: 0.8rem; background: #e8e6e0; padding: 1px 4px; border-radius: 2px; }}
+        footer {{ margin-top: 32px; font-family: monospace; font-size: 0.75rem; color: #6a6a6a; border-top: 1px solid #ccc; padding-top: 12px; }}
+    </style>
+</head>
+<body>
+    <h1>Basis Protocol</h1>
+    <p class="meta">Score Proof · {symbol.upper() if surface == "sii" else name} · {surface.upper()} · {ts}</p>
+    <nav>
+        <a href="/">Rankings</a>
+        <a href="/witness">Witness</a>
+        <a href="/proof/sii/usdc">Proof</a>
+        <a href="/developers">API</a>
+    </nav>
+
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+        <div>
+            <span style="font-size:1.4rem;font-weight:600">{name}</span>
+            <span style="font-family:monospace;color:#6a6a6a;margin-left:8px">{symbol.upper() if surface == "sii" else ""}</span>
+            {"<br><span class='meta'>Issued by " + issuer + "</span>" if issuer else ""}
+        </div>
+        <div style="text-align:right">
+            <span class="score">{score:.1f}</span>
+            <span class="grade" style="margin-left:8px">{grade}</span>
+        </div>
+    </div>
+    <p class="meta">Methodology {formula_version} · Computed {computed} · {comp_count} components</p>
+    <p class="intro">This page shows every input used to compute this score. The methodology is open. The computation is deterministic — same inputs always produce the same output.</p>
+
+    <div class="section">
+        <h3>Formula</h3>
+        <p style="font-family:monospace;font-size:0.85rem;margin:0 0 14px;color:#3a3a3a">{formula_str}</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th class="num">Weight</th>
+                    <th class="num">Score</th>
+                    <th class="num">Contribution</th>
+                    <th style="width:30%"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {formula_rows}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h3>Component Readings</h3>
+        <p class="meta" style="margin-bottom:12px">{comp_count} of {total_target} target components currently scoring</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Component</th>
+                    <th class="num">Raw Value</th>
+                    <th class="num">Score (0-100)</th>
+                    <th>Source</th>
+                    <th>Type</th>
+                    <th>Collected</th>
+                </tr>
+            </thead>
+            <tbody>
+                {comp_rows}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h3>Evidence</h3>
+        <p>{evidence}</p>
+    </div>
+
+    {hash_section}
+
+    <footer>
+        <p>Basis Protocol · basisprotocol.xyz · {surface.upper()} {formula_version} · Methodology: deterministic, version-controlled, open</p>
+        <p>Score proof pages are public by design — open methodology means open proof.</p>
+    </footer>
+</body>
+</html>"""
+
 
 # =============================================================================
 # Discovery Layer API
@@ -5168,6 +5560,25 @@ def _register_spa_catch_all(app_instance):
     async def serve_spa(request: Request, full_path: str):
         if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi") or full_path.startswith("admin") or full_path.startswith("developers"):
             raise HTTPException(status_code=404, detail="Not found")
+
+        # Proof pages are server-rendered for ALL visitors (not just bots)
+        try:
+            if full_path.startswith("proof/sii/"):
+                symbol = full_path.split("proof/sii/")[1].split("/")[0].split("?")[0]
+                if symbol:
+                    return HTMLResponse(
+                        content=_render_proof_html(symbol.lower(), "sii"),
+                        headers={"Cache-Control": "public, max-age=300", "Basis-URL-Stability": "permanent"}
+                    )
+            elif full_path.startswith("proof/psi/"):
+                slug = full_path.split("proof/psi/")[1].split("/")[0].split("?")[0]
+                if slug:
+                    return HTMLResponse(
+                        content=_render_proof_html(slug.lower(), "psi"),
+                        headers={"Cache-Control": "public, max-age=300", "Basis-URL-Stability": "permanent"}
+                    )
+        except Exception as e:
+            logger.warning(f"Proof page render failed for /{full_path}: {e}")
 
         # Serve server-rendered HTML for bots/AI on key routes
         if _is_bot(request):

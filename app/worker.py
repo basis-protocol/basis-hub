@@ -453,26 +453,48 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
     if not components:
         logger.warning(f"No components collected for {stablecoin_id}")
         return {"error": "No data collected", "stablecoin": stablecoin_id}
-    
+
+    # 1b. Category-completeness gate — every v1 category must have ≥1 component
+    from app.scoring_engine import is_sii_category_complete_legacy
+    is_complete, missing_cats = is_sii_category_complete_legacy(components)
+
+    if not is_complete:
+        # Store component readings for future attempts but skip scoring
+        store_component_readings(components)
+        elapsed = time.time() - start
+        logger.info(
+            f"{stablecoin_id}: SKIPPED (category-incomplete) — "
+            f"missing: {', '.join(missing_cats)} — "
+            f"{len(components)} components collected in {elapsed:.1f}s"
+        )
+        return {
+            "stablecoin": stablecoin_id,
+            "skipped": True,
+            "reason": "category_incomplete",
+            "missing_categories": missing_cats,
+            "components": len(components),
+            "elapsed": round(elapsed, 1),
+        }
+
     # 2. Compute SII score
     score_data = compute_sii_from_components(components)
-    
+
     # 3. Get price context
     current = await fetch_current(client, cfg["coingecko_id"])
     price_ctx = extract_price_context(current) if current else {}
-    
+
     # 4. Store everything
     store_component_readings(components)
     store_score(stablecoin_id, score_data, price_ctx)
     store_history_snapshot(stablecoin_id, score_data)
     store_provenance(components)
-    
+
     elapsed = time.time() - start
     logger.info(
         f"{stablecoin_id}: {score_data['overall_score']} ({score_data['grade']}) "
         f"- {score_data['component_count']} components in {elapsed:.1f}s"
     )
-    
+
     return {
         "stablecoin": stablecoin_id,
         "score": score_data["overall_score"],

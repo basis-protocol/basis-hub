@@ -38,6 +38,29 @@ def compose_minimum(scores):
     return min(valid) if valid else None
 
 
+def _sii_confidence(component_count, sii_components_total=39):
+    """Compute SII confidence from component count."""
+    from app.scoring_engine import compute_confidence_tag
+    coverage = round(component_count / max(sii_components_total, 1), 2)
+    return compute_confidence_tag(0, 0, coverage)
+
+
+def _psi_confidence(component_scores_dict, psi_components_total=27):
+    """Compute PSI confidence from component scores dict."""
+    from app.scoring_engine import compute_confidence_tag
+    populated = len(component_scores_dict) if component_scores_dict else 0
+    coverage = round(populated / max(psi_components_total, 1), 2)
+    return compute_confidence_tag(0, 0, coverage)
+
+
+def _lower_confidence(conf_a, conf_b):
+    """Return the lower of two confidence levels."""
+    order = {"limited": 0, "standard": 1, "high": 2}
+    a_rank = order.get(conf_a.get("confidence", "high"), 2)
+    b_rank = order.get(conf_b.get("confidence", "high"), 2)
+    return conf_a if a_rank <= b_rank else conf_b
+
+
 def compute_cqi(asset_symbol, protocol_slug):
     """
     Compute Collateral Quality Index for an asset-in-protocol pair.
@@ -45,7 +68,7 @@ def compute_cqi(asset_symbol, protocol_slug):
     """
     # Get SII score from scores table joined to stablecoins
     sii_row = fetch_one("""
-        SELECT s.overall_score, s.grade
+        SELECT s.overall_score, s.grade, s.component_count
         FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
         WHERE UPPER(st.symbol) = UPPER(%s)
@@ -56,7 +79,7 @@ def compute_cqi(asset_symbol, protocol_slug):
 
     # Get PSI score
     psi_row = fetch_one("""
-        SELECT overall_score, grade, protocol_name
+        SELECT overall_score, grade, protocol_name, component_scores
         FROM psi_scores
         WHERE protocol_slug = %s
         ORDER BY computed_at DESC
@@ -70,6 +93,10 @@ def compute_cqi(asset_symbol, protocol_slug):
     psi_score = float(psi_row["overall_score"])
     cqi_score = compose_geometric_mean([sii_score, psi_score])
 
+    sii_conf = _sii_confidence(sii_row.get("component_count") or 0)
+    psi_conf = _psi_confidence(psi_row.get("component_scores") or {})
+    cqi_conf = _lower_confidence(sii_conf, psi_conf)
+
     return {
         "composite_id": "cqi",
         "name": "Collateral Quality Index",
@@ -78,9 +105,11 @@ def compute_cqi(asset_symbol, protocol_slug):
         "protocol_slug": protocol_slug,
         "cqi_score": cqi_score,
         "cqi_grade": score_to_grade(cqi_score) if cqi_score else None,
+        "confidence": cqi_conf["confidence"],
+        "confidence_tag": cqi_conf["tag"],
         "inputs": {
-            "sii": {"score": sii_score, "grade": sii_row.get("grade")},
-            "psi": {"score": psi_score, "grade": psi_row.get("grade")},
+            "sii": {"score": sii_score, "grade": sii_row.get("grade"), "confidence": sii_conf["confidence"]},
+            "psi": {"score": psi_score, "grade": psi_row.get("grade"), "confidence": psi_conf["confidence"]},
         },
         "method": "geometric_mean",
         "formula_version": "composition-v1.0.0",
@@ -90,7 +119,7 @@ def compute_cqi(asset_symbol, protocol_slug):
 def compute_cqi_matrix():
     """Compute CQI for all stablecoin x protocol combinations."""
     stablecoins = fetch_all("""
-        SELECT st.symbol, s.overall_score, s.grade
+        SELECT st.symbol, s.overall_score, s.grade, s.component_count
         FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
         WHERE s.overall_score IS NOT NULL
@@ -99,7 +128,7 @@ def compute_cqi_matrix():
 
     protocols = fetch_all("""
         SELECT DISTINCT ON (protocol_slug)
-            protocol_slug, protocol_name, overall_score, grade
+            protocol_slug, protocol_name, overall_score, grade, component_scores
         FROM psi_scores
         ORDER BY protocol_slug, computed_at DESC
     """)
@@ -109,17 +138,21 @@ def compute_cqi_matrix():
 
     matrix = []
     for coin in stablecoins:
+        sii = float(coin["overall_score"]) if coin.get("overall_score") else None
+        sii_conf = _sii_confidence(coin.get("component_count") or 0)
         for proto in protocols:
-            sii = float(coin["overall_score"]) if coin.get("overall_score") else None
             psi = float(proto["overall_score"]) if proto.get("overall_score") else None
             if sii and psi:
                 cqi = compose_geometric_mean([sii, psi])
+                psi_conf = _psi_confidence(proto.get("component_scores") or {})
+                cqi_conf = _lower_confidence(sii_conf, psi_conf)
                 matrix.append({
                     "asset": coin["symbol"],
                     "protocol": proto.get("protocol_name", proto["protocol_slug"]),
                     "protocol_slug": proto["protocol_slug"],
                     "cqi_score": cqi,
                     "cqi_grade": score_to_grade(cqi) if cqi else None,
+                    "confidence": cqi_conf["confidence"],
                     "sii_score": sii,
                     "psi_score": psi,
                 })

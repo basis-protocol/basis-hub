@@ -257,31 +257,51 @@ KNOWN_ISSUERS = {
 
 def promote_eligible_assets() -> int:
     """
-    Promote unscored assets above the value threshold into the stablecoins
-    scoring table with scoring_enabled=TRUE.
+    Promote unscored stablecoins into the scoring table with scoring_enabled=TRUE.
 
-    Threshold is controlled by BACKLOG_PROMOTE_THRESHOLD env var (default $1M).
-    Sets scoring_status to 'queued' in unscored_assets after promotion.
+    All stablecoins with a coingecko_id are eligible for promotion. The actual
+    quality gate is category-completeness, enforced at scoring time in the worker
+    (every v1 category must have >= 1 populated component).
+
+    The old value-based thresholds ($1M holdings / $500K collateral) can still be
+    used as an optional filter via env vars BACKLOG_VALUE_FILTER=true.
+
     Returns number of assets newly promoted.
     """
-    threshold = float(os.environ.get("BACKLOG_PROMOTE_THRESHOLD", "1000000"))
-    collateral_threshold = float(os.environ.get("BACKLOG_COLLATERAL_THRESHOLD", "500000"))
+    use_value_filter = os.environ.get("BACKLOG_VALUE_FILTER", "").lower() in ("true", "1", "yes")
 
-    eligible = fetch_all(
-        """
-        SELECT token_address, symbol, name, decimals, coingecko_id,
-               total_value_held,
-               COALESCE(protocol_collateral_tvl, 0) AS protocol_collateral_tvl,
-               COALESCE(protocol_count, 0) AS protocol_count
-        FROM wallet_graph.unscored_assets
-        WHERE (total_value_held >= %s OR COALESCE(protocol_collateral_tvl, 0) >= %s)
-          AND scoring_status = 'unscored'
-          AND coingecko_id IS NOT NULL
-          AND token_type = 'stablecoin'
-        ORDER BY (total_value_held + COALESCE(protocol_collateral_tvl, 0) * 2) DESC
-        """,
-        (threshold, collateral_threshold),
-    )
+    if use_value_filter:
+        threshold = float(os.environ.get("BACKLOG_PROMOTE_THRESHOLD", "1000000"))
+        collateral_threshold = float(os.environ.get("BACKLOG_COLLATERAL_THRESHOLD", "500000"))
+        eligible = fetch_all(
+            """
+            SELECT token_address, symbol, name, decimals, coingecko_id,
+                   total_value_held,
+                   COALESCE(protocol_collateral_tvl, 0) AS protocol_collateral_tvl,
+                   COALESCE(protocol_count, 0) AS protocol_count
+            FROM wallet_graph.unscored_assets
+            WHERE (total_value_held >= %s OR COALESCE(protocol_collateral_tvl, 0) >= %s)
+              AND scoring_status = 'unscored'
+              AND coingecko_id IS NOT NULL
+              AND token_type = 'stablecoin'
+            ORDER BY (total_value_held + COALESCE(protocol_collateral_tvl, 0) * 2) DESC
+            """,
+            (threshold, collateral_threshold),
+        )
+    else:
+        eligible = fetch_all(
+            """
+            SELECT token_address, symbol, name, decimals, coingecko_id,
+                   total_value_held,
+                   COALESCE(protocol_collateral_tvl, 0) AS protocol_collateral_tvl,
+                   COALESCE(protocol_count, 0) AS protocol_count
+            FROM wallet_graph.unscored_assets
+            WHERE scoring_status = 'unscored'
+              AND coingecko_id IS NOT NULL
+              AND token_type = 'stablecoin'
+            ORDER BY (total_value_held + COALESCE(protocol_collateral_tvl, 0) * 2) DESC
+            """,
+        )
 
     if not eligible:
         return 0

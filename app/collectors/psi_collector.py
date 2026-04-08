@@ -1185,7 +1185,7 @@ def enrich_protocol_backlog():
     Returns number of protocols enriched.
     """
     import os
-    coverage_threshold = float(os.environ.get("PROTOCOL_PROMOTE_COVERAGE_PCT", "60"))
+    coverage_threshold = float(os.environ.get("PROTOCOL_PROMOTE_COVERAGE_PCT", "52"))
 
     candidates = fetch_all("""
         SELECT slug FROM protocol_backlog
@@ -1214,6 +1214,13 @@ def enrich_protocol_backlog():
         category = protocol_data.get("category", "")
         gecko_id = protocol_data.get("gecko_id") or None
         governance_id = protocol_data.get("governanceID") or None
+
+        # Fallback: use gecko_id from database if DeFiLlama didn't provide one
+        if not gecko_id:
+            db_row = fetch_one("SELECT gecko_id FROM protocol_backlog WHERE slug = %s", (slug,))
+            if db_row and db_row.get("gecko_id"):
+                gecko_id = db_row["gecko_id"]
+                logger.info(f"Using resolved gecko_id for {slug}: {gecko_id}")
 
         # Snapshot space from governanceID (DeFiLlama returns list or string)
         snapshot_space = None
@@ -1285,11 +1292,17 @@ def enrich_protocol_backlog():
         )
         coverage_pct = (components_available / components_total * 100) if components_total else 0
 
-        # Determine enrichment status
-        if coverage_pct >= coverage_threshold:
+        # Determine enrichment status via category-completeness gate
+        from app.scoring_engine import is_category_complete
+        is_complete, missing_cats = is_category_complete(raw_values, PSI_V01_DEFINITION)
+        if is_complete:
             new_status = "ready"
         else:
             new_status = "enriching"
+            logger.debug(
+                f"Enrichment: {name} ({slug}) category-incomplete — "
+                f"missing: {', '.join(missing_cats)}"
+            )
 
         try:
             execute("""
@@ -1324,24 +1337,22 @@ def enrich_protocol_backlog():
 
 
 def promote_eligible_protocols():
-    """Promote protocols with sufficient component coverage to PSI scoring.
+    """Promote protocols with category-complete data to PSI scoring.
 
-    Protocols with enrichment_status='ready' get promoted. On the next
-    run_psi_scoring() call, get_scoring_protocols() will include them.
+    Protocols with enrichment_status='ready' get promoted. The enrichment
+    step already verifies category completeness (every PSI category has >= 1
+    populated component). On the next run_psi_scoring() call,
+    get_scoring_protocols() will include them.
 
     Returns number of protocols promoted.
     """
-    import os
-    coverage_threshold = float(os.environ.get("PROTOCOL_PROMOTE_COVERAGE_PCT", "60"))
-
     eligible = fetch_all("""
         SELECT slug, name, stablecoin_exposure_usd, coverage_pct,
                components_available, components_total
         FROM protocol_backlog
         WHERE enrichment_status = 'ready'
-          AND coverage_pct >= %s
         ORDER BY stablecoin_exposure_usd DESC
-    """, (coverage_threshold,))
+    """)
 
     if not eligible:
         return 0

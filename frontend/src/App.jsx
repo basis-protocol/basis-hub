@@ -60,7 +60,7 @@ function BasisLogo({ accent = "#fc988f", size = 40 }) {
   );
 }
 
-function TabHeader({ title, formId, stats, formulaLine, versionLabel, accent, mobile, showOnChain = true }) {
+function TabHeader({ title, formId, stats, formulaLine, versionLabel, accent, mobile, showOnChain = true, coinCount }) {
   return (
     <div style={{ border: `1.5px solid ${T.ink}`, marginBottom: 0 }}>
       <div style={{ padding: mobile ? "14px 12px 0" : "18px 24px 0" }}>
@@ -126,11 +126,11 @@ function TabHeader({ title, formId, stats, formulaLine, versionLabel, accent, mo
           <div style={{ display: "flex", flexDirection: mobile ? "column" : "row", gap: mobile ? 4 : 16, paddingLeft: mobile ? 0 : 14 }}>
             <a href="https://basescan.org/address/0x01aaa1d20fe68d55d0c5b6b42399b91024f8cd99" target="_blank" rel="noopener noreferrer" style={{ fontFamily: T.mono, fontSize: mobile ? 8.5 : 10, color: "#2a5c38", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#3b82f6", display: "inline-block" }} />
-              {mobile ? "Base Oracle \u00b7 0x01aA...cD99" : "Live scores on Base \u00b7 0x01aAa1D2...cD99 \u00b7 17 stablecoins \u2197"}
+              {mobile ? "Base Oracle \u00b7 0x01aA...cD99" : `Live scores on Base \u00b7 0x01aAa1D2...cD99 \u00b7 ${coinCount || ""} stablecoins \u2197`}
             </a>
             <a href="https://arbiscan.io/address/0x01aaa1d20fe68d55d0c5b6b42399b91024f8cd99" target="_blank" rel="noopener noreferrer" style={{ fontFamily: T.mono, fontSize: mobile ? 8.5 : 10, color: "#2a5c38", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#9945ff", display: "inline-block" }} />
-              {mobile ? "Arbitrum Oracle \u00b7 0x01aA...cD99" : "Live scores on Arbitrum \u00b7 0x01aAa1D2...cD99 \u00b7 17 stablecoins \u2197"}
+              {mobile ? "Arbitrum Oracle \u00b7 0x01aA...cD99" : `Live scores on Arbitrum \u00b7 0x01aAa1D2...cD99 \u00b7 ${coinCount || ""} stablecoins \u2197`}
             </a>
           </div>
         </div>
@@ -178,6 +178,23 @@ const coverageColor = (q) => {
   if (q === "full" || q === "high") return T.ink;
   if (q === "partial" || q === "medium") return T.inkMid;
   return T.accent;
+};
+const confidenceBadge = (conf, tag, populated, total, missing) => {
+  if (!conf || conf === "high") return null;
+  const isStandard = conf === "standard";
+  const bg = isStandard ? "rgba(234,179,8,0.12)" : "rgba(239,68,68,0.10)";
+  const color = isStandard ? "#b8860b" : "#c0392b";
+  const label = tag || (isStandard ? "STANDARD" : "LIMITED DATA");
+  const tip = isStandard
+    ? `Scored with standard data coverage (${populated || "?"} of ${total || "?"} components)`
+    : `Scored with limited data coverage (${populated || "?"} of ${total || "?"} components)${missing && missing.length ? ". " + missing.join(", ") + " categories have incomplete data" : ""}`;
+  return (
+    <span title={tip} style={{
+      fontFamily: T.mono, fontSize: 8, letterSpacing: 0.6, fontWeight: 600,
+      color, background: bg, padding: "1px 4px", borderRadius: 2,
+      marginLeft: 4, cursor: "help", whiteSpace: "nowrap",
+    }}>{label}</span>
+  );
 };
 const fmtB = (n) => {
   if (!n) return "—";
@@ -788,6 +805,7 @@ function PageHeader({ ts, mobile, coinCount, meta = {} }) {
       versionLabel={`Methodology v1.0 · ${timestamp}`}
       accent="#fc988f"
       mobile={mobile}
+      coinCount={coinCount}
     />
   );
 }
@@ -926,6 +944,7 @@ function RankingsView({ scores, loading, onSelect, ts, mobile, meta }) {
             <span style={{ fontFamily: T.sans, fontSize: 28, fontWeight: 700, color: gradeColor(coin.grade), marginLeft: "auto", lineHeight: 1 }}>
               {coin.grade || "—"}
             </span>
+            {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 30 }}>
             <span style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint }}>{coin.issuer}</span>
@@ -1033,6 +1052,7 @@ function RankingsView({ scores, loading, onSelect, ts, mobile, meta }) {
                 {coin.grade.slice(-1)}
               </span>
             )}
+            {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 56 }}>
@@ -1268,9 +1288,10 @@ function DetailView({ coinId, onBack, mobile }) {
             <span style={{ fontFamily: T.sans, fontSize: mobile ? 16 : 20, fontWeight: 700, color: gradeColor(coin.grade) }}>
               {coin.grade}
             </span>
+            {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
           </div>
           <div style={{ fontSize: mobile ? 10 : 12, color: T.inkLight, marginTop: 6, fontFamily: T.sans, lineHeight: 1.5 }}>
-            Issued by {coin.issuer} · {coin.component_count || "—"} components · {RESERVE_TYPE[coin.id] || "Pending"} · MiCA: {MICA_STATUS[coin.id] || "Pending"}
+            Issued by {coin.issuer} · {coin.components_populated || coin.component_count || "—"} of {coin.components_total || "—"} components · {RESERVE_TYPE[coin.id] || "Pending"} · MiCA: {MICA_STATUS[coin.id] || "Pending"}
           </div>
         </div>
 
@@ -1534,6 +1555,36 @@ function MethodologyView({ mobile }) {
               <div key={grade} style={{ padding: "8px 6px", textAlign: "center", border: `1px solid ${T.ruleLight}` }}>
                 <div style={{ fontWeight: 700, fontSize: 14, color: gradeColor(grade), fontFamily: T.mono }}>{grade}</div>
                 <div style={{ fontSize: 9, color: T.inkFaint, marginTop: 2, fontFamily: T.mono }}>{range}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Confidence Indicators */}
+      <section style={{ marginBottom: 28 }}>
+        <div style={{ border: `1px solid ${T.ruleMid}`, padding: "20px 24px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14, fontFamily: T.mono }}>
+            Confidence Indicators
+          </div>
+          <p style={{ margin: "0 0 14px", fontSize: 13, color: T.inkMid, fontFamily: T.sans, lineHeight: 1.7 }}>
+            Every score includes a confidence indicator based on data coverage. A stablecoin or protocol is only scored when every risk dimension has at least one data point (category completeness). The confidence tier reflects how many components within those categories are populated.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 10 }}>
+            {[
+              { level: "High", range: "\u226580% component coverage", desc: "Full confidence. All categories well-populated.", color: T.ink, bg: "transparent" },
+              { level: "Standard", range: "60\u201379% coverage", desc: "Reliable score with minor data gaps in some categories.", color: "#b8860b", bg: "rgba(234,179,8,0.12)" },
+              { level: "Limited", range: "<60% coverage", desc: "Structurally complete but fewer data points per category.", color: "#c0392b", bg: "rgba(239,68,68,0.10)" },
+            ].map((t) => (
+              <div key={t.level} style={{ padding: "10px 12px", border: `1px solid ${T.ruleLight}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 700, color: t.color }}>{t.level}</span>
+                  {t.level !== "High" && (
+                    <span style={{ fontFamily: T.mono, fontSize: 8, letterSpacing: 0.6, fontWeight: 600, color: t.color, background: t.bg, padding: "1px 4px", borderRadius: 2 }}>{t.level === "Standard" ? "STANDARD" : "LIMITED DATA"}</span>
+                  )}
+                </div>
+                <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, marginBottom: 4 }}>{t.range}</div>
+                <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkLight, lineHeight: 1.5 }}>{t.desc}</div>
               </div>
             ))}
           </div>
@@ -2161,6 +2212,7 @@ function ProtocolsView({ mobile }) {
                     {!mobile && <span style={{ fontFamily: T.mono, fontSize: 11, color: subScoreColor(cats.governance) }}>{fmt(cats.governance, 0)}</span>}
                     <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 600, color: T.ink }}>{fmt(p.score || p.overall_score, 1)}</span>
                     <span style={{ fontFamily: T.sans, fontSize: 18, fontWeight: 700, color: gradeColor(p.grade) }}>{p.grade || "—"}</span>
+                    {confidenceBadge(p.confidence, p.confidence_tag, p.components_populated, p.components_total, p.missing_categories)}
                   </div>
                   {isExpanded && <PsiDetailPanel protocol={p} mobile={mobile} />}
                 </div>
@@ -2239,6 +2291,7 @@ function ProtocolsView({ mobile }) {
                     </div>
                     <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 600, color: T.ink }}>{fmt(r.cqi_score, 1)}</span>
                     <span style={{ fontFamily: T.sans, fontSize: 16, fontWeight: 700, color: gradeColor(r.cqi_grade) }}>{r.cqi_grade || "—"}</span>
+                    {r.confidence && r.confidence !== "high" && confidenceBadge(r.confidence, null, null, null, null)}
                   </div>
                 ))}
               </div>
