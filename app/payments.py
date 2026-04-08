@@ -196,6 +196,9 @@ def create_x402_middleware():
         "GET /api/paid/wallets/{address}/profile": _route(
             "$0.005", "Full wallet risk profile with behavioral signals and reputation"
         ),
+        "GET /api/paid/report/{entity_type}/{entity_id}": _route(
+            "$0.01", "Attested risk report with optional regulatory lens"
+        ),
     }
 
     return PaymentMiddlewareASGI, {"routes": routes, "server": server}
@@ -422,3 +425,57 @@ async def paid_wallet_profile(address: str):
     }
     profile["tier"] = "paid"
     return profile
+
+
+@paid_router.get("/report/{entity_type}/{entity_id}")
+async def paid_report(
+    entity_type: str,
+    entity_id: str,
+    template: str = "protocol_risk",
+    lens: str = None,
+):
+    """Paid: Attested risk report with optional regulatory lens."""
+    from app.report import assemble_report_data
+    from app.report_attestation import compute_report_hash, store_report_attestation
+    from app.templates import get_template
+    from app.lenses import load_lens, apply_lens
+    from app.scoring import FORMULA_VERSION
+
+    if entity_type not in ("stablecoin", "protocol", "wallet"):
+        raise HTTPException(status_code=400, detail=f"Invalid entity_type: {entity_type}")
+
+    render_fn = get_template(template)
+    if not render_fn:
+        raise HTTPException(status_code=400, detail=f"Unknown template: {template}")
+
+    data = assemble_report_data(entity_type, entity_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"{entity_type} '{entity_id}' not found")
+
+    lens_result = None
+    lens_version = None
+    if lens:
+        lens_config = load_lens(lens)
+        if lens_config:
+            lens_result = apply_lens(lens_config, data)
+            lens_version = lens_config.get("lens_version")
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    report_hash = compute_report_hash(data, template, lens, lens_version, ts,
+                                      state_hashes=data.get("state_hashes"))
+    store_report_attestation(
+        entity_type, entity_id, template, lens, lens_version,
+        report_hash, data.get("score_hashes", []),
+        data.get("cqi_hashes"), data.get("formula_version", FORMULA_VERSION),
+    )
+
+    import json as _json
+    return {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "report_data": _json.loads(_json.dumps(data, default=str)),
+        "lens_result": lens_result,
+        "report_hash": report_hash,
+        "generated_at": ts,
+        "tier": "paid",
+    }

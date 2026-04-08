@@ -435,6 +435,32 @@ def store_provenance(components: list[dict]):
             ))
 
 
+def _store_component_batch_hash(entity_id: str, entity_type: str,
+                                components: list[dict], score_data: dict):
+    """Compute and store a batch hash of component readings for attestation."""
+    import hashlib
+    canonical_components = sorted([
+        {"id": c.get("component_id", ""), "score": round(float(c.get("normalized_score") or 0), 4)}
+        for c in components
+    ], key=lambda x: x["id"])
+    canonical = json.dumps(canonical_components, sort_keys=True, separators=(",", ":"))
+    batch_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+
+    from app.database import execute as db_execute
+    db_execute(
+        """
+        INSERT INTO component_batch_hashes
+            (entity_type, entity_id, batch_hash, component_count, methodology_version)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (entity_type, entity_id, computed_at) DO UPDATE SET
+            batch_hash = EXCLUDED.batch_hash,
+            component_count = EXCLUDED.component_count
+        """,
+        (entity_type, entity_id, batch_hash, len(components),
+         score_data.get("formula_version", "v1.0.0")),
+    )
+
+
 # =============================================================================
 # Orchestrator: Score one stablecoin
 # =============================================================================
@@ -488,6 +514,16 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
     store_score(stablecoin_id, score_data, price_ctx)
     store_history_snapshot(stablecoin_id, score_data)
     store_provenance(components)
+
+    # State attestation for component readings
+    try:
+        from app.state_attestation import attest_state
+        attest_state("sii_components", [
+            {"id": c.get("component_id", ""), "score": round(float(c.get("normalized_score") or 0), 4)}
+            for c in components
+        ], entity_id=stablecoin_id)
+    except Exception as e:
+        logger.debug(f"SII attestation skipped for {stablecoin_id}: {e}")
 
     elapsed = time.time() - start
     logger.info(

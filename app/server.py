@@ -5672,6 +5672,170 @@ async def drift_exploit_analysis():
 
 
 # =============================================================================
+# Report Primitive — Endpoints
+# =============================================================================
+
+
+@app.get("/api/reports/{entity_type}/{entity_id}")
+async def generate_report(
+    entity_type: str,
+    entity_id: str,
+    template: str = Query(default=None),
+    lens: Optional[str] = Query(default=None),
+    format: str = Query(default="html"),
+):
+    """Generate an attested report for an entity."""
+    from app.report import assemble_report_data
+    from app.report_attestation import compute_report_hash, store_report_attestation
+    from app.templates import get_template
+    from app.lenses import load_lens, apply_lens
+
+    if entity_type not in ("stablecoin", "protocol", "wallet"):
+        raise HTTPException(status_code=400, detail=f"Invalid entity_type: {entity_type}. Use stablecoin, protocol, or wallet.")
+
+    # Default template per entity type
+    if template is None:
+        template = {"stablecoin": "compliance", "protocol": "protocol_risk", "wallet": "wallet_risk"}.get(entity_type, "protocol_risk")
+
+    render_fn = get_template(template)
+    if not render_fn:
+        raise HTTPException(status_code=400, detail=f"Unknown template: {template}")
+
+    data = assemble_report_data(entity_type, entity_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"{entity_type} '{entity_id}' not found")
+
+    # Apply lens if specified
+    lens_result = None
+    lens_version = None
+    if lens:
+        lens_config = load_lens(lens)
+        if not lens_config:
+            raise HTTPException(status_code=400, detail=f"Unknown lens: {lens}. Available: SCO60, MiCA67, GENIUS")
+        lens_result = apply_lens(lens_config, data)
+        lens_version = lens_config.get("lens_version")
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    report_hash = compute_report_hash(data, template, lens, lens_version, ts,
+                                      state_hashes=data.get("state_hashes"))
+
+    # Store attestation
+    store_report_attestation(
+        entity_type, entity_id, template, lens, lens_version,
+        report_hash, data.get("score_hashes", []),
+        data.get("cqi_hashes"),
+        data.get("formula_version", FORMULA_VERSION),
+    )
+
+    # SBT metadata always returns JSON
+    if template == "sbt_metadata" or format == "json":
+        from app.templates.sbt_metadata import render as render_sbt
+        if template == "sbt_metadata":
+            content = render_sbt(data, lens_result, report_hash, ts)
+        else:
+            import json as _json
+            content = _json.dumps({
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "report_data": data,
+                "lens_result": lens_result,
+                "report_hash": report_hash,
+                "generated_at": ts,
+            }, default=str, indent=2)
+        return JSONResponse(
+            content=_json.loads(content) if isinstance(content, str) else content,
+            headers={"X-Report-Hash": report_hash},
+        )
+
+    html = render_fn(data, lens_result, report_hash, ts, format)
+    return HTMLResponse(
+        content=html,
+        headers={
+            "X-Report-Hash": report_hash,
+            "Cache-Control": "public, max-age=300",
+        },
+    )
+
+
+@app.get("/api/reports/verify/{report_hash}")
+async def verify_report_endpoint(report_hash: str):
+    """Verify a report's attestation chain."""
+    from app.report_attestation import verify_report
+    return verify_report(report_hash)
+
+
+@app.get("/api/reports/templates")
+async def list_report_templates():
+    """List available report templates."""
+    from app.templates import list_templates
+    return {"templates": list_templates()}
+
+
+@app.get("/api/reports/lenses")
+async def list_report_lenses():
+    """List available regulatory lenses."""
+    from app.lenses import list_lenses
+    return {"lenses": list_lenses()}
+
+
+@app.get("/api/reports/sbt/{token_id}")
+async def sbt_metadata(token_id: int):
+    """ERC-721 metadata for a Basis Rating SBT."""
+    row = fetch_one(
+        "SELECT entity_type, entity_id, score, grade, confidence, report_hash, method_version FROM sbt_tokens WHERE token_id = %s",
+        (token_id,),
+    )
+    if not row:
+        raise HTTPException(404, "Token not found")
+
+    from app.report import assemble_report_data
+    from app.templates.sbt_metadata import render as render_sbt
+    from app.report_attestation import compute_report_hash
+
+    data = assemble_report_data(row["entity_type"], row["entity_id"])
+    if not data:
+        # Fallback: minimal metadata from sbt_tokens table
+        import json as _json
+        return JSONResponse({
+            "name": f"Basis Rating — {row['entity_id']}",
+            "description": f"Score: {row['score']} ({row['grade']})",
+            "attributes": [
+                {"trait_type": "Score", "value": float(row["score"]) if row.get("score") else 0},
+                {"trait_type": "Grade", "value": row.get("grade", "—")},
+            ],
+            "report_hash": row.get("report_hash"),
+        })
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    report_hash = row.get("report_hash") or compute_report_hash(data, "sbt_metadata", None, None, ts)
+    content = render_sbt(data, None, report_hash, ts)
+    import json as _json
+    return JSONResponse(_json.loads(content))
+
+
+@app.get("/api/state-root/latest")
+async def state_root_latest():
+    """Latest state root — all attestation hashes across all domains."""
+    import json as _json
+    pulse = fetch_one("""
+        SELECT summary, pulse_date FROM daily_pulses
+        ORDER BY pulse_date DESC LIMIT 1
+    """)
+    if not pulse:
+        raise HTTPException(404, "No state root available")
+    summary = pulse.get("summary")
+    if isinstance(summary, str):
+        summary = _json.loads(summary)
+    state_root = summary.get("state_root") if summary else None
+    if not state_root:
+        raise HTTPException(404, "No state root in latest pulse")
+    return {
+        "pulse_date": str(pulse.get("pulse_date", "")),
+        "state_root": state_root,
+    }
+
+
+# =============================================================================
 
 def _register_spa_catch_all(app_instance):
     """Register the SPA catch-all AFTER all other routes so it doesn't shadow them."""
@@ -5698,6 +5862,29 @@ def _register_spa_catch_all(app_instance):
                     )
         except Exception as e:
             logger.warning(f"Proof page render failed for /{full_path}: {e}")
+
+        # Report pages are server-rendered for ALL visitors
+        try:
+            if full_path.startswith("report/"):
+                parts = full_path.split("/")
+                if len(parts) >= 3:
+                    r_entity_type = parts[1]
+                    r_entity_id = parts[2].split("?")[0]
+                    # Parse query params from URL
+                    import urllib.parse as _urlparse
+                    qs = _urlparse.parse_qs(_urlparse.urlparse(str(request.url)).query)
+                    r_template = qs.get("template", [None])[0]
+                    r_lens = qs.get("lens", [None])[0]
+                    r_format = qs.get("format", ["html"])[0]
+                    response = await generate_report(
+                        r_entity_type, r_entity_id,
+                        template=r_template, lens=r_lens, format=r_format,
+                    )
+                    return response
+        except HTTPException:
+            pass  # Fall through to SPA
+        except Exception as e:
+            logger.warning(f"Report page render failed for /{full_path}: {e}")
 
         # Serve server-rendered HTML for bots/AI on key routes
         if _is_bot(request):

@@ -14,7 +14,7 @@ import { logger } from "./logger.js";
 import { sendAlert, checkStaleness } from "./alerter.js";
 import { TOKEN_ADDRESSES } from "./converter.js";
 import { fetchOnChainScores, computeUpdates, type ApiScore } from "./differ.js";
-import { publishUpdates, sleep } from "./publisher.js";
+import { publishUpdates, publishReportHashes, publishStateRoot, sleep, type ReportHashUpdate } from "./publisher.js";
 
 // Hub API response envelope
 interface HubScoresResponse {
@@ -199,8 +199,105 @@ async function runCycle(
     await checkStaleness(oracleBase as Parameters<typeof checkStaleness>[0], knownTokens, maxAge);
   }
 
+  // 6. Publish report hashes for scored entities
+  try {
+    const reportUpdates = await fetchReportHashes(config.apiUrl);
+    if (reportUpdates.length > 0) {
+      const [pubBase, pubArb] = await Promise.all([
+        publishReportHashes(reportUpdates, providerBase, walletBase, config.chains.base.oracleAddress, "base", config),
+        publishReportHashes(reportUpdates, providerArb, walletArb, config.chains.arbitrum.oracleAddress, "arbitrum", config),
+      ]);
+      logger.info("Report hashes published", { base: pubBase, arbitrum: pubArb });
+    }
+  } catch (err) {
+    logger.warn("Report hash publishing failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 7. Publish daily state root (once per day)
+  try {
+    const stateRootHash = await fetchStateRootHash(config.apiUrl);
+    if (stateRootHash) {
+      await Promise.all([
+        publishStateRoot(stateRootHash, providerBase, walletBase, config.chains.base.oracleAddress, "base", config),
+        publishStateRoot(stateRootHash, providerArb, walletArb, config.chains.arbitrum.oracleAddress, "arbitrum", config),
+      ]);
+    }
+  } catch (err) {
+    logger.warn("State root publishing failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+
   const cycleDuration = Date.now() - cycleStart;
   logger.info("=== Keeper cycle complete ===", { durationMs: cycleDuration });
+}
+
+async function fetchReportHashes(apiUrl: string): Promise<ReportHashUpdate[]> {
+  try {
+    // Get recent report attestations from hub
+    const res = await fetch(`${apiUrl}/api/reports/lenses`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return [];
+
+    // Fetch scores to get entity IDs
+    const scoresRes = await fetch(`${apiUrl}/api/scores`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!scoresRes.ok) return [];
+    const scoresData = await scoresRes.json() as any;
+    const stablecoins = Array.isArray(scoresData) ? scoresData : scoresData.stablecoins || [];
+
+    const updates: ReportHashUpdate[] = [];
+
+    // For each stablecoin, check if it has a report attestation
+    for (const coin of stablecoins.slice(0, 20)) {
+      try {
+        const rRes = await fetch(
+          `${apiUrl}/api/reports/stablecoin/${coin.id || coin.symbol}?format=json&template=sbt_metadata`,
+          { signal: AbortSignal.timeout(10_000) }
+        );
+        if (!rRes.ok) continue;
+        const rData = await rRes.json() as any;
+        const reportHash = rData.report_hash || rRes.headers.get("x-report-hash");
+        if (!reportHash) continue;
+
+        const entityId = ethers.keccak256(ethers.toUtf8Bytes(coin.id || coin.symbol));
+        updates.push({
+          entityId,
+          reportHash: ethers.zeroPadValue(ethers.toBeHex(BigInt("0x" + reportHash.replace("0x", ""))), 32),
+          lensId: "0x00000000",
+        });
+      } catch {
+        // Skip individual failures
+      }
+    }
+
+    logger.info("Fetched report hashes from hub", { count: updates.length });
+    return updates;
+  } catch (err) {
+    logger.warn("Failed to fetch report hashes", { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+async function fetchStateRootHash(apiUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${apiUrl}/api/state-root/latest`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    const stateRoot = data.state_root;
+    if (!stateRoot || !stateRoot.attestation_domains) return null;
+
+    // Hash the state root object to get the on-chain commitment
+    const canonical = JSON.stringify(stateRoot, Object.keys(stateRoot).sort());
+    const hash = ethers.keccak256(ethers.toUtf8Bytes(canonical));
+    logger.info("Fetched state root hash", { domains: stateRoot.domain_count, hash: hash.slice(0, 18) });
+    return hash;
+  } catch (err) {
+    logger.warn("Failed to fetch state root", { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
 }
 
 async function main(): Promise<void> {

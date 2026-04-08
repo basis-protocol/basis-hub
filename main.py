@@ -156,11 +156,21 @@ def run_worker_loop():
                 asyncio.run(run_collection())
                 last_cda_at = time.time()
                 logger.info("CDA collection complete")
+                # Attest CDA extractions
+                try:
+                    from app.state_attestation import attest_state
+                    from app.database import fetch_all as _fa
+                    cda_rows = _fa("SELECT asset_symbol, field_name, extracted_value, source_url FROM cda_vendor_extractions WHERE extracted_at > NOW() - INTERVAL '2 hours'")
+                    if cda_rows:
+                        attest_state("cda_extractions", [dict(r) for r in cda_rows])
+                except Exception as ae:
+                    logger.debug(f"CDA attestation skipped: {ae}")
             except Exception as e:
                 logger.warning(f"CDA collection failed: {e}")
 
         try:
             asyncio.run(run_scoring_cycle())
+            # SII attestation happens inside worker.py per-stablecoin
         except Exception as e:
             logger.error(f"Worker cycle error: {e}")
 
@@ -176,6 +186,13 @@ def run_worker_loop():
                 f"{reindex_result.get('errors', 0)} errors, "
                 f"{reindex_result.get('remaining', '?')} remaining"
             )
+            # Attest wallet batch
+            try:
+                from app.state_attestation import attest_state
+                if reindex_result.get('processed', 0) > 0:
+                    attest_state("wallets", [{"cycle": "batch_reindex", "processed": reindex_result.get('processed', 0), "scored": reindex_result.get('scored', 0)}])
+            except Exception as ae:
+                logger.debug(f"Wallet attestation skipped: {ae}")
         except Exception as e:
             logger.warning(f"Wallet batch re-index failed: {e}")
 
@@ -187,6 +204,13 @@ def run_worker_loop():
             logger.info("Running PSI scoring cycle...")
             psi_results = run_psi_scoring()
             logger.info(f"PSI scoring complete: {len(psi_results)} protocols scored")
+            # Attest PSI scores
+            try:
+                from app.state_attestation import attest_state
+                if psi_results:
+                    attest_state("psi_components", [{"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")} for r in psi_results if isinstance(r, dict)])
+            except Exception as ae:
+                logger.debug(f"PSI attestation skipped: {ae}")
         except Exception as e:
             logger.warning(f"PSI scoring failed: {e}")
 
@@ -212,6 +236,13 @@ def run_worker_loop():
                     f"PSI expansion: {synced} stablecoins synced, {discovered} discovered, "
                     f"{enriched} enriched, {promoted} promoted"
                 )
+                # Attest PSI discoveries
+                try:
+                    from app.state_attestation import attest_state
+                    if discovered or promoted:
+                        attest_state("psi_discoveries", [{"synced": synced, "discovered": discovered, "enriched": enriched, "promoted": promoted}])
+                except Exception as ae:
+                    logger.debug(f"PSI discovery attestation skipped: {ae}")
             except Exception as e:
                 logger.warning(f"PSI expansion pipeline failed: {e}")
 
@@ -240,6 +271,13 @@ def run_worker_loop():
                     f"Profile rebuild complete: {profile_result.get('built', 0)} built, "
                     f"{profile_result.get('errors', 0)} errors out of {profile_result.get('total', 0)} addresses"
                 )
+                # Attest profiles
+                try:
+                    from app.state_attestation import attest_state
+                    if profile_result.get('built', 0) > 0:
+                        attest_state("wallet_profiles", [{"built": profile_result.get('built', 0), "total": profile_result.get('total', 0)}])
+                except Exception as ae:
+                    logger.debug(f"Profile attestation skipped: {ae}")
             except Exception as e:
                 logger.warning(f"Profile rebuild failed: {e}")
 
@@ -249,6 +287,13 @@ def run_worker_loop():
             result = run_agent_cycle()
             if result:
                 logger.info(f"Agent cycle: {result.get('assessments', 0)} assessments")
+                # Attest actor classifications
+                try:
+                    from app.state_attestation import attest_state
+                    if result.get('assessments', 0) > 0:
+                        attest_state("actors", [{"assessments": result.get('assessments', 0), "severities": result.get('severities', {})}])
+                except Exception as ae:
+                    logger.debug(f"Actor attestation skipped: {ae}")
         except Exception as e:
             logger.error(f"Agent cycle error: {e}")
 
@@ -266,6 +311,13 @@ def run_worker_loop():
                         f"Edge builder ({edge_chain}) complete: {edge_result.get('wallets_processed', 0)} wallets, "
                         f"{edge_result.get('total_edges_created', 0)} edges"
                     )
+                    # Attest edges for this chain
+                    try:
+                        from app.state_attestation import attest_state
+                        if edge_result.get('total_edges_created', 0) > 0:
+                            attest_state("edges", [{"chain": edge_chain, "wallets": edge_result.get('wallets_processed', 0), "edges": edge_result.get('total_edges_created', 0)}])
+                    except Exception as ae:
+                        logger.debug(f"Edge attestation skipped for {edge_chain}: {ae}")
                 except Exception as e:
                     logger.warning(f"Edge building failed for {edge_chain}: {e}")
 

@@ -106,6 +106,17 @@ interface IBasisSIIOracle {
         string calldata psiProtocolSlug
     ) external view returns (uint16 cqiScore);
 
+    // ─── Report Attestation Events ───
+    event ReportPublished(bytes32 indexed entityId, bytes32 reportHash, bytes4 lensId, uint48 timestamp);
+    event StateRootPublished(bytes32 stateRoot, uint48 timestamp);
+
+    // ─── Report Attestation Functions ───
+    function publishReportHash(bytes32 entityId, bytes32 reportHash, bytes4 lensId) external;
+    function getReportHash(bytes32 entityId) external view returns (bytes32 reportHash, bytes4 lensId, uint48 timestamp);
+    function publishStateRoot(bytes32 stateRoot) external;
+    function latestStateRoot() external view returns (bytes32);
+    function stateRootTimestamp() external view returns (uint48);
+
     // ─── Admin Functions ───
     function setKeeper(address newKeeper) external;
     function pause() external;

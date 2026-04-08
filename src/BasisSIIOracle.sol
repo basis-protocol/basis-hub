@@ -237,6 +237,54 @@ contract BasisOracle is IBasisSIIOracle {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // REPORT ATTESTATION
+    // ═══════════════════════════════════════════════════════════
+
+    mapping(bytes32 => bytes32) public reportHashes;
+    mapping(bytes32 => uint48)  public reportTimestamps;
+    mapping(bytes32 => bytes4)  public reportLenses;
+
+
+    /// @notice Publish the content hash of an off-chain report.
+    /// @param entityId Canonical entity identifier (keccak256 of symbol/slug)
+    /// @param reportHash SHA-256 content hash of the report data
+    /// @param lensId Regulatory lens used (e.g., "SCO6") or 0x0 for none
+    function publishReportHash(
+        bytes32 entityId,
+        bytes32 reportHash,
+        bytes4  lensId
+    ) external onlyKeeper whenNotPaused {
+        reportHashes[entityId] = reportHash;
+        reportTimestamps[entityId] = uint48(block.timestamp);
+        reportLenses[entityId] = lensId;
+        emit ReportPublished(entityId, reportHash, lensId, uint48(block.timestamp));
+    }
+
+    function getReportHash(bytes32 entityId) external view returns (
+        bytes32 reportHash,
+        bytes4  lensId,
+        uint48  timestamp
+    ) {
+        return (reportHashes[entityId], reportLenses[entityId], reportTimestamps[entityId]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // STATE ROOT
+    // ═══════════════════════════════════════════════════════════
+
+    bytes32 public latestStateRoot;
+    uint48  public stateRootTimestamp;
+
+
+    /// @notice Publish the daily state root — covers all attestation domains.
+    /// @param stateRoot Content hash of the pulse state_root object
+    function publishStateRoot(bytes32 stateRoot) external onlyKeeper whenNotPaused {
+        latestStateRoot = stateRoot;
+        stateRootTimestamp = uint48(block.timestamp);
+        emit StateRootPublished(stateRoot, uint48(block.timestamp));
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // ADMIN
     // ═══════════════════════════════════════════════════════════
 

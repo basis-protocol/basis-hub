@@ -1150,8 +1150,6 @@ function RankingsView({ scores, loading, onSelect, ts, mobile, meta }) {
         </div>
       )}
 
-      <PulseSummarySection mobile={mobile} />
-
       <Footnotes mobile={mobile} />
     </div>
   );

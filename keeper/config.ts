@@ -27,6 +27,7 @@ export interface KeeperConfig {
   maxGasPriceGwei: number;
   gasLimitPerUpdate: number;
   dryRun: boolean;
+  sbtAddress?: string;
 }
 
 function requireEnv(key: string): string {
@@ -69,5 +70,7 @@ export function loadConfig(): KeeperConfig {
     gasLimitPerUpdate: Number(process.env["GAS_LIMIT_PER_UPDATE"] ?? "150000"),
 
     dryRun: process.env["DRY_RUN"] === "true",
+
+    sbtAddress: process.env["BASE_SBT_ADDRESS"],
   };
 }

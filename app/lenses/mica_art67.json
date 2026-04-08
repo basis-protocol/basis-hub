@@ -1,0 +1,33 @@
+{
+    "lens_id": "MiCA67",
+    "lens_version": "1.0",
+    "framework": "EU Markets in Crypto-Assets Regulation — Article 67 (EMT)",
+    "description": "MiCA classification for E-Money Tokens. Requires fiat-backing, peg stability, and governance standards.",
+    "classification": {
+        "emt_eligible": {
+            "criteria": [
+                {
+                    "name": "Peg stability maintained",
+                    "sii_categories": ["peg"],
+                    "threshold": 65,
+                    "logic": "category_score_above"
+                },
+                {
+                    "name": "Reserve adequacy",
+                    "sii_categories": ["structural"],
+                    "sub_categories": ["reserves"],
+                    "threshold": 55,
+                    "logic": "sub_score_above"
+                },
+                {
+                    "name": "Governance and operations",
+                    "sii_categories": ["structural"],
+                    "sub_categories": ["governance"],
+                    "threshold": 50,
+                    "logic": "sub_score_above"
+                }
+            ],
+            "all_required": true
+        }
+    }
+}

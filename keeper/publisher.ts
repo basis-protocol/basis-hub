@@ -7,6 +7,16 @@ import type { KeeperConfig } from "./config.js";
 const ORACLE_ABI = [
   "function batchUpdateScores(address[] calldata tokens, uint16[] calldata scores, bytes2[] calldata grades, uint48[] calldata timestamps, uint16[] calldata versions) external",
   "function isStale(address token, uint256 maxAge) external view returns (bool)",
+  "function publishReportHash(bytes32 entityId, bytes32 reportHash, bytes4 lensId) external",
+  "function publishStateRoot(bytes32 stateRoot) external",
+  "function reportTimestamps(bytes32 entityId) external view returns (uint48)",
+  "function stateRootTimestamp() external view returns (uint48)",
+];
+
+const SBT_ABI = [
+  "function mintRating(address recipient, bytes32 entityId, uint8 entityType, uint16 score, bytes2 grade, uint8 confidence, bytes32 reportHash, uint16 methodVersion) external returns (uint256)",
+  "function updateRating(uint256 tokenId, uint16 score, bytes2 grade, uint8 confidence, bytes32 reportHash, uint16 methodVersion) external",
+  "function entityToToken(bytes32 entityId) external view returns (uint256)",
 ];
 
 // ============================================================
@@ -159,6 +169,103 @@ export async function publishUpdates(
     txHash,
     updatesCount: updates.length,
   };
+}
+
+// ============================================================
+// Report hash publishing
+// ============================================================
+
+export interface ReportHashUpdate {
+  entityId: string;   // hex bytes32
+  reportHash: string; // hex bytes32
+  lensId: string;     // hex bytes4
+}
+
+export async function publishReportHashes(
+  updates: ReportHashUpdate[],
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  oracleAddress: string,
+  chainKey: string,
+  config: KeeperConfig
+): Promise<number> {
+  if (updates.length === 0 || config.dryRun) {
+    if (config.dryRun && updates.length > 0) {
+      logger.info("DRY RUN — would publish report hashes", { chain: chainKey, count: updates.length });
+    }
+    return 0;
+  }
+
+  const oracle = new ethers.Contract(oracleAddress, ORACLE_ABI, wallet);
+  let published = 0;
+
+  for (const u of updates) {
+    try {
+      const nonce = await nonceManager.getCurrentNonce(provider, wallet.address, chainKey);
+      const tx = await (oracle.publishReportHash as ethers.ContractMethod)(
+        u.entityId, u.reportHash, u.lensId,
+        { nonce, gasLimit: 100_000n }
+      );
+      await tx.wait(1);
+      published++;
+      logger.info("Report hash published", { chain: chainKey, entityId: u.entityId.slice(0, 18), txHash: tx.hash });
+    } catch (err) {
+      logger.warn("Failed to publish report hash", {
+        chain: chainKey,
+        entityId: u.entityId.slice(0, 18),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return published;
+}
+
+// ============================================================
+// State root publishing
+// ============================================================
+
+export async function publishStateRoot(
+  stateRootHash: string,
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  oracleAddress: string,
+  chainKey: string,
+  config: KeeperConfig
+): Promise<boolean> {
+  if (config.dryRun) {
+    logger.info("DRY RUN — would publish state root", { chain: chainKey, hash: stateRootHash.slice(0, 18) });
+    return false;
+  }
+
+  try {
+    const oracle = new ethers.Contract(oracleAddress, ORACLE_ABI, wallet);
+
+    // Check if today's state root is already published
+    const existingTs = await oracle.stateRootTimestamp();
+    const now = Math.floor(Date.now() / 1000);
+    const oneDayAgo = now - 86400;
+
+    if (Number(existingTs) > oneDayAgo) {
+      logger.info("State root already published today, skipping", { chain: chainKey });
+      return false;
+    }
+
+    const nonce = await nonceManager.getCurrentNonce(provider, wallet.address, chainKey);
+    const tx = await (oracle.publishStateRoot as ethers.ContractMethod)(
+      stateRootHash,
+      { nonce, gasLimit: 80_000n }
+    );
+    await tx.wait(1);
+    logger.info("State root published", { chain: chainKey, hash: stateRootHash.slice(0, 18), txHash: tx.hash });
+    return true;
+  } catch (err) {
+    logger.warn("Failed to publish state root", {
+      chain: chainKey,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
 }
 
 // ============================================================

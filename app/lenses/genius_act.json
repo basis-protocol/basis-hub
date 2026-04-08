@@ -1,0 +1,38 @@
+{
+    "lens_id": "GENIUS",
+    "lens_version": "1.0",
+    "framework": "GENIUS Act — U.S. Stablecoin Framework",
+    "description": "U.S. GENIUS Act payment stablecoin classification. Requires 1:1 backing, redemption guarantees, and disclosure requirements.",
+    "classification": {
+        "payment_stablecoin": {
+            "criteria": [
+                {
+                    "name": "1:1 fiat or equivalent backing",
+                    "sii_categories": ["structural"],
+                    "sub_categories": ["reserves"],
+                    "threshold": 65,
+                    "logic": "sub_score_above"
+                },
+                {
+                    "name": "Redemption at par value",
+                    "sii_categories": ["peg"],
+                    "threshold": 70,
+                    "logic": "category_score_above"
+                },
+                {
+                    "name": "Adequate market liquidity",
+                    "sii_categories": ["liquidity"],
+                    "threshold": 55,
+                    "logic": "category_score_above"
+                },
+                {
+                    "name": "Transparent holder distribution",
+                    "sii_categories": ["distribution"],
+                    "threshold": 40,
+                    "logic": "category_score_above"
+                }
+            ],
+            "all_required": true
+        }
+    }
+}

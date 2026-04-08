@@ -225,6 +225,50 @@ def run_daily_pulse():
     )
     summary["state_accumulation"] = state_counts
 
+    # 8c. State root — collect all state attestation hashes from today
+    try:
+        from app.state_attestation import get_latest_attestation
+
+        ATTESTATION_DOMAINS = [
+            "sii_components", "psi_components", "cda_extractions",
+            "wallets", "wallet_profiles", "edges", "actors",
+            "psi_discoveries", "smart_contracts", "flows",
+            "cqi_compositions", "discovery_signals",
+        ]
+
+        state_root_inputs = {}
+        for domain in ATTESTATION_DOMAINS:
+            att = get_latest_attestation(domain)
+            if att:
+                state_root_inputs[domain] = {
+                    "batch_hash": att["batch_hash"],
+                    "record_count": att["record_count"],
+                    "timestamp": att["cycle_timestamp"].isoformat() if att.get("cycle_timestamp") else None,
+                }
+
+        # Collect report attestation hashes from today
+        today_reports = fetch_all("""
+            SELECT report_hash, entity_type, entity_id, template, lens
+            FROM report_attestations
+            WHERE generated_at::date = CURRENT_DATE
+            ORDER BY generated_at
+        """)
+        report_hashes = [
+            {"hash": r["report_hash"], "entity": f"{r['entity_type']}/{r['entity_id']}",
+             "template": r["template"], "lens": r.get("lens")}
+            for r in (today_reports or [])
+        ]
+
+        summary["state_root"] = {
+            "attestation_domains": state_root_inputs,
+            "report_hashes": report_hashes,
+            "domain_count": len(state_root_inputs),
+            "report_count": len(report_hashes),
+        }
+    except Exception as e:
+        logger.warning(f"State root assembly failed: {e}")
+        summary["state_root"] = {"attestation_domains": {}, "report_hashes": [], "domain_count": 0, "report_count": 0}
+
     # 9. Embed integrity status
     try:
         from app.integrity import check_domain

@@ -1,0 +1,38 @@
+{
+    "lens_id": "SCO60",
+    "lens_version": "1.0",
+    "framework": "Basel Committee SCO60",
+    "description": "Basel Committee on Banking Supervision — Standard on Cryptoasset Exposures (SCO60). Classifies stablecoins as Group 1 (lower risk weight) or Group 2.",
+    "classification": {
+        "group_1": {
+            "criteria": [
+                {
+                    "name": "Effective stabilization mechanism",
+                    "sii_categories": ["peg"],
+                    "threshold": 70,
+                    "logic": "category_score_above"
+                },
+                {
+                    "name": "Sufficient reserves",
+                    "sii_categories": ["structural"],
+                    "sub_categories": ["reserves"],
+                    "threshold": 60,
+                    "logic": "sub_score_above"
+                },
+                {
+                    "name": "Full redemption rights at par",
+                    "sii_categories": ["flows"],
+                    "threshold": 50,
+                    "logic": "category_score_above"
+                },
+                {
+                    "name": "Adequate liquidity",
+                    "sii_categories": ["liquidity"],
+                    "threshold": 60,
+                    "logic": "category_score_above"
+                }
+            ],
+            "all_required": true
+        }
+    }
+}

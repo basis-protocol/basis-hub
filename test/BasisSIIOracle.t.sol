@@ -885,4 +885,105 @@ contract BasisOracleTest is Test {
     function test_Guard_CheckAfterExecution_NoOp() public {
         guard.checkAfterExecution(bytes32(0), true);
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // REPORT ATTESTATION — publishReportHash
+    // ═══════════════════════════════════════════════════════════
+
+    function test_PublishReportHash_StoresCorrectly() public {
+        bytes32 entityId = keccak256("usdc");
+        bytes32 reportHash = bytes32(uint256(0xABCD));
+        bytes4 lensId = bytes4("SCO6");
+
+        vm.prank(keeper);
+        oracle.publishReportHash(entityId, reportHash, lensId);
+
+        (bytes32 storedHash, bytes4 storedLens, uint48 storedTs) = oracle.getReportHash(entityId);
+        assertEq(storedHash, reportHash);
+        assertEq(storedLens, lensId);
+        assertEq(storedTs, uint48(block.timestamp));
+    }
+
+    function test_PublishReportHash_EmitsEvent() public {
+        bytes32 entityId = keccak256("usdc");
+        bytes32 reportHash = bytes32(uint256(0x1234));
+        bytes4 lensId = bytes4(0);
+
+        vm.prank(keeper);
+        vm.expectEmit(true, false, false, true);
+        emit IBasisSIIOracle.ReportPublished(entityId, reportHash, lensId, uint48(block.timestamp));
+        oracle.publishReportHash(entityId, reportHash, lensId);
+    }
+
+    function test_PublishReportHash_RevertsNonKeeper() public {
+        vm.prank(nonKeeper);
+        vm.expectRevert("Basis: not keeper");
+        oracle.publishReportHash(keccak256("usdc"), bytes32(uint256(1)), bytes4(0));
+    }
+
+    function test_PublishReportHash_OverwritesPrevious() public {
+        bytes32 entityId = keccak256("usdc");
+        bytes32 hash1 = bytes32(uint256(0x111));
+        bytes32 hash2 = bytes32(uint256(0x222));
+
+        vm.startPrank(keeper);
+        oracle.publishReportHash(entityId, hash1, bytes4(0));
+        oracle.publishReportHash(entityId, hash2, bytes4("MiCA"));
+        vm.stopPrank();
+
+        (bytes32 storedHash, bytes4 storedLens,) = oracle.getReportHash(entityId);
+        assertEq(storedHash, hash2);
+        assertEq(storedLens, bytes4("MiCA"));
+    }
+
+    function test_GetReportHash_ReturnsZerosForUnknown() public view {
+        bytes32 entityId = keccak256("nonexistent");
+        (bytes32 h, bytes4 l, uint48 t) = oracle.getReportHash(entityId);
+        assertEq(h, bytes32(0));
+        assertEq(l, bytes4(0));
+        assertEq(t, 0);
+    }
+
+    function test_PublishReportHash_RevertsWhenPaused() public {
+        vm.prank(owner);
+        oracle.pause();
+        vm.prank(keeper);
+        vm.expectRevert("Basis: paused");
+        oracle.publishReportHash(keccak256("usdc"), bytes32(uint256(1)), bytes4(0));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // STATE ROOT — publishStateRoot
+    // ═══════════════════════════════════════════════════════════
+
+    function test_PublishStateRoot_StoresCorrectly() public {
+        bytes32 root = bytes32(uint256(0xCAFE));
+        vm.prank(keeper);
+        oracle.publishStateRoot(root);
+
+        assertEq(oracle.latestStateRoot(), root);
+        assertEq(oracle.stateRootTimestamp(), uint48(block.timestamp));
+    }
+
+    function test_PublishStateRoot_EmitsEvent() public {
+        bytes32 root = bytes32(uint256(0xBEEF));
+        vm.prank(keeper);
+        vm.expectEmit(false, false, false, true);
+        emit IBasisSIIOracle.StateRootPublished(root, uint48(block.timestamp));
+        oracle.publishStateRoot(root);
+    }
+
+    function test_PublishStateRoot_RevertsNonKeeper() public {
+        vm.prank(nonKeeper);
+        vm.expectRevert("Basis: not keeper");
+        oracle.publishStateRoot(bytes32(uint256(1)));
+    }
+
+    function test_PublishStateRoot_RevertsWhenPaused() public {
+        vm.prank(owner);
+        oracle.pause();
+        vm.prank(keeper);
+        vm.expectRevert("Basis: paused");
+        oracle.publishStateRoot(bytes32(uint256(1)));
+    }
 }
