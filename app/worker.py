@@ -580,6 +580,64 @@ async def run_scoring_cycle():
         f"Scoring cycle complete: {successes}/{len(stablecoins)} scored in {elapsed:.0f}s"
     )
 
+    # PSI scoring — runs after SII, uses DeFiLlama (no explorer budget)
+    try:
+        from app.collectors.psi_collector import run_psi_scoring
+        logger.info("Running PSI scoring cycle...")
+        psi_results = run_psi_scoring()
+        logger.info(f"PSI scoring complete: {len(psi_results)} protocols scored")
+        # Attest PSI scores
+        try:
+            from app.state_attestation import attest_state
+            if psi_results:
+                attest_state("psi_components", [{"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")} for r in psi_results if isinstance(r, dict)])
+        except Exception as ae:
+            logger.debug(f"PSI attestation skipped: {ae}")
+    except Exception as e:
+        logger.warning(f"PSI scoring failed: {e}")
+
+    # PSI expansion pipeline — daily gate (discover → enrich → promote)
+    try:
+        from app.collectors.psi_collector import (
+            collect_collateral_exposure,
+            sync_collateral_to_backlog,
+            discover_protocols,
+            enrich_protocol_backlog,
+            promote_eligible_protocols,
+        )
+        # Only run expansion once per day — check last run from DB
+        last_expansion = fetch_one(
+            "SELECT MAX(snapshot_date) AS latest FROM protocol_collateral_exposure"
+        )
+        last_date = last_expansion["latest"] if last_expansion else None
+        hours_since = 25  # default: run if no prior record
+        if last_date:
+            from datetime import date
+            days_diff = (date.today() - last_date).days if isinstance(last_date, date) else 1
+            hours_since = days_diff * 24
+
+        if hours_since >= 24:
+            logger.info("Running PSI expansion pipeline...")
+            collect_collateral_exposure()
+            synced = sync_collateral_to_backlog()
+            discovered = discover_protocols()
+            enriched = enrich_protocol_backlog()
+            promoted = promote_eligible_protocols()
+            logger.info(
+                f"PSI expansion: {synced} stablecoins synced, {discovered} discovered, "
+                f"{enriched} enriched, {promoted} promoted"
+            )
+            try:
+                from app.state_attestation import attest_state
+                if discovered or promoted:
+                    attest_state("psi_discoveries", [{"synced": synced, "discovered": discovered, "enriched": enriched, "promoted": promoted}])
+            except Exception as ae:
+                logger.debug(f"PSI discovery attestation skipped: {ae}")
+        else:
+            logger.info(f"PSI expansion skipped — last ran {hours_since:.0f}h ago")
+    except Exception as e:
+        logger.warning(f"PSI expansion pipeline failed: {e}")
+
     # Generate daily pulse after scoring
     try:
         from app.pulse_generator import run_daily_pulse
