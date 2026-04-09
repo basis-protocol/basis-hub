@@ -266,4 +266,12 @@ async def collect_smart_contract_components(
         "data_source": "config",
     })
 
+    # Attest smart contract components
+    try:
+        from app.state_attestation import attest_state
+        if components:
+            attest_state("smart_contracts", [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components], entity_id=stablecoin_id)
+    except Exception as ae:
+        pass  # attestation is non-critical
+
     return components

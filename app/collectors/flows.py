@@ -341,4 +341,12 @@ async def collect_flows_components(
         "data_source": "derived",
     })
 
+    # Attest flow components
+    try:
+        from app.state_attestation import attest_state
+        if components:
+            attest_state("flows", [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components], entity_id=stablecoin_id)
+    except Exception:
+        pass  # attestation is non-critical
+
     return components

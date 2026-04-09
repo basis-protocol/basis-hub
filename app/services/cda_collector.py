@@ -1199,6 +1199,17 @@ async def run_collection():
         f"out of {total} ==="
     )
 
+    # Attest CDA extractions from this run
+    try:
+        from app.state_attestation import attest_state
+        recent = fetch_all(
+            "SELECT asset_symbol, field_name, extracted_value, source_url FROM cda_vendor_extractions WHERE extracted_at > NOW() - INTERVAL '2 hours'"
+        )
+        if recent:
+            attest_state("cda_extractions", [dict(r) for r in recent])
+    except Exception as ae:
+        logger.debug(f"CDA attestation skipped: {ae}")
+
 
 async def collect_single_issuer(asset_symbol: str):
     """Run collection for a single issuer by symbol. Used by monitor webhooks."""

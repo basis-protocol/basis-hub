@@ -173,4 +173,13 @@ def rebuild_all_profiles() -> dict:
             logger.info(f"Profile rebuild progress: {i + 1}/{len(addresses)} ({built} built, {errors} errors)")
 
     logger.info(f"Profile rebuild complete: {built} built, {errors} errors out of {len(addresses)} addresses")
+
+    # Attest wallet profiles
+    try:
+        from app.state_attestation import attest_state
+        if built > 0:
+            attest_state("wallet_profiles", [{"built": built, "total": len(addresses)}])
+    except Exception as ae:
+        logger.debug(f"Wallet profile attestation skipped: {ae}")
+
     return {"total": len(addresses), "built": built, "errors": errors}

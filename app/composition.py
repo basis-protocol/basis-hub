@@ -158,4 +158,13 @@ def compute_cqi_matrix():
                 })
 
     matrix.sort(key=lambda x: x.get("cqi_score", 0), reverse=True)
+
+    # Attest CQI compositions
+    try:
+        from app.state_attestation import attest_state
+        if matrix:
+            attest_state("cqi_compositions", [{"asset": r["asset"], "protocol": r["protocol_slug"], "cqi_score": round(r["cqi_score"], 2)} for r in matrix])
+    except Exception:
+        pass  # attestation is non-critical
+
     return {"matrix": matrix, "count": len(matrix)}

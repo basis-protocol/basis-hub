@@ -222,4 +222,12 @@ def run_discovery_cycle():
     stored = store_signals(all_signals)
     logger.info(f"Discovery cycle complete: {len(all_signals)} detected, {stored} stored")
 
+    # Attest discovery signals
+    try:
+        from app.state_attestation import attest_state
+        if all_signals:
+            attest_state("discovery_signals", [{"type": s.get("signal_type"), "novelty": s.get("novelty_score")} for s in all_signals])
+    except Exception as ae:
+        logger.debug(f"Discovery attestation skipped: {ae}")
+
     return all_signals
