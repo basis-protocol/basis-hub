@@ -5713,8 +5713,6 @@ async def generate_report(
     format: str = Query(default="html"),
 ):
     """Generate an attested report for an entity."""
-    import traceback as _tb
-    try:
     from app.report import assemble_report_data
     from app.report_attestation import compute_report_hash, store_report_attestation
     from app.templates import get_template
@@ -5785,9 +5783,6 @@ async def generate_report(
             "Cache-Control": "public, max-age=300",
         },
     )
-    except Exception as e:
-        from starlette.responses import PlainTextResponse
-        return PlainTextResponse(f"{_tb.format_exc()}", status_code=500)
 
 
 @app.get("/api/reports/verify/{report_hash}")
