@@ -17,7 +17,7 @@ from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -655,8 +655,9 @@ async def get_integrity_domain(domain: str):
 # =============================================================================
 
 @app.get("/api/scores")
-async def get_scores(methodology_version: Optional[str] = Query(default=None)):
+async def get_scores(response: Response, methodology_version: Optional[str] = Query(default=None)):
     """Get current SII scores for all stablecoins."""
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     pinned = check_methodology_version(methodology_version)
     rows = fetch_all("""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
@@ -729,20 +730,16 @@ async def get_scores(methodology_version: Optional[str] = Query(default=None)):
     except Exception:
         pass
 
-    from fastapi.responses import JSONResponse
-    return JSONResponse(
-        content={
-            "stablecoins": results,
-            "count": len(results),
-            "formula_version": FORMULA_VERSION,
-            "methodology_version": FORMULA_VERSION,
-            "methodology_version_pinned": pinned,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "data_source_count": len(data_sources),
-            "sii_component_count": len(COMPONENT_NORMALIZATIONS),
-        },
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
+    return {
+        "stablecoins": results,
+        "count": len(results),
+        "formula_version": FORMULA_VERSION,
+        "methodology_version": FORMULA_VERSION,
+        "methodology_version_pinned": pinned,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data_source_count": len(data_sources),
+        "sii_component_count": len(COMPONENT_NORMALIZATIONS),
+    }
 
 
 # =============================================================================

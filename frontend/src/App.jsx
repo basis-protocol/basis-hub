@@ -60,7 +60,7 @@ function BasisLogo({ accent = "#fc988f", size = 40 }) {
   );
 }
 
-function TabHeader({ title, formId, stats, formulaLine, versionLabel, accent, mobile, showOnChain = true, coinCount }) {
+function TabHeader({ title, formId, stats, formulaLine, versionLabel, accent, mobile, showOnChain = true, coinCount, onChainCount }) {
   return (
     <div style={{ border: `1.5px solid ${T.ink}`, marginBottom: 0 }}>
       <div style={{ padding: mobile ? "14px 12px 0" : "18px 24px 0" }}>
@@ -112,11 +112,11 @@ function TabHeader({ title, formId, stats, formulaLine, versionLabel, accent, mo
         <div style={{ borderTop: `1px solid ${T.ruleMid}`, padding: mobile ? "8px 12px" : "8px 24px", display: "flex", flexWrap: "wrap", gap: mobile ? 6 : 10, alignItems: "center" }}>
           <a href="https://basescan.org/address/0x01aaa1d20fe68d55d0c5b6b42399b91024f8cd99" target="_blank" rel="noopener noreferrer" style={{ fontFamily: T.mono, fontSize: mobile ? 8.5 : 10, color: T.inkMid, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6, background: T.paperWarm, padding: "4px 12px", borderRadius: 999 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#378ADD", display: "inline-block", flexShrink: 0 }} />
-            {`Base \u00b7 0x01aA...cD99 \u00b7 ${coinCount || ""} stablecoins`}
+            {`Base \u00b7 0x01aA...cD99 \u00b7 ${onChainCount || coinCount || ""} stablecoins`}
           </a>
           <a href="https://arbiscan.io/address/0x01aaa1d20fe68d55d0c5b6b42399b91024f8cd99" target="_blank" rel="noopener noreferrer" style={{ fontFamily: T.mono, fontSize: mobile ? 8.5 : 10, color: T.inkMid, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6, background: T.paperWarm, padding: "4px 12px", borderRadius: 999 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#534AB7", display: "inline-block", flexShrink: 0 }} />
-            {`Arbitrum \u00b7 0x01aA...cD99 \u00b7 ${coinCount || ""} stablecoins`}
+            {`Arbitrum \u00b7 0x01aA...cD99 \u00b7 ${onChainCount || coinCount || ""} stablecoins`}
           </a>
         </div>
       )}
@@ -807,6 +807,7 @@ function PageHeader({ ts, mobile, coinCount, meta = {} }) {
       accent="#fc988f"
       mobile={mobile}
       coinCount={coinCount}
+      onChainCount={17}
     />
   );
 }
@@ -2147,6 +2148,7 @@ function ProtocolsView({ mobile }) {
         accent="#7BA3A8"
         mobile={mobile}
         showOnChain={true}
+        onChainCount={17}
       />
 
       <div style={{ height: 24 }} />
@@ -2271,7 +2273,7 @@ function ProtocolsView({ mobile }) {
           cqiData.matrix.forEach(r => { protoSlugMap[r.protocol] = r.protocol_slug; });
 
           if (mobile) {
-            const sorted = [...cqiData.matrix].sort((a, b) => (b.cqi_score || 0) - (a.cqi_score || 0)).slice(0, 20);
+            const sorted = [...cqiData.matrix].sort((a, b) => (b.cqi_score || 0) - (a.cqi_score || 0));
             return (
               <div style={{ border: `1px solid ${T.ruleMid}` }}>
                 <div style={{
@@ -2301,7 +2303,7 @@ function ProtocolsView({ mobile }) {
             );
           }
 
-          const displayAssets = assets.slice(0, 8);
+          const displayAssets = assets;
           const cellBg = (score) => {
             if (!score) return T.ruleLight;
             if (score >= 85) return "#e8f0e8";
