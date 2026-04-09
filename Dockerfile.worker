@@ -2,7 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system deps for psycopg2
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc \
     && rm -rf /var/lib/apt/lists/*
@@ -12,4 +11,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
-CMD ["python", "-m", "app.worker", "--loop"]
+CMD ["python", "-c", "import traceback; from app.database import init_pool; init_pool(); import asyncio; from app.worker import run_scoring_cycle; asyncio.run(run_scoring_cycle())"]
