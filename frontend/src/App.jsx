@@ -229,7 +229,7 @@ function useScores() {
         if (mounted) {
           setData(d.stablecoins || []);
           setTs(d.timestamp);
-          setMeta({ dataSourceCount: d.data_source_count, componentCount: d.sii_component_count });
+          setMeta({ dataSourceCount: d.data_source_count, componentCount: d.sii_component_count, scoredCount: d.count });
           setLoading(false);
         }
       } catch (e) {
@@ -794,11 +794,14 @@ function PageHeader({ ts, mobile, coinCount, meta = {} }) {
     hour: "2-digit", minute: "2-digit", timeZoneName: "short",
   });
 
+  // Use the API's explicit count (from meta.scoredCount), fall back to array length
+  const displayCount = meta.scoredCount || coinCount || "—";
+
   return (
     <TabHeader
       title={<><span style={{ fontWeight: 700 }}>Stablecoin</span> Integrity <span style={{ fontWeight: 700 }}>Index</span></>}
       formId="FORM SII-001 · BASIS PROTOCOL"
-      stats={[`${coinCount || "—"} STABLECOINS`, `${meta.componentCount || 37} SCORING COMPONENTS`, `${meta.dataSourceCount || 5} LIVE DATA SOURCES`, "DETERMINISTIC METHODOLOGY", "UPDATED HOURLY"]}
+      stats={[`${displayCount} STABLECOINS`, `${meta.componentCount || 37} SCORING COMPONENTS`, `${meta.dataSourceCount || 5} LIVE DATA SOURCES`, "DETERMINISTIC METHODOLOGY", "UPDATED HOURLY"]}
       formulaLine="SII = 0.30×Peg + 0.25×Liq + 0.20×Struct + 0.15×Flow + 0.10×Dist"
       versionLabel={`Methodology v1.0 · ${timestamp}`}
       accent="#fc988f"

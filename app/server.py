@@ -729,16 +729,20 @@ async def get_scores(methodology_version: Optional[str] = Query(default=None)):
     except Exception:
         pass
 
-    return {
-        "stablecoins": results,
-        "count": len(results),
-        "formula_version": FORMULA_VERSION,
-        "methodology_version": FORMULA_VERSION,
-        "methodology_version_pinned": pinned,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "data_source_count": len(data_sources),
-        "sii_component_count": len(COMPONENT_NORMALIZATIONS),
-    }
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={
+            "stablecoins": results,
+            "count": len(results),
+            "formula_version": FORMULA_VERSION,
+            "methodology_version": FORMULA_VERSION,
+            "methodology_version_pinned": pinned,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data_source_count": len(data_sources),
+            "sii_component_count": len(COMPONENT_NORMALIZATIONS),
+        },
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 # =============================================================================
