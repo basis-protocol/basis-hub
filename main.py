@@ -297,6 +297,15 @@ def run_worker_loop():
         except Exception as e:
             logger.error(f"Agent cycle error: {e}")
 
+        # Treasury flow detection — runs every cycle, minimal API budget
+        try:
+            from app.collectors.treasury_flows import collect_treasury_events
+            logger.info("Running treasury flow detection...")
+            treasury_events = asyncio.run(collect_treasury_events())
+            logger.info(f"Treasury flow detection: {len(treasury_events)} events")
+        except Exception as e:
+            logger.warning(f"Treasury flow detection failed: {e}")
+
         # Edge building — time-based gate (~10 hours) instead of cycle counter.
         # Uses DB staleness so container restarts don't reset the schedule.
         hours_since_edge_build = (time.time() - last_edge_build_at) / 3600

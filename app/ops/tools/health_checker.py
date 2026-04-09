@@ -144,8 +144,8 @@ def check_wallet_freshness():
     )
     active = active_count["cnt"] if active_count else 0
 
-    # Worker cycle takes 60-120 min; healthy within 3h, degraded 3-6h, down 6h+
-    status = "healthy" if age < 3 else ("degraded" if age < 6 else "down")
+    # Worker cycle takes 60-120 min + sleep 60 min; healthy within 4h, degraded 4-8h, down 8h+
+    status = "healthy" if age < 4 else ("degraded" if age < 8 else "down")
     return {
         "system": "wallet_indexer",
         "status": status,
@@ -187,12 +187,14 @@ def check_graph_freshness():
 
 
 def check_api_health():
-    """Check API responsiveness via public URL."""
+    """Check API responsiveness via localhost (avoids proxy round-trip)."""
+    _port = os.environ.get("PORT", os.environ.get("API_PORT", "5000"))
+    _local_url = f"http://127.0.0.1:{_port}/api/health"
     start = time.time()
     try:
-        resp = httpx.get(f"{_PUBLIC_BASE}/api/health", timeout=15)
+        resp = httpx.get(_local_url, timeout=10)
         latency_ms = round((time.time() - start) * 1000)
-        status = "healthy" if resp.status_code == 200 and latency_ms < 5000 else "degraded"
+        status = "healthy" if resp.status_code == 200 and latency_ms < 2000 else "degraded"
         return {
             "system": "api",
             "status": status,

@@ -358,5 +358,8 @@ def promote_eligible_assets() -> int:
             logger.warning(f"Failed to promote {asset['symbol']}: {e}")
 
     if promoted:
-        logger.info(f"Promoted {promoted} backlog asset(s) to scoring (threshold: ${threshold:,.0f})")
+        if use_value_filter:
+            logger.info(f"Promoted {promoted} backlog asset(s) to scoring (value threshold: ${threshold:,.0f})")
+        else:
+            logger.info(f"Promoted {promoted} backlog asset(s) to scoring (category-completeness gate)")
     return promoted
