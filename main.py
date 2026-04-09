@@ -694,7 +694,7 @@ def main():
         logger.info("Keeper disabled (set KEEPER_ENABLED=true to enable)")
 
     # 3. Start API server (always port 5000 — mapped to :80 by Replit)
-    port = 5000
+    port = int(os.environ.get("PORT", 5000))
     free_port(port)
     logger.info(f"Starting API on port {port}")
 
