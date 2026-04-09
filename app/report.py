@@ -87,9 +87,9 @@ def _assemble_stablecoin(symbol: str) -> dict | None:
 
     # History for temporal stability
     history = fetch_all("""
-        SELECT overall_score, grade, computed_at
-        FROM score_history WHERE stablecoin_id = %s
-        ORDER BY computed_at DESC LIMIT 30
+        SELECT overall_score, grade, score_date AS computed_at
+        FROM score_history WHERE stablecoin = %s
+        ORDER BY score_date DESC LIMIT 30
     """, (sid,))
 
     return {
@@ -310,8 +310,9 @@ def _get_protocols_for_stablecoin(symbol: str) -> list[dict]:
             SELECT DISTINCT ON (ps.protocol_slug)
                 ps.protocol_slug, ps.protocol_name, ps.overall_score, ps.grade
             FROM psi_scores ps
-            JOIN psi_collateral_exposure ce ON ce.protocol_slug = ps.protocol_slug
-            WHERE UPPER(ce.asset_symbol) = UPPER(%s)
+            JOIN protocol_collateral_exposure ce ON ce.protocol_slug = ps.protocol_slug
+            WHERE UPPER(ce.token_symbol) = UPPER(%s)
+              AND ce.is_stablecoin = TRUE
             ORDER BY ps.protocol_slug, ps.computed_at DESC
         """, (symbol,))
         return [{"slug": r["protocol_slug"], "name": r["protocol_name"],
@@ -325,13 +326,14 @@ def _get_stablecoin_exposure(protocol_slug: str) -> list[dict]:
     """Get stablecoins held/accepted by a protocol."""
     try:
         rows = fetch_all("""
-            SELECT ce.asset_symbol, ce.exposure_usd,
+            SELECT ce.token_symbol AS asset_symbol, ce.tvl_usd AS exposure_usd,
                    s.overall_score, s.grade, st.id AS stablecoin_id, st.name
-            FROM psi_collateral_exposure ce
-            LEFT JOIN stablecoins st ON UPPER(st.symbol) = UPPER(ce.asset_symbol)
+            FROM protocol_collateral_exposure ce
+            LEFT JOIN stablecoins st ON UPPER(st.symbol) = UPPER(ce.token_symbol)
             LEFT JOIN scores s ON s.stablecoin_id = st.id
             WHERE ce.protocol_slug = %s
-            ORDER BY ce.exposure_usd DESC NULLS LAST
+              AND ce.is_stablecoin = TRUE
+            ORDER BY ce.tvl_usd DESC NULLS LAST
         """, (protocol_slug,))
         return [{
             "symbol": r["asset_symbol"],
@@ -346,31 +348,24 @@ def _get_stablecoin_exposure(protocol_slug: str) -> list[dict]:
 
 
 def _get_score_hashes(entity_type: str, entity_id: str) -> list[str]:
-    """Get score hashes from assessment events for this entity."""
+    """Get score hashes from component_batch_hashes or assessment_events."""
     try:
-        if entity_type == "stablecoin":
+        if entity_type in ("stablecoin", "protocol"):
             rows = fetch_all("""
-                SELECT DISTINCT content_hash FROM assessment_events
-                WHERE entity_type = 'stablecoin' AND entity_id = %s
-                  AND content_hash IS NOT NULL
-                ORDER BY content_hash
-            """, (entity_id,))
-        elif entity_type == "protocol":
-            row = fetch_one("""
-                SELECT inputs_hash FROM psi_scores
-                WHERE protocol_slug = %s AND inputs_hash IS NOT NULL
-                ORDER BY computed_at DESC LIMIT 1
-            """, (entity_id,))
-            return [row["inputs_hash"]] if row and row.get("inputs_hash") else []
+                SELECT DISTINCT batch_hash FROM component_batch_hashes
+                WHERE entity_type = %s AND entity_id = %s
+                  AND batch_hash IS NOT NULL
+                ORDER BY batch_hash
+            """, (entity_type, entity_id))
+            return [r["batch_hash"] for r in rows] if rows else []
         elif entity_type == "wallet":
             rows = fetch_all("""
                 SELECT DISTINCT content_hash FROM assessment_events
-                WHERE entity_type = 'wallet' AND LOWER(entity_id) = %s
+                WHERE LOWER(wallet_address) = %s
                   AND content_hash IS NOT NULL
                 ORDER BY content_hash
             """, (entity_id,))
-        else:
-            return []
-        return [r["content_hash"] for r in rows] if rows else []
+            return [r["content_hash"] for r in rows] if rows else []
+        return []
     except Exception:
         return []
