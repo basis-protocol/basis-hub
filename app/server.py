@@ -5758,11 +5758,11 @@ async def generate_report(
 
         # SBT metadata always returns JSON
         if template == "sbt_metadata" or format == "json":
+            import json as _json
             from app.templates.sbt_metadata import render as render_sbt
             if template == "sbt_metadata":
                 content = render_sbt(data, lens_result, report_hash, ts)
             else:
-                import json as _json
                 content = _json.dumps({
                     "entity_type": entity_type,
                     "entity_id": entity_id,
