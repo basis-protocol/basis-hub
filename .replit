@@ -16,7 +16,7 @@ run = ["python", "main.py"]
 [userenv]
 
 [userenv.shared]
-WORKER_ENABLED = "true"
+WORKER_ENABLED = "false"
 INDEXER_INTERVAL_HOURS = "24"
 BLOCK_EXPLORER_PROVIDER = "blockscout"
 
