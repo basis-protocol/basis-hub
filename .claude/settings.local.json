@@ -91,7 +91,9 @@
       "Bash(tee /tmp/server_combined.log)",
       "Bash(sort -t/ -k5)",
       "Bash(pytest tests/e2e_test.py --collect-only)",
-      "Bash([ -e \"/home/runner/workspace/$f\" ])"
+      "Bash([ -e \"/home/runner/workspace/$f\" ])",
+      "Bash(kill 69)",
+      "Bash(nohup python3:*)"
     ]
   }
 }
