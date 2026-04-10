@@ -832,6 +832,16 @@ async def run_scoring_cycle():
     except Exception as e:
         logger.warning(f"Discovery cycle failed: {e}")
 
+    # Provenance attestation (13th domain)
+    try:
+        from app.state_attestation import attest_state
+        from app.database import fetch_all
+        prov_rows = fetch_all("SELECT source_domain, attestation_hash, proved_at FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '2 hours'")
+        if prov_rows:
+            attest_state("provenance", [dict(r) for r in prov_rows])
+    except Exception as e:
+        logger.debug(f"Provenance attestation skipped: {e}")
+
     return {
         "results": results,
         "successes": successes,

@@ -5875,6 +5875,121 @@ async def state_root_latest():
 
 
 # =============================================================================
+# Provenance Proofs
+# =============================================================================
+
+@app.post("/api/provenance/register")
+async def provenance_register(request: Request):
+    _check_admin_key(request)
+    body = await request.json()
+    required = ["source_domain", "source_endpoint", "response_hash",
+                "attestation_hash", "proof_url", "attestor_pubkey",
+                "proved_at", "cycle_hour"]
+    for field in required:
+        if field not in body:
+            raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+
+    from app.database import fetch_one as _prov_fetch
+    row = _prov_fetch(
+        """INSERT INTO provenance_proofs
+           (source_domain, source_endpoint, response_hash, attestation_hash,
+            proof_url, attestor_pubkey, proved_at, cycle_hour)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           RETURNING id""",
+        (body["source_domain"], body["source_endpoint"],
+         body["response_hash"], body["attestation_hash"],
+         body["proof_url"], body["attestor_pubkey"],
+         body["proved_at"], body["cycle_hour"]),
+    )
+    return {"status": "registered", "id": row["id"] if row else None}
+
+
+@app.get("/api/provenance/latest")
+async def provenance_latest():
+    from app.database import fetch_all as _prov_all, fetch_one as _prov_one
+    cycle = _prov_one("SELECT MAX(cycle_hour) AS ch FROM provenance_proofs")
+    if not cycle or not cycle.get("ch"):
+        return {"proofs": [], "cycle_hour": None, "count": 0}
+    rows = _prov_all(
+        "SELECT * FROM provenance_proofs WHERE cycle_hour = %s ORDER BY id",
+        (cycle["ch"],),
+    )
+    return {
+        "proofs": [dict(r) for r in rows],
+        "cycle_hour": str(cycle["ch"]),
+        "count": len(rows),
+    }
+
+
+@app.get("/api/provenance/{domain}/{date}")
+async def provenance_by_domain_date(domain: str, date: str):
+    from app.database import fetch_all as _prov_all
+    rows = _prov_all(
+        """SELECT * FROM provenance_proofs
+           WHERE source_domain = %s AND proved_at::date = %s::date
+           ORDER BY proved_at""",
+        (domain, date),
+    )
+    return {
+        "proofs": [dict(r) for r in rows],
+        "source_domain": domain,
+        "date": date,
+        "count": len(rows),
+    }
+
+
+@app.get("/api/provenance/verify/{attestation_hash}")
+async def provenance_verify(attestation_hash: str):
+    from app.database import fetch_one as _prov_one
+    row = _prov_one(
+        "SELECT * FROM provenance_proofs WHERE attestation_hash = %s",
+        (attestation_hash,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Proof not found")
+    return {
+        "proof": dict(row),
+        "verification_note": "Download proof from proof_url and verify against attestor_pubkey",
+    }
+
+
+@app.get("/api/provenance/summary")
+async def provenance_summary():
+    from app.database import fetch_one as _prov_one, fetch_all as _prov_all
+    total = _prov_one("SELECT COUNT(*) AS n FROM provenance_proofs")
+    sources = _prov_all("SELECT DISTINCT source_domain FROM provenance_proofs ORDER BY 1")
+    date_range = _prov_one(
+        "SELECT MIN(proved_at) AS first, MAX(proved_at) AS last FROM provenance_proofs"
+    )
+    today = _prov_one(
+        "SELECT COUNT(*) AS n FROM provenance_proofs WHERE proved_at::date = CURRENT_DATE"
+    )
+    this_hour = _prov_one(
+        "SELECT COUNT(*) AS n FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '1 hour'"
+    )
+    return {
+        "total_proofs": total["n"] if total else 0,
+        "sources": [r["source_domain"] for r in (sources or [])],
+        "date_range": {
+            "first": str(date_range["first"]) if date_range and date_range.get("first") else None,
+            "last": str(date_range["last"]) if date_range and date_range.get("last") else None,
+        },
+        "proofs_today": today["n"] if today else 0,
+        "proofs_this_hour": this_hour["n"] if this_hour else 0,
+    }
+
+
+@app.get("/api/provenance/attestor-pubkey")
+async def provenance_attestor_pubkey():
+    pubkey = os.environ.get("ATTESTOR_PUBLIC_KEY", "")
+    return {
+        "pubkey": pubkey,
+        "algorithm": "secp256k1",
+        "note": "Basis self-hosted attestor. Verify provenance proofs against this key.",
+    }
+
+
+# =============================================================================
 
 def _register_spa_catch_all(app_instance):
     """Register the SPA catch-all AFTER all other routes so it doesn't shadow them."""
