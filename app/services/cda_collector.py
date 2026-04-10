@@ -384,6 +384,18 @@ async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str, disclosure_ty
         confidence_score=confidence,
     )
 
+    # Store CDA source URL for provenance notarization
+    try:
+        from urllib.parse import urlparse
+        _issuer_domain = urlparse(pdf_url).netloc or "unknown"
+        execute("""
+            INSERT INTO cda_source_urls (asset_symbol, issuer, source_url)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (asset_symbol, source_url) DO UPDATE SET discovered_at = NOW(), active = TRUE
+        """, (symbol, _issuer_domain, pdf_url))
+    except Exception as _ue:
+        logger.debug(f"{prefix} — cda_source_urls upsert skipped: {_ue}")
+
     # Run validation
     try:
         from app.services.cda_validator import validate_extraction

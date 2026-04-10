@@ -5979,6 +5979,18 @@ async def provenance_summary():
     }
 
 
+@app.get("/api/provenance/cda-sources")
+async def provenance_cda_sources():
+    from app.database import fetch_all as _prov_all
+    rows = _prov_all(
+        "SELECT asset_symbol, issuer, source_url, content_type, discovered_at FROM cda_source_urls WHERE active = TRUE ORDER BY discovered_at DESC"
+    )
+    return {
+        "sources": [dict(r) for r in (rows or [])],
+        "count": len(rows or []),
+    }
+
+
 @app.get("/api/provenance/attestor-pubkey")
 async def provenance_attestor_pubkey():
     pubkey = os.environ.get("ATTESTOR_PUBLIC_KEY", "")
