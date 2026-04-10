@@ -887,6 +887,45 @@ async def get_score_history(
 
 
 # =============================================================================
+# 4a. GET /api/scores/{coin}/recent — Lightweight recent scores for trend lines
+# =============================================================================
+
+@app.get("/api/scores/{coin}/recent")
+async def get_recent_scores(
+    coin: str,
+    days: int = Query(default=7, ge=1, le=30),
+):
+    """Lightweight recent score history for trend display (e.g. 7-day sparkline)."""
+    rows = fetch_all("""
+        SELECT score_date, overall_score, grade
+        FROM score_history
+        WHERE stablecoin = %s
+          AND score_date > CURRENT_DATE - INTERVAL '%s days'
+        ORDER BY score_date ASC
+    """, (coin, days))
+
+    if not rows:
+        # Verify the stablecoin exists
+        exists = fetch_one("SELECT id FROM stablecoins WHERE id = %s", (coin,))
+        if not exists:
+            raise HTTPException(status_code=404, detail=f"Stablecoin '{coin}' not found")
+
+    return {
+        "stablecoin": coin,
+        "days": days,
+        "scores": [
+            {
+                "date": str(row["score_date"]),
+                "score": round(float(row["overall_score"]), 2),
+                "grade": row["grade"],
+            }
+            for row in rows
+        ],
+        "count": len(rows),
+    }
+
+
+# =============================================================================
 # 4b. Temporal reconstruction — historical score reconstruction
 # =============================================================================
 
@@ -5740,7 +5779,7 @@ async def generate_report(
         if lens:
             lens_config = load_lens(lens)
             if not lens_config:
-                raise HTTPException(status_code=400, detail=f"Unknown lens: {lens}. Available: SCO60, MiCA67, GENIUS")
+                raise HTTPException(status_code=400, detail=f"Unknown lens: {lens}. Use GET /api/lenses to see available lenses.")
             lens_result = apply_lens(lens_config, data)
             lens_version = lens_config.get("lens_version")
 
@@ -5850,6 +5889,216 @@ async def sbt_metadata(token_id: int):
     content = render_sbt(data, None, report_hash, ts)
     import json as _json
     return JSONResponse(_json.loads(content))
+
+
+# =============================================================================
+# Lens Management Endpoints
+# =============================================================================
+
+
+@app.get("/api/lenses")
+async def list_all_lenses():
+    """List all available regulatory lenses (built-in + custom)."""
+    from app.lenses import list_lenses
+    lenses = list_lenses()
+    return {"lenses": lenses, "count": len(lenses)}
+
+
+@app.get("/api/lenses/{lens_id}")
+async def get_lens_detail(lens_id: str):
+    """Get full lens config including criteria."""
+    from app.lenses import load_lens_from_db, load_lens, _compute_content_hash
+    from app.database import fetch_one as _lf1
+
+    # Try DB first for full metadata
+    try:
+        row = _lf1(
+            "SELECT * FROM lens_configs WHERE lens_id = %s", (lens_id,)
+        )
+    except Exception:
+        row = None
+
+    if row:
+        criteria = row["criteria"]
+        if isinstance(criteria, str):
+            import json as _json
+            criteria = _json.loads(criteria)
+        return {
+            "lens_id": row["lens_id"],
+            "name": row["name"],
+            "version": row["version"],
+            "author": row["author"],
+            "description": row.get("description"),
+            "criteria": criteria,
+            "content_hash": row.get("content_hash"),
+            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+            "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        }
+
+    # Fallback: JSON file lens
+    config = load_lens(lens_id)
+    if not config:
+        raise HTTPException(status_code=404, detail=f"Lens '{lens_id}' not found")
+
+    criteria_body = {
+        "framework": config.get("framework"),
+        "classification": config.get("classification", {}),
+    }
+    return {
+        "lens_id": config.get("lens_id"),
+        "name": config.get("framework"),
+        "version": config.get("lens_version"),
+        "author": "basis-protocol",
+        "description": config.get("description", ""),
+        "criteria": criteria_body,
+        "content_hash": _compute_content_hash(criteria_body),
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+@app.post("/api/lenses")
+async def create_lens(request: Request):
+    """Create a custom regulatory lens."""
+    from app.lenses import _compute_content_hash
+    from app.database import fetch_one as _lf2
+
+    body = await request.json()
+
+    # Validate required fields
+    for field in ("lens_id", "name", "criteria"):
+        if field not in body or not body[field]:
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+
+    lens_id = body["lens_id"].strip()
+    if not lens_id or len(lens_id) > 64:
+        raise HTTPException(status_code=400, detail="lens_id must be 1-64 characters")
+
+    criteria = body["criteria"]
+    if not isinstance(criteria, dict):
+        raise HTTPException(status_code=400, detail="criteria must be a JSON object")
+
+    classification = criteria.get("classification")
+    if not classification or not isinstance(classification, dict):
+        raise HTTPException(status_code=400, detail="criteria must contain a 'classification' object with at least one group")
+
+    # Validate that each group has criteria array
+    for group_id, group in classification.items():
+        group_criteria = group.get("criteria")
+        if not group_criteria or not isinstance(group_criteria, list):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Group '{group_id}' must contain a 'criteria' array",
+            )
+        for c in group_criteria:
+            if "name" not in c or "threshold" not in c or "logic" not in c:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Each criterion in group '{group_id}' must have 'name', 'threshold', and 'logic'",
+                )
+            if c["logic"] not in ("category_score_above", "sub_score_above"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid logic '{c['logic']}'. Use 'category_score_above' or 'sub_score_above'",
+                )
+
+    content_hash = _compute_content_hash(criteria)
+
+    try:
+        row = _lf2(
+            """INSERT INTO lens_configs (lens_id, name, version, author, description, criteria, content_hash)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               RETURNING id, lens_id, name, version, author, description, content_hash, created_at""",
+            (
+                lens_id,
+                body["name"],
+                body.get("version", "1.0"),
+                body.get("author", "custom"),
+                body.get("description", ""),
+                json.dumps(criteria),
+                content_hash,
+            ),
+        )
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise HTTPException(status_code=409, detail=f"Lens '{lens_id}' already exists")
+        raise HTTPException(status_code=500, detail=f"Failed to create lens: {e}")
+
+    # Clear cache so new lens is picked up
+    from app.lenses import _LENS_CACHE
+    _LENS_CACHE.pop(lens_id, None)
+
+    return JSONResponse(
+        status_code=201,
+        content={
+            "lens_id": row["lens_id"],
+            "name": row["name"],
+            "version": row["version"],
+            "author": row["author"],
+            "description": row.get("description"),
+            "content_hash": row["content_hash"],
+            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        },
+    )
+
+
+@app.get("/api/lenses/{lens_id}/test")
+async def test_lens(lens_id: str):
+    """Run a lens against all scored stablecoins, return pass/fail results."""
+    from app.lenses import load_lens, apply_lens
+    from app.report import assemble_report_data
+
+    lens_config = load_lens(lens_id)
+    if not lens_config:
+        raise HTTPException(status_code=404, detail=f"Lens '{lens_id}' not found")
+
+    # Get all scored stablecoins
+    rows = fetch_all("""
+        SELECT s.stablecoin_id, st.name, st.symbol
+        FROM scores s
+        JOIN stablecoins st ON st.id = s.stablecoin_id
+        ORDER BY s.overall_score DESC
+    """)
+
+    results = []
+    pass_count = 0
+    for row in rows:
+        symbol = row["symbol"] or row["stablecoin_id"]
+        data = assemble_report_data("stablecoin", symbol)
+        if not data:
+            results.append({
+                "entity_id": symbol,
+                "name": row.get("name", symbol),
+                "pass": None,
+                "error": "Could not assemble report data",
+            })
+            continue
+
+        lens_result = apply_lens(lens_config, data)
+        passed = lens_result.get("overall_pass", False)
+        if passed:
+            pass_count += 1
+
+        results.append({
+            "entity_id": symbol,
+            "name": row.get("name", symbol),
+            "pass": passed,
+            "classification": lens_result.get("classification", {}),
+        })
+
+    total = len(results)
+    return {
+        "lens_id": lens_id,
+        "lens_version": lens_config.get("lens_version") or lens_config.get("version"),
+        "framework": lens_config.get("framework"),
+        "results": results,
+        "summary": {
+            "total": total,
+            "pass": pass_count,
+            "fail": total - pass_count,
+            "pass_rate": round(pass_count / total, 2) if total > 0 else 0,
+        },
+    }
 
 
 @app.get("/api/state-root/latest")

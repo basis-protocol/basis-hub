@@ -2,10 +2,12 @@
 Regulatory Lens System
 =======================
 Each lens maps SII/PSI components to regulatory criteria.
-Lenses are JSON configs loaded at startup. The apply_lens()
+Lenses are JSON configs loaded at startup, with database-backed
+custom lenses via the lens_configs table. The apply_lens()
 function classifies an entity against a regulatory framework.
 """
 
+import hashlib
 import json
 import os
 import logging
@@ -16,11 +18,46 @@ _LENS_DIR = os.path.dirname(__file__)
 _LENS_CACHE: dict = {}
 
 
+def _compute_content_hash(criteria: dict) -> str:
+    """SHA-256 of canonical JSON for a lens criteria dict."""
+    canonical = json.dumps(criteria, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _db_row_to_lens_config(row: dict) -> dict:
+    """Convert a lens_configs DB row to the in-memory lens config format."""
+    criteria = row["criteria"]
+    if isinstance(criteria, str):
+        criteria = json.loads(criteria)
+    return {
+        "lens_id": row["lens_id"],
+        "lens_version": row["version"],
+        "framework": criteria.get("framework", row["name"]),
+        "description": row.get("description", ""),
+        "classification": criteria.get("classification", {}),
+        "_db_row": row,
+    }
+
+
 def load_lens(lens_id: str) -> dict | None:
-    """Load a lens config by ID. Returns None if not found."""
+    """Load a lens config by ID. Checks DB first, then JSON files."""
     if lens_id in _LENS_CACHE:
         return _LENS_CACHE[lens_id]
 
+    # Try database first
+    try:
+        from app.database import fetch_one
+        row = fetch_one(
+            "SELECT * FROM lens_configs WHERE lens_id = %s", (lens_id,)
+        )
+        if row:
+            config = _db_row_to_lens_config(row)
+            _LENS_CACHE[lens_id] = config
+            return config
+    except Exception as e:
+        logger.debug(f"lens_configs table lookup failed: {e}")
+
+    # Fallback to JSON file
     path = os.path.join(_LENS_DIR, f"{lens_id}.json")
     if not os.path.exists(path):
         logger.warning(f"Lens not found: {lens_id}")
@@ -32,18 +69,61 @@ def load_lens(lens_id: str) -> dict | None:
     return config
 
 
+def load_lens_from_db(lens_id: str) -> dict | None:
+    """Load a lens config strictly from the database. Returns None if not found."""
+    try:
+        from app.database import fetch_one
+        row = fetch_one(
+            "SELECT * FROM lens_configs WHERE lens_id = %s", (lens_id,)
+        )
+        if row:
+            return _db_row_to_lens_config(row)
+    except Exception as e:
+        logger.debug(f"lens_configs table lookup failed: {e}")
+    return None
+
+
 def list_lenses() -> list[dict]:
-    """List all available lenses with metadata."""
+    """List all available lenses (DB + JSON files, deduplicated)."""
+    seen = set()
     lenses = []
+
+    # DB lenses first
+    try:
+        from app.database import fetch_all
+        rows = fetch_all(
+            "SELECT lens_id, name, version, author, description, content_hash, created_at "
+            "FROM lens_configs ORDER BY lens_id"
+        )
+        for row in rows:
+            seen.add(row["lens_id"])
+            lenses.append({
+                "lens_id": row["lens_id"],
+                "name": row["name"],
+                "version": row["version"],
+                "author": row["author"],
+                "description": row.get("description"),
+                "content_hash": row.get("content_hash"),
+                "source": "database",
+            })
+    except Exception as e:
+        logger.debug(f"lens_configs table listing failed: {e}")
+
+    # JSON file lenses (only if not already in DB)
     for fname in sorted(os.listdir(_LENS_DIR)):
         if fname.endswith(".json"):
             config = load_lens(fname.replace(".json", ""))
-            if config:
+            if config and config.get("lens_id") not in seen:
+                seen.add(config.get("lens_id"))
                 lenses.append({
                     "lens_id": config.get("lens_id"),
-                    "framework": config.get("framework"),
-                    "lens_version": config.get("lens_version"),
+                    "name": config.get("framework"),
+                    "version": config.get("lens_version"),
+                    "author": "basis-protocol",
+                    "description": config.get("description", ""),
+                    "source": "builtin",
                 })
+
     return lenses
 
 
