@@ -1,17 +1,22 @@
 """
-Oracle Activity Monitor
-=======================
-Tracks external interactions with Basis oracle and SBT contracts on Base and
-Arbitrum by polling block explorer APIs (Basescan / Arbiscan).
+Oracle Monitor
+==============
+Two responsibilities:
 
-Keeper writes are filtered out. Everything remaining is evidence of external
-adoption — other contracts or wallets calling functions on our contracts.
+1. **Keeper write tracking** — poll Base and Arbitrum RPC nodes for
+   ScoreUpdated events emitted by the oracle contract and store in
+   ``keeper_publish_log`` (original behaviour, now with correct topic hash).
 
-Note: EVM view/pure function calls (e.g. getScore) do NOT create transactions
-and cannot be tracked via block explorer APIs. Only write-type interactions
-that consume gas appear here. To track view calls at scale we would need call
-tracing infrastructure (own RPC node with tracing, Tenderly, or Alchemy trace
-API). This limitation is documented in DUNE_QUERIES.md.
+2. **External interaction tracking** — poll Basescan / Arbiscan for
+   transactions TO our oracle and SBT contracts that are NOT from our
+   keeper wallet.  These are evidence of external adoption.
+
+Note: EVM view/pure function calls (e.g. getScore) do NOT create
+transactions and cannot be tracked via block explorer APIs.  Only
+write-type interactions that consume gas appear here.  To track view
+calls at scale we would need call tracing infrastructure (own RPC node
+with tracing, Tenderly, or Alchemy trace API).  This limitation is
+documented in DUNE_QUERIES.md.
 """
 
 import logging
@@ -20,7 +25,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.database import execute, fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all, get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -28,25 +33,32 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+# keccak256("ScoreUpdated(address,uint256,uint256,uint256)")
+SCORE_UPDATED_TOPIC = "0x4e129cd592c4928775615d37d8f0f5a5e1257dec2f17b8b5fe34881b83b1cdc5"
+
 ORACLE_ADDRESS = "0x1651d7b2E238a952167E51A1263FFe607584DB83"
-SBT_ADDRESS = "0xf315411e49fC3EAbEF0D111A40e976802985E56c"
+SBT_ADDRESS    = "0xf315411e49fC3EAbEF0D111A40e976802985E56c"
 KEEPER_ADDRESS = "0x2dF0f62D1861Aa59A4430e3B2b2E7a0D29Cb723b".lower()
 
-# Known function selectors (first 4 bytes of keccak256 of signature)
-KNOWN_SELECTORS = {
-    "0x6e8fa984": "batchUpdateScores",
-    "0x38a0c825": "publishReportHash",
-    "0x6c0360eb": "publishStateRoot",
-    "0x6a627842": "mint",
-    "0x42966c68": "burn",
+CHAINS = {
+    "base": {
+        "rpc_env": "BASE_RPC_URL",
+        "oracle_env": "BASE_ORACLE_ADDRESS",
+        "fallback_rpc": "https://mainnet.base.org",
+    },
+    "arbitrum": {
+        "rpc_env": "ARBITRUM_RPC_URL",
+        "oracle_env": "ARBITRUM_ORACLE_ADDRESS",
+        "fallback_rpc": "https://arb1.arbitrum.io/rpc",
+    },
 }
 
-# Contracts to monitor: (label, chain, contract_type, address, explorer_base)
+# Contracts to poll via block explorer APIs
 CONTRACTS = [
     {
         "label": "Oracle (Base)",
         "chain": "base",
-        "contract_type": "oracle_base",
+        "contract_type": "oracle",
         "address": ORACLE_ADDRESS,
         "explorer_api": "https://api.basescan.org/api",
         "api_key_env": "BASESCAN_API_KEY",
@@ -54,7 +66,7 @@ CONTRACTS = [
     {
         "label": "Oracle (Arbitrum)",
         "chain": "arbitrum",
-        "contract_type": "oracle_arbitrum",
+        "contract_type": "oracle",
         "address": ORACLE_ADDRESS,
         "explorer_api": "https://api.arbiscan.io/api",
         "api_key_env": "ARBISCAN_API_KEY",
@@ -62,7 +74,7 @@ CONTRACTS = [
     {
         "label": "SBT (Base)",
         "chain": "base",
-        "contract_type": "sbt_base",
+        "contract_type": "sbt",
         "address": SBT_ADDRESS,
         "explorer_api": "https://api.basescan.org/api",
         "api_key_env": "BASESCAN_API_KEY",
@@ -70,16 +82,87 @@ CONTRACTS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+# ===================================================================
+# 1. Keeper write tracking (ScoreUpdated events via RPC)
+# ===================================================================
+
+async def poll_oracle_events():
+    """Poll both chains for recent ScoreUpdated events and store in keeper_publish_log."""
+    results = {}
+    for chain_name, chain_config in CHAINS.items():
+        oracle_address = os.environ.get(chain_config["oracle_env"])
+        if not oracle_address:
+            logger.debug(f"Skipping {chain_name}: no oracle address configured")
+            continue
+
+        rpc_url = os.environ.get(chain_config["rpc_env"], chain_config["fallback_rpc"])
+        try:
+            count = await _poll_chain(chain_name, rpc_url, oracle_address)
+            results[chain_name] = count
+        except Exception as e:
+            logger.error(f"Oracle poll failed for {chain_name}: {e}")
+            results[chain_name] = {"error": str(e)}
+
+    return results
+
+
+async def _poll_chain(chain: str, rpc_url: str, oracle_address: str) -> int:
+    """Poll a single chain for ScoreUpdated events in the last ~1000 blocks."""
+    async with httpx.AsyncClient() as client:
+        # Get latest block
+        resp = await client.post(rpc_url, json={
+            "jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1
+        }, timeout=10.0)
+        latest_block = int(resp.json()["result"], 16)
+        from_block = hex(max(0, latest_block - 1000))
+
+        # Get logs for ScoreUpdated events
+        resp = await client.post(rpc_url, json={
+            "jsonrpc": "2.0",
+            "method": "eth_getLogs",
+            "params": [{
+                "address": oracle_address,
+                "topics": [SCORE_UPDATED_TOPIC],
+                "fromBlock": from_block,
+                "toBlock": "latest",
+            }],
+            "id": 2
+        }, timeout=15.0)
+
+        logs = resp.json().get("result", [])
+        new_events = 0
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for log in logs:
+                    tx_hash = log.get("transactionHash", "")
+                    # Check if already stored
+                    existing = fetch_one(
+                        "SELECT id FROM keeper_publish_log WHERE tx_hash = %s", (tx_hash,)
+                    )
+                    if existing:
+                        continue
+
+                    cur.execute("""
+                        INSERT INTO keeper_publish_log (chain, tx_hash, success, scores_published)
+                        VALUES (%s, %s, TRUE, 1)
+                    """, (chain, tx_hash))
+                    new_events += 1
+                conn.commit()
+
+        logger.info(f"Oracle monitor [{chain}]: {new_events} new events from {len(logs)} logs")
+        return new_events
+
+
+# ===================================================================
+# 2. External interaction tracking (block explorer APIs)
+# ===================================================================
 
 async def poll_external_interactions() -> dict:
     """
-    Poll all monitored contracts for recent transactions and store any
-    non-keeper interactions. Returns summary counts per contract_type.
+    Check Basescan and Arbiscan for transactions TO our oracle and SBT contracts
+    that are NOT from our keeper.  These are external interactions.
     """
-    # Ensure table exists (idempotent)
     _ensure_table()
 
     summary = {}
@@ -87,21 +170,16 @@ async def poll_external_interactions() -> dict:
         for contract in CONTRACTS:
             try:
                 new_count = await _poll_contract(client, contract)
-                summary[contract["contract_type"]] = new_count
+                summary[contract["contract_type"] + "_" + contract["chain"]] = new_count
             except Exception as e:
                 logger.error(
                     f"Oracle monitor [{contract['label']}]: poll failed: {e}"
                 )
-                summary[contract["contract_type"]] = {"error": str(e)}
+                summary[contract["contract_type"] + "_" + contract["chain"]] = {"error": str(e)}
 
-    # Log summary
     totals = sum(v for v in summary.values() if isinstance(v, int))
-    parts = ", ".join(
-        f"{k}: {v}" for k, v in summary.items() if isinstance(v, int)
-    )
-    logger.info(
-        f"Oracle monitor: {totals} new external interactions found ({parts})"
-    )
+    parts = ", ".join(f"{k}: {v}" for k, v in summary.items() if isinstance(v, int))
+    logger.info(f"Oracle monitor: {totals} new external interactions found ({parts})")
     return summary
 
 
@@ -126,11 +204,8 @@ async def _poll_contract(client: httpx.AsyncClient, contract: dict) -> int:
     data = resp.json()
 
     if data.get("status") != "1" or not data.get("result"):
-        # status "0" with message "No transactions found" is normal for new contracts
         if data.get("message") == "No transactions found":
-            logger.debug(
-                f"Oracle monitor [{contract['label']}]: no transactions found"
-            )
+            logger.debug(f"Oracle monitor [{contract['label']}]: no transactions found")
             return 0
         logger.warning(
             f"Oracle monitor [{contract['label']}]: API returned "
@@ -164,18 +239,15 @@ async def _poll_contract(client: httpx.AsyncClient, contract: dict) -> int:
         if existing:
             continue
 
-        # Parse function selector
+        # Parse function selector (first 10 chars: "0x" + 8 hex = 4 bytes)
         input_data = tx.get("input") or ""
         function_selector = input_data[:10] if len(input_data) >= 10 else None
-        function_name = KNOWN_SELECTORS.get(function_selector)
 
         # Parse timestamp
-        ts = None
+        block_ts = None
         if tx.get("timeStamp"):
             try:
-                ts = datetime.fromtimestamp(
-                    int(tx["timeStamp"]), tz=timezone.utc
-                )
+                block_ts = datetime.fromtimestamp(int(tx["timeStamp"]), tz=timezone.utc)
             except (ValueError, OSError):
                 pass
 
@@ -185,9 +257,8 @@ async def _poll_contract(client: httpx.AsyncClient, contract: dict) -> int:
         execute(
             """INSERT INTO oracle_external_interactions
                (chain, contract_type, tx_hash, from_address,
-                function_selector, function_name,
-                block_number, timestamp, gas_used)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                function_selector, block_number, block_timestamp, gas_used)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (tx_hash) DO NOTHING""",
             (
                 contract["chain"],
@@ -195,9 +266,8 @@ async def _poll_contract(client: httpx.AsyncClient, contract: dict) -> int:
                 tx_hash,
                 from_addr,
                 function_selector,
-                function_name,
                 block_number,
-                ts,
+                block_ts,
                 gas_used,
             ),
         )
@@ -210,55 +280,51 @@ async def _poll_contract(client: httpx.AsyncClient, contract: dict) -> int:
     return new_count
 
 
-# ---------------------------------------------------------------------------
-# Metrics query (used by seed-metrics endpoint)
-# ---------------------------------------------------------------------------
+# ===================================================================
+# 3. Metrics (used by /api/ops/seed-metrics)
+# ===================================================================
 
-def get_oracle_activity_metrics() -> dict:
-    """Return oracle activity summary for the seed-metrics endpoint."""
+def get_oracle_external_metrics() -> dict:
+    """Return oracle external interaction summary for the seed-metrics endpoint."""
     _ensure_table()
 
-    interactions_7d = fetch_one(
+    ext_7d = fetch_one(
         "SELECT COUNT(*) as c FROM oracle_external_interactions "
-        "WHERE timestamp > NOW() - INTERVAL '7 days'"
+        "WHERE block_timestamp > NOW() - INTERVAL '7 days'"
     )
-    interactions_30d = fetch_one(
+    ext_30d = fetch_one(
         "SELECT COUNT(*) as c FROM oracle_external_interactions "
-        "WHERE timestamp > NOW() - INTERVAL '30 days'"
+        "WHERE block_timestamp > NOW() - INTERVAL '30 days'"
     )
-    unique_addrs_7d = fetch_one(
+    ext_unique = fetch_one(
         "SELECT COUNT(DISTINCT from_address) as c FROM oracle_external_interactions "
-        "WHERE timestamp > NOW() - INTERVAL '7 days'"
+        "WHERE block_timestamp > NOW() - INTERVAL '7 days'"
     )
-    latest = fetch_one(
-        "SELECT MAX(timestamp) as ts FROM oracle_external_interactions"
+    ext_latest = fetch_one(
+        "SELECT block_timestamp FROM oracle_external_interactions "
+        "ORDER BY block_timestamp DESC LIMIT 1"
     )
-    by_chain = fetch_all(
-        "SELECT contract_type, COUNT(*) as c FROM oracle_external_interactions "
-        "WHERE timestamp > NOW() - INTERVAL '7 days' "
-        "GROUP BY contract_type"
+    ext_by_type = fetch_all(
+        "SELECT contract_type, chain, COUNT(*) as c FROM oracle_external_interactions "
+        "WHERE block_timestamp > NOW() - INTERVAL '7 days' "
+        "GROUP BY contract_type, chain"
     ) or []
 
-    chain_counts = {row["contract_type"]: row["c"] for row in by_chain}
-
     return {
-        "external_interactions_7d": interactions_7d["c"] if interactions_7d else 0,
-        "external_interactions_30d": interactions_30d["c"] if interactions_30d else 0,
-        "unique_external_addresses_7d": unique_addrs_7d["c"] if unique_addrs_7d else 0,
-        "latest_external_interaction": (
-            latest["ts"].isoformat() if latest and latest["ts"] else None
+        "interactions_7d": ext_7d["c"] if ext_7d else 0,
+        "interactions_30d": ext_30d["c"] if ext_30d else 0,
+        "unique_addresses_7d": ext_unique["c"] if ext_unique else 0,
+        "latest_interaction": (
+            ext_latest["block_timestamp"].isoformat()
+            if ext_latest and ext_latest["block_timestamp"] else None
         ),
-        "by_chain": {
-            "base_oracle": chain_counts.get("oracle_base", 0),
-            "arbitrum_oracle": chain_counts.get("oracle_arbitrum", 0),
-            "base_sbt": chain_counts.get("sbt_base", 0),
-        },
+        "by_chain_and_type": [dict(r) for r in ext_by_type] if ext_by_type else [],
     }
 
 
-# ---------------------------------------------------------------------------
+# ===================================================================
 # Table bootstrap (idempotent)
-# ---------------------------------------------------------------------------
+# ===================================================================
 
 def _ensure_table():
     """Create the oracle_external_interactions table if it doesn't exist."""
@@ -270,9 +336,8 @@ def _ensure_table():
             tx_hash VARCHAR(66) NOT NULL UNIQUE,
             from_address VARCHAR(42) NOT NULL,
             function_selector VARCHAR(10),
-            function_name VARCHAR(50),
             block_number BIGINT,
-            timestamp TIMESTAMPTZ,
+            block_timestamp TIMESTAMPTZ,
             gas_used BIGINT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )

@@ -65,14 +65,14 @@ async def run_daily_cycle():
     except Exception:
         pass
 
-    # 5. Oracle activity monitor (poll block explorer APIs for external interactions)
-    logger.info("--- Phase 5: Oracle activity monitor ---")
+    # 5. Oracle monitor (keeper events + external interactions)
+    logger.info("--- Phase 5: Oracle monitor ---")
     try:
-        from app.ops.tools.oracle_monitor import poll_external_interactions
-        oracle_result = await poll_external_interactions()
-        logger.info(f"Oracle activity monitor result: {oracle_result}")
+        from app.ops.tools.oracle_monitor import poll_oracle_events, poll_external_interactions
+        await poll_oracle_events()
+        await poll_external_interactions()
     except Exception as e:
-        logger.error(f"Oracle activity monitor failed: {e}")
+        logger.error(f"Oracle monitor failed: {e}")
 
     # 6. Log summary
     final = budget.get_or_create_today()

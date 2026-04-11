@@ -1972,13 +1972,13 @@ async def seed_metrics(request: Request):
                ORDER BY lookups DESC LIMIT 15"""
         ) or []
 
-        # Oracle external activity
+        # Oracle external interactions
         try:
-            from app.ops.tools.oracle_monitor import get_oracle_activity_metrics
-            oracle_activity = get_oracle_activity_metrics()
+            from app.ops.tools.oracle_monitor import get_oracle_external_metrics
+            oracle_external = get_oracle_external_metrics()
         except Exception as oe:
-            logger.warning(f"Oracle activity metrics failed: {oe}")
-            oracle_activity = {}
+            logger.warning(f"Oracle external metrics failed: {oe}")
+            oracle_external = {}
 
         # Channels live count
         channels_live = {
@@ -2011,7 +2011,7 @@ async def seed_metrics(request: Request):
             "active_api_keys_7d": active_keys["c"] if active_keys else 0,
             "mcp_tool_breakdown": [dict(r) for r in mcp_tools],
             "keeper_publishes": [dict(r) for r in keeper],
-            "oracle_activity": oracle_activity,
+            "oracle_external": oracle_external,
             "top_external_consumers": [dict(r) for r in top_consumers],
             "top_entities": [dict(r) for r in top_entities],
             "channels": channels_live,
