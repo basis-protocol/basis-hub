@@ -276,22 +276,46 @@ function AuthGate({ onAuth }) {
 
 function HealthPanel({ health }) {
   if (!health || health.length === 0) return <div style={{ color: T.inkFaint, fontSize: 12 }}>No health data. Run a health check first.</div>;
+
+  const sorted = [...health].sort((a, b) => {
+    const order = { down: 0, degraded: 1, healthy: 2 };
+    return (order[a.status] ?? 3) - (order[b.status] ?? 3);
+  });
+
+  const downCount = health.filter((h) => h.status === "down").length;
+  const degradedCount = health.filter((h) => h.status === "degraded").length;
+  const barColor = downCount > 0 ? "#e74c3c" : degradedCount > 0 ? "#f39c12" : "#27ae60";
+
+  // Find oldest check time for staleness display
+  const checkTimes = health.filter((h) => h.checked_at).map((h) => new Date(h.checked_at).getTime());
+  const oldestCheck = checkTimes.length > 0 ? new Date(Math.min(...checkTimes)) : null;
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
-      {health.map((h) => (
-        <div key={h.system} style={{ padding: "8px 10px", border: `1px solid ${T.ruleLight}`, background: T.paperWarm, fontSize: 11, fontFamily: T.mono }}>
-          <StatusDot status={h.status} />
-          <strong>{h.system.replace(/_/g, " ")}</strong>
-          <div style={{ color: T.inkLight, fontSize: 10, marginTop: 4 }}>
-            {h.details && typeof h.details === "object"
-              ? Object.entries(h.details).slice(0, 3).map(([k, v]) => (
-                  <div key={k}>{k}: {typeof v === "object" ? JSON.stringify(v) : String(v)}</div>
-                )) : null}
-            {h.checked_at && <div style={{ color: T.inkFaint, marginTop: 2 }}>checked: {new Date(h.checked_at).toLocaleTimeString()}</div>}
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1, height: 4, borderRadius: 2, background: barColor, opacity: 0.8 }} />
+        {oldestCheck && (
+          <div style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, whiteSpace: "nowrap" }}>
+            data age: {Math.round((Date.now() - oldestCheck.getTime()) / 60000)}m
           </div>
-        </div>
-      ))}
-    </div>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
+        {sorted.map((h) => (
+          <div key={h.system} style={{ padding: "8px 10px", border: `1px solid ${T.ruleLight}`, background: T.paperWarm, fontSize: 11, fontFamily: T.mono }}>
+            <StatusDot status={h.status} />
+            <strong>{h.system.replace(/_/g, " ")}</strong>
+            <div style={{ color: T.inkLight, fontSize: 10, marginTop: 4 }}>
+              {h.details && typeof h.details === "object"
+                ? Object.entries(h.details).slice(0, 3).map(([k, v]) => (
+                    <div key={k}>{k}: {typeof v === "object" ? JSON.stringify(v) : String(v)}</div>
+                  )) : null}
+              {h.checked_at && <div style={{ color: T.inkFaint, marginTop: 2 }}>checked: {new Date(h.checked_at).toLocaleTimeString()}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -816,6 +840,280 @@ function ContentFeed({ feed, onDecide, onAnalyze, busy }) {
   );
 }
 
+// ─── Infrastructure Status (3 Railway services) ─────────────────────
+
+function InfraStatusPanel({ health, keeperStatus }) {
+  const apiHealth = health.find((h) => h.system === "api") || {};
+  const siiHealth = health.find((h) => h.system === "sii_freshness") || {};
+  const psiHealth = health.find((h) => h.system === "psi_freshness") || {};
+  const keeperHealth = health.find((h) => h.system === "keeper") || {};
+
+  const workerStatus = siiHealth.status || psiHealth.status || "healthy";
+  const workerAge = siiHealth.details?.age_hours != null
+    ? `SII: ${siiHealth.details.age_hours}h ago`
+    : "no data";
+  const psiAge = psiHealth.details?.age_hours != null
+    ? `PSI: ${psiHealth.details.age_hours}h ago`
+    : "";
+
+  const keeperAge = keeperHealth.details?.age_hours != null
+    ? `${keeperHealth.details.age_hours}h ago`
+    : keeperStatus?.last_cycle_age || "no data";
+
+  const cardStyle = {
+    flex: 1, padding: "10px 12px", border: `1px solid ${T.ruleMid}`, background: T.paperWarm,
+    fontFamily: T.mono, fontSize: 11,
+  };
+
+  return (
+    <div style={{ display: "flex", gap: 8, marginBottom: 0 }}>
+      <div style={cardStyle}>
+        <div style={{ marginBottom: 4 }}>
+          <StatusDot status={apiHealth.status || "healthy"} />
+          <strong>API Server</strong>
+        </div>
+        <div style={{ fontSize: 10, color: T.inkLight }}>
+          {apiHealth.details?.latency_ms != null ? `latency: ${apiHealth.details.latency_ms}ms` : "no data"}
+        </div>
+      </div>
+      <div style={cardStyle}>
+        <div style={{ marginBottom: 4 }}>
+          <StatusDot status={workerStatus} />
+          <strong>Worker</strong>
+        </div>
+        <div style={{ fontSize: 10, color: T.inkLight }}>
+          {workerAge}{psiAge ? ` · ${psiAge}` : ""}
+        </div>
+      </div>
+      <div style={cardStyle}>
+        <div style={{ marginBottom: 4 }}>
+          <StatusDot status={keeperHealth.status || (keeperStatus ? "healthy" : "healthy")} />
+          <strong>Keeper</strong>
+        </div>
+        <div style={{ fontSize: 10, color: T.inkLight }}>
+          last cycle: {keeperAge}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── On-Chain Status ─────────────────────────────────────────────────
+
+function OnChainStatusPanel({ keeperStatus }) {
+  if (!keeperStatus) return <div style={{ color: T.inkFaint, fontSize: 12, padding: "0 10px" }}>Loading keeper status...</div>;
+
+  const chains = keeperStatus.chains || {};
+  const wallet = keeperStatus.wallet || {};
+
+  const chainCard = (label, chain) => (
+    <div style={{ flex: 1 }}>
+      <div style={{ fontFamily: T.mono, fontSize: 11, fontWeight: 600, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, lineHeight: 1.8 }}>
+        {chain.oracle && <div>Oracle: {chain.oracle.slice(0, 6)}...{chain.oracle.slice(-4)}</div>}
+        {chain.sii_count != null && <div>SII scores: {chain.sii_count}</div>}
+        {chain.psi_count != null && <div>PSI scores: {chain.psi_count}</div>}
+        {chain.state_root_age != null && <div>Last state root: {chain.state_root_age}</div>}
+        {chain.total_txns != null && <div>Total txns: {chain.total_txns.toLocaleString()}</div>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "0 10px" }}>
+      <div style={{ display: "flex", gap: 24, marginBottom: 12 }}>
+        {chains.base && chainCard("Base", chains.base)}
+        {chains.arbitrum && chainCard("Arbitrum", chains.arbitrum)}
+        {!chains.base && !chains.arbitrum && (
+          <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint }}>
+            No chain data available — keeper status endpoint may not return chain details yet.
+          </div>
+        )}
+      </div>
+      {wallet.address && (
+        <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkMid, borderTop: `1px solid ${T.ruleLight}`, paddingTop: 8 }}>
+          <div>Keeper wallet: {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}</div>
+          {wallet.balance_base != null && wallet.balance_arb != null && (
+            <div>Balance: {wallet.balance_base} ETH (Base) · {wallet.balance_arb} ETH (Arb)</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Infra Tab ───────────────────────────────────────────────────────
+
+function InfraTab() {
+  const [keeperHistory, setKeeperHistory] = useState([]);
+  const [coverage, setCoverage] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [healthHistory, setHealthHistory] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [kh, cov, al, hh] = await Promise.all([
+        opsFetch("/api/ops/keeper/history?limit=100").catch(() => ({ transactions: [] })),
+        opsFetch("/api/ops/coverage-report").catch(() => null),
+        opsFetch("/api/ops/alerts").catch(() => ({ alerts: [] })),
+        opsFetch("/api/ops/health").catch(() => ({ health: [] })),
+      ]);
+      setKeeperHistory(kh.transactions || kh.history || []);
+      setCoverage(cov);
+      setAlerts(al.alerts || al.log || []);
+      setHealthHistory(hh.health || []);
+    } catch (e) { showFlash(e.message, false); }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const tblStyle = { width: "100%", fontSize: 11, fontFamily: T.mono, borderCollapse: "collapse" };
+  const thStyle = { borderBottom: `1px solid ${T.ruleMid}`, fontSize: 10, color: T.inkLight, textAlign: "left", padding: "4px 0" };
+  const tdStyle = { padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}` };
+
+  return (
+    <>
+      <Section title="KEEPER TRANSACTION HISTORY" actions={
+        <button onClick={load} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+      }>
+        <Flash flash={flash} />
+        <div style={{ padding: "0 10px" }}>
+          {keeperHistory.length === 0
+            ? <div style={{ color: T.inkFaint, fontSize: 11 }}>No keeper transactions recorded. Data populates from /api/ops/keeper/history.</div>
+            : <table style={tblStyle}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>Time</th>
+                    <th style={thStyle}>Chain</th>
+                    <th style={thStyle}>Function</th>
+                    <th style={{ ...thStyle, textAlign: "right" }}>Gas</th>
+                    <th style={thStyle}>Tx Hash</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {keeperHistory.slice(0, 50).map((tx, i) => (
+                    <tr key={i}>
+                      <td style={{ ...tdStyle, fontSize: 10, color: T.inkLight }}>{tx.timestamp ? new Date(tx.timestamp).toLocaleString() : tx.created_at ? new Date(tx.created_at).toLocaleString() : "—"}</td>
+                      <td style={tdStyle}>{tx.chain || "—"}</td>
+                      <td style={tdStyle}>{tx.function_name || tx.method || "—"}</td>
+                      <td style={{ ...tdStyle, textAlign: "right" }}>{tx.gas_used ? Number(tx.gas_used).toLocaleString() : "—"}</td>
+                      <td style={{ ...tdStyle, fontSize: 10, color: T.inkLight }}>{tx.tx_hash ? `${tx.tx_hash.slice(0, 10)}...` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+          }
+        </div>
+      </Section>
+
+      <Section title="COVERAGE REPORT">
+        <div style={{ padding: "0 10px" }}>
+          {!coverage
+            ? <div style={{ color: T.inkFaint, fontSize: 11 }}>No coverage data available. Data populates from /api/ops/coverage-report.</div>
+            : <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {coverage.sii && (
+                  <div>
+                    <div style={{ fontFamily: T.mono, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, color: T.inkLight, marginBottom: 4 }}>SII</div>
+                    <div style={{ fontFamily: T.mono, fontSize: 11, lineHeight: 1.8, color: T.inkMid }}>
+                      <div>Scored: {coverage.sii.scored ?? "—"}</div>
+                      <div>Discovered: {coverage.sii.discovered ?? "—"}</div>
+                      {coverage.sii.confidence && <div>Confidence: {JSON.stringify(coverage.sii.confidence)}</div>}
+                    </div>
+                  </div>
+                )}
+                {coverage.psi && (
+                  <div>
+                    <div style={{ fontFamily: T.mono, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, color: T.inkLight, marginBottom: 4 }}>PSI</div>
+                    <div style={{ fontFamily: T.mono, fontSize: 11, lineHeight: 1.8, color: T.inkMid }}>
+                      <div>Scored: {coverage.psi.scored ?? "—"}</div>
+                      {coverage.psi.component_coverage && <div>Component coverage: {coverage.psi.component_coverage}</div>}
+                    </div>
+                  </div>
+                )}
+                {coverage.cda && (
+                  <div>
+                    <div style={{ fontFamily: T.mono, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, color: T.inkLight, marginBottom: 4 }}>CDA</div>
+                    <div style={{ fontFamily: T.mono, fontSize: 11, lineHeight: 1.8, color: T.inkMid }}>
+                      <div>Issuers: {coverage.cda.issuers_with_extractions ?? "—"}</div>
+                    </div>
+                  </div>
+                )}
+                {coverage.on_chain && (
+                  <div>
+                    <div style={{ fontFamily: T.mono, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, color: T.inkLight, marginBottom: 4 }}>On-Chain</div>
+                    <div style={{ fontFamily: T.mono, fontSize: 11, lineHeight: 1.8, color: T.inkMid }}>
+                      <div>Contracts: {coverage.on_chain.contracts_deployed ?? "—"}</div>
+                      <div>Chains: {coverage.on_chain.chains_active ?? "—"}</div>
+                    </div>
+                  </div>
+                )}
+                {!coverage.sii && !coverage.psi && !coverage.cda && !coverage.on_chain && (
+                  <div style={{ fontFamily: T.mono, fontSize: 11, color: T.inkFaint }}>
+                    Coverage data structure not recognized. Raw: {JSON.stringify(coverage).slice(0, 200)}
+                  </div>
+                )}
+              </div>
+          }
+        </div>
+      </Section>
+
+      <Section title="ALERT LOG">
+        <div style={{ padding: "0 10px" }}>
+          {alerts.length === 0
+            ? <div style={{ color: T.inkFaint, fontSize: 11 }}>No alerts recorded. Data populates from /api/ops/alerts.</div>
+            : <table style={tblStyle}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>Time</th>
+                    <th style={thStyle}>Type</th>
+                    <th style={thStyle}>Channel</th>
+                    <th style={thStyle}>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alerts.slice(0, 50).map((a, i) => (
+                    <tr key={i}>
+                      <td style={{ ...tdStyle, fontSize: 10, color: T.inkLight, whiteSpace: "nowrap" }}>{a.sent_at ? new Date(a.sent_at).toLocaleString() : "—"}</td>
+                      <td style={{ ...tdStyle, fontSize: 10 }}>{a.alert_type || "—"}</td>
+                      <td style={{ ...tdStyle, fontSize: 10, color: T.inkLight }}>{a.channel || "—"}</td>
+                      <td style={{ ...tdStyle, fontSize: 10, maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(a.message || "").slice(0, 120)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+          }
+        </div>
+      </Section>
+
+      <Section title="HEALTH CHECK HISTORY (latest)">
+        <div style={{ padding: "0 10px" }}>
+          {healthHistory.length === 0
+            ? <div style={{ color: T.inkFaint, fontSize: 11 }}>No health history available.</div>
+            : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 6 }}>
+                {[...healthHistory].sort((a, b) => {
+                  const order = { down: 0, degraded: 1, healthy: 2 };
+                  return (order[a.status] ?? 3) - (order[b.status] ?? 3);
+                }).map((h) => (
+                  <div key={h.system} style={{ padding: "6px 8px", border: `1px solid ${T.ruleLight}`, background: T.paperWarm, fontSize: 10, fontFamily: T.mono }}>
+                    <StatusDot status={h.status} />
+                    <strong>{h.system.replace(/_/g, " ")}</strong>
+                    {h.checked_at && <div style={{ color: T.inkFaint, fontSize: 9, marginTop: 2 }}>{new Date(h.checked_at).toLocaleString()}</div>}
+                  </div>
+                ))}
+              </div>
+          }
+        </div>
+      </Section>
+    </>
+  );
+}
+
 // ─── Section wrapper ──────────────────────────────────────────────────
 
 function Section({ title, actions, children }) {
@@ -957,6 +1255,130 @@ function StateGrowthPanel() {
   );
 }
 
+
+// ─── Keeper Metrics (expanded) ───────────────────────────────────────
+
+function KeeperMetricsSection({ keeperPublishes }) {
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  const loadHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await opsFetch("/api/ops/keeper/history?limit=50");
+      setHistory(res.transactions || res.history || []);
+    } catch { /* non-critical */ }
+    setLoadingHistory(false);
+  };
+
+  useEffect(() => { loadHistory(); }, []);
+
+  // Group history into cycles (transactions within same 2-minute window)
+  const cycles = [];
+  if (history.length > 0) {
+    let current = { time: history[0].timestamp || history[0].created_at, txns: [history[0]], chains: new Set([history[0].chain]) };
+    for (let i = 1; i < history.length; i++) {
+      const tx = history[i];
+      const txTime = new Date(tx.timestamp || tx.created_at).getTime();
+      const curTime = new Date(current.time).getTime();
+      if (Math.abs(txTime - curTime) < 120_000) {
+        current.txns.push(tx);
+        if (tx.chain) current.chains.add(tx.chain);
+      } else {
+        cycles.push(current);
+        current = { time: tx.timestamp || tx.created_at, txns: [tx], chains: new Set([tx.chain]) };
+      }
+    }
+    cycles.push(current);
+  }
+
+  // Build 7-day bar chart from cycles
+  const now = new Date();
+  const dayBuckets = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now); d.setDate(d.getDate() - (6 - i));
+    return { date: d.toISOString().slice(5, 10), count: 0 };
+  });
+  for (const c of cycles) {
+    const cDate = new Date(c.time).toISOString().slice(5, 10);
+    const bucket = dayBuckets.find((b) => b.date === cDate);
+    if (bucket) bucket.count++;
+  }
+  const maxCycles = Math.max(...dayBuckets.map((b) => b.count), 1);
+
+  return (
+    <Section title="ORACLE KEEPER (7d)" actions={
+      <button onClick={loadHistory} disabled={loadingHistory} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loadingHistory ? 0.5 : 1 }}>
+        {loadingHistory ? "Loading..." : "Refresh"}
+      </button>
+    }>
+      <div style={{ padding: "0 10px" }}>
+        {/* Chain summary from seed-metrics */}
+        {keeperPublishes && keeperPublishes.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            {keeperPublishes.map((k, i) => (
+              <div key={i} style={{ fontSize: 11, fontFamily: T.mono, padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                <strong>{k.chain}</strong> — {k.publishes} publishes — last: {k.last_publish ? new Date(k.last_publish).toLocaleString() : "—"}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 7-day cycle chart */}
+        {dayBuckets.some((b) => b.count > 0) && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontFamily: T.mono, fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 6 }}>Cycles / Day (7d)</div>
+            <div style={{ display: "flex", gap: 4, alignItems: "flex-end", height: 50 }}>
+              {dayBuckets.map((d, i) => {
+                const h = Math.max(4, (d.count / maxCycles) * 44);
+                return (
+                  <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                    <div style={{ fontFamily: T.mono, fontSize: 8, color: T.inkFaint }}>{d.count}</div>
+                    <div style={{ width: "100%", height: h, background: T.ink, borderRadius: 1 }} />
+                    <div style={{ fontFamily: T.mono, fontSize: 8, color: T.inkFaint }}>{d.date}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Recent cycles table */}
+        {cycles.length > 0 && (
+          <div>
+            <div style={{ fontFamily: T.mono, fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 6 }}>Recent Cycles</div>
+            <table style={{ width: "100%", fontSize: 11, fontFamily: T.mono, borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.ruleMid}`, fontSize: 10, color: T.inkLight, textAlign: "left" }}>
+                  <th style={{ padding: "4px 0" }}>Time</th>
+                  <th>Chains</th>
+                  <th style={{ textAlign: "right" }}>Txns</th>
+                  <th>Functions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cycles.slice(0, 14).map((c, i) => {
+                  const fns = [...new Set(c.txns.map((t) => t.function_name || t.method || "").filter(Boolean))];
+                  return (
+                    <tr key={i} style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+                      <td style={{ padding: "3px 0", fontSize: 10, color: T.inkLight }}>{new Date(c.time).toLocaleString()}</td>
+                      <td style={{ fontSize: 10 }}>{[...c.chains].filter(Boolean).join(", ") || "—"}</td>
+                      <td style={{ textAlign: "right", fontWeight: 600 }}>{c.txns.length}</td>
+                      <td style={{ fontSize: 9, color: T.inkLight, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fns.join(", ") || "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!keeperPublishes?.length && history.length === 0 && (
+          <div style={{ color: T.inkFaint, fontSize: 11 }}>No keeper data available.</div>
+        )}
+      </div>
+    </Section>
+  );
+}
 
 // ─── Main Dashboard ───────────────────────────────────────────────────
 
@@ -1130,18 +1552,8 @@ function SeedMetricsPanel() {
             </div>
           </Section>
 
-          {/* Keeper Publishes */}
-          {data.keeper_publishes && data.keeper_publishes.length > 0 && (
-            <Section title="ORACLE KEEPER (7d)">
-              <div style={{ padding: "0 10px" }}>
-                {data.keeper_publishes.map((k, i) => (
-                  <div key={i} style={{ fontSize: 11, fontFamily: T.mono, padding: "3px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
-                    <strong>{k.chain}</strong> — {k.publishes} publishes — last: {k.last_publish ? new Date(k.last_publish).toLocaleString() : "—"}
-                  </div>
-                ))}
-              </div>
-            </Section>
-          )}
+          {/* Keeper Publishes — expanded */}
+          <KeeperMetricsSection keeperPublishes={data.keeper_publishes} />
         </>
       )}
     </>
@@ -2155,6 +2567,7 @@ export default function OpsDashboard() {
   const [targets, setTargets] = useState([]);
   const [feed, setFeed] = useState([]);
   const [contentItems, setContentItems] = useState([]);
+  const [keeperStatus, setKeeperStatus] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2166,18 +2579,20 @@ export default function OpsDashboard() {
     setLoading(true);
     setError(null);
     try {
-      const [h, q, t, cf, ci] = await Promise.all([
+      const [h, q, t, cf, ci, ks] = await Promise.all([
         opsFetch("/api/ops/health").catch(() => ({ health: [] })),
         opsFetch("/api/ops/queue").catch(() => ({ queue: [] })),
         opsFetch("/api/ops/targets").catch(() => ({ targets: [] })),
         opsFetch("/api/ops/content/feed?limit=30").catch(() => ({ feed: [] })),
         opsFetch("/api/ops/content/items").catch(() => ({ items: [] })),
+        opsFetch("/api/ops/keeper/status").catch(() => null),
       ]);
       setHealth(h.health || []);
       setQueue(q.queue || []);
       setTargets(t.targets || []);
       setFeed(cf.feed || []);
       setContentItems(ci.items || []);
+      setKeeperStatus(ks);
     } catch (e) {
       if (e.message === "unauthorized") {
         setAuthed(false);
@@ -2280,7 +2695,7 @@ export default function OpsDashboard() {
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-          {["dashboard", "targets", "content", "metrics", "reports", "query", "graph", "backtest", "matrix"].map((tb) => (
+          {["dashboard", "infra", "targets", "content", "metrics", "reports", "query", "graph", "backtest", "matrix"].map((tb) => (
             <button key={tb} onClick={() => setTab(tb)} style={{
               fontFamily: T.mono, fontSize: 11, padding: "4px 0", border: "none",
               background: "transparent", cursor: "pointer", fontWeight: tab === tb ? 700 : 400,
@@ -2295,6 +2710,16 @@ export default function OpsDashboard() {
         {/* Dashboard tab */}
         {tab === "dashboard" && (
           <>
+            <Section title="INFRASTRUCTURE">
+              <div style={{ padding: "0 10px" }}>
+                <InfraStatusPanel health={health} keeperStatus={keeperStatus} />
+              </div>
+            </Section>
+
+            <Section title="ON-CHAIN STATE">
+              <OnChainStatusPanel keeperStatus={keeperStatus} />
+            </Section>
+
             <Section title="PIPELINE HEALTH" actions={
               <button onClick={handleRunHealthCheck} disabled={busy === "health"} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: busy === "health" ? 0.5 : 1 }}>
                 {busy === "health" ? "Checking..." : "Run Check"}
@@ -2316,6 +2741,9 @@ export default function OpsDashboard() {
             <StateGrowthPanel />
           </>
         )}
+
+        {/* Infra tab */}
+        {tab === "infra" && <InfraTab />}
 
         {/* Targets tab */}
         {tab === "targets" && (
