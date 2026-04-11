@@ -1,0 +1,174 @@
+{% extends "_base.html" %}
+
+{% block title %}Terms of Service | Basis Protocol{% endblock %}
+
+{% block meta %}
+    <meta name="description" content="Terms of Service for Basis Protocol. Basis produces computational integrity metrics, not credit ratings or investment advice.">
+    <meta property="og:title" content="Terms of Service | Basis Protocol">
+    <meta property="og:description" content="Terms of Service for Basis Protocol services, APIs, and data feeds.">
+    <meta property="og:type" content="website">
+    <link rel="canonical" href="{{ canonical_url }}">
+{% endblock %}
+
+{% block extra_styles %}
+    .terms-header {
+        margin-top: 28px;
+        margin-bottom: 24px;
+    }
+    .terms-title {
+        font-family: var(--mono);
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--ink);
+        margin-bottom: 6px;
+    }
+    .terms-effective {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--ink-faint);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .terms-section {
+        margin-top: 28px;
+        padding-top: 20px;
+        border-top: 1px solid var(--rule-light);
+    }
+    .terms-section-number {
+        font-family: var(--mono);
+        font-size: 9px;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        color: var(--ink-light);
+        margin-bottom: 6px;
+    }
+    .terms-section-title {
+        font-family: var(--sans);
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--ink);
+        margin-bottom: 10px;
+    }
+    .terms-section-body {
+        font-family: var(--sans);
+        font-size: 13px;
+        line-height: 1.7;
+        color: var(--ink-mid);
+    }
+    .terms-section-body p {
+        margin-bottom: 10px;
+    }
+    .terms-section-body p:last-child {
+        margin-bottom: 0;
+    }
+    @media (max-width: 768px) {
+        .terms-title { font-size: 16px; }
+        .terms-section-title { font-size: 13px; }
+        .terms-section-body { font-size: 12px; }
+    }
+{% endblock %}
+
+{% block content %}
+    <div class="terms-header">
+        <div class="terms-title">Terms of Service</div>
+        <div class="terms-effective">Effective Date: April 2026 · Last Updated: {{ last_updated }}</div>
+    </div>
+
+    <div class="terms-section" style="border-top: none; margin-top: 0; padding-top: 0;">
+        <div class="terms-section-number">Section 1</div>
+        <div class="terms-section-title">Nature of Outputs</div>
+        <div class="terms-section-body">
+            <p>Basis Protocol produces computational integrity metrics derived from deterministic methodology applied to publicly available data. These outputs are not credit ratings, investment ratings, or assessments of any issuer's creditworthiness or financial capacity. They do not constitute ratings as defined under the U.S. Credit Rating Agency Reform Act of 2006, the EU Credit Rating Agencies Regulation (EC No 1060/2009), or any equivalent jurisdiction-specific legislation.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 2</div>
+        <div class="terms-section-title">No Investment Advice</div>
+        <div class="terms-section-body">
+            <p>Basis integrity scores do not constitute investment advice, a recommendation to buy, sell, or hold any asset, or an assessment of any asset's suitability for any purpose. Users should not rely on Basis outputs as the sole basis for any financial decision.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 3</div>
+        <div class="terms-section-title">Data Accuracy Limitation</div>
+        <div class="terms-section-body">
+            <p>Scores are calculated from third-party data sources including but not limited to CoinGecko, DeFiLlama, Etherscan, and issuer attestations. Basis does not control and cannot guarantee the accuracy, completeness, or timeliness of third-party data. Scores may reflect delayed, incomplete, or inaccurate inputs.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 4</div>
+        <div class="terms-section-title">No Liability for Losses</div>
+        <div class="terms-section-body">
+            <p>Basis Protocol and its affiliates shall not be liable for any losses, damages, or costs arising from reliance on integrity scores, including but not limited to: trading losses, liquidation events, smart contract interactions, governance decisions, or risk parameter changes made using Basis data.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 5</div>
+        <div class="terms-section-title">Methodology Changes</div>
+        <div class="terms-section-body">
+            <p>Basis reserves the right to modify scoring methodology with advance notice. Methodology versions are published, timestamped, and version-controlled. Consumers should monitor version changes via the /api/methodology/versions endpoint.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 6</div>
+        <div class="terms-section-title">API and Data Usage</div>
+        <div class="terms-section-body">
+            <p>API access is provided as-is. Free-tier access carries no uptime or SLA guarantees. Basis may rate-limit, suspend, or modify API access. Paid endpoints (x402) are subject to per-request pricing published at the endpoint.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 7</div>
+        <div class="terms-section-title">MetaMask Snap</div>
+        <div class="terms-section-body">
+            <p>The Basis Snap provides informational data only within the MetaMask interface. It does not block, modify, or execute transactions. Users are solely responsible for their transaction decisions.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 8</div>
+        <div class="terms-section-title">Safe Guard Module</div>
+        <div class="terms-section-body">
+            <p>The Basis Safe Guard module enforces score thresholds configured by the Safe multisig owners. Basis provides the scoring data; threshold configuration and enforcement decisions are made by the Safe owners. Basis is not liable for transactions blocked or permitted by Guard configurations.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 9</div>
+        <div class="terms-section-title">Agent and Programmatic Consumption</div>
+        <div class="terms-section-body">
+            <p>When Basis data is consumed by autonomous agents, smart contracts, or automated systems, the deployer of such systems bears responsibility for how scores are interpreted and acted upon. Basis provides data infrastructure, not decision-making authority.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 10</div>
+        <div class="terms-section-title">Open Methodology</div>
+        <div class="terms-section-body">
+            <p>The scoring methodology is publicly documented and version-controlled. Any user may independently verify score computation using published inputs and methodology. This transparency is a design principle, not a warranty of fitness for any particular use.</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 11</div>
+        <div class="terms-section-title">Governing Law</div>
+        <div class="terms-section-body">
+            <p>[Jurisdiction TBD — to be completed by legal counsel.]</p>
+        </div>
+    </div>
+
+    <div class="terms-section">
+        <div class="terms-section-number">Section 12</div>
+        <div class="terms-section-title">Acceptance</div>
+        <div class="terms-section-body">
+            <p>By accessing Basis Protocol services, APIs, data feeds, or any Basis surface, you agree to these terms. Continued use constitutes ongoing acceptance.</p>
+        </div>
+    </div>
+
+    <div style="height: 20px;"></div>
+{% endblock %}

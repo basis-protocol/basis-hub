@@ -71,6 +71,20 @@ async def create_assessment_page(assessment: dict) -> None:
 def register_page_routes(app: FastAPI) -> None:
     """Register HTML page routes for wallets, assets, assessments, and pulses."""
 
+    @app.get("/terms")
+    async def terms_page():
+        """Static Terms of Service page — server-rendered for all visitors."""
+        from datetime import datetime, timezone
+        env = _get_jinja_env()
+        template = env.get_template("terms.html")
+        last_updated = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        html = template.render(
+            active_tab="terms",
+            canonical_url=f"{CANONICAL_BASE_URL}/terms",
+            last_updated=last_updated,
+        )
+        return _page_response(html)
+
     @app.get("/wallet/{address}")
     async def wallet_page(request: Request, address: str):
         """Rendered HTML wallet risk page with JSON-LD."""
@@ -294,6 +308,7 @@ def register_page_routes(app: FastAPI) -> None:
         urls = [
             f"{CANONICAL_BASE_URL}/",
             f"{CANONICAL_BASE_URL}/witness",
+            f"{CANONICAL_BASE_URL}/terms",
         ]
 
         # Active stablecoins
@@ -357,6 +372,7 @@ def register_page_routes(app: FastAPI) -> None:
             "User-agent: *\n"
             "Allow: /\n"
             "Allow: /witness\n"
+            "Allow: /terms\n"
             "Allow: /wallet/\n"
             "Allow: /asset/\n"
             "Allow: /assessment/\n"
@@ -367,7 +383,7 @@ def register_page_routes(app: FastAPI) -> None:
         )
         return PlainTextResponse(content=content)
 
-    logger.info("Page routes registered: /wallet, /asset, /assessment, /pulse, /sitemap.xml, /robots.txt")
+    logger.info("Page routes registered: /terms, /wallet, /asset, /assessment, /pulse, /sitemap.xml, /robots.txt")
 
 
 # --- JSON-LD Generators ---

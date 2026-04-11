@@ -5064,6 +5064,7 @@ def _render_rankings_html() -> str:
         <a href="/witness">Witness</a>
         <a href="/proof/sii/usdc">Proof</a>
         <a href="/developers">API</a>
+        <a href="/terms">Terms</a>
     </nav>
     <table>
         <thead>
@@ -5085,7 +5086,7 @@ def _render_rankings_html() -> str:
     </table>
     <footer>
         <p>Basis Protocol · basisprotocol.xyz · SII v1.0.0 · Methodology: deterministic, version-controlled, open</p>
-        <p>API: <a href="/api/scores">/api/scores</a> · <a href="/api/cda/issuers">/api/cda/issuers</a> · <a href="/developers">Developer docs</a></p>
+        <p>API: <a href="/api/scores">/api/scores</a> · <a href="/api/cda/issuers">/api/cda/issuers</a> · <a href="/developers">Developer docs</a> · <a href="/terms">Terms</a></p>
     </footer>
 </body>
 </html>"""
@@ -5171,6 +5172,7 @@ def _render_witness_html() -> str:
         <a href="/witness">Witness</a>
         <a href="/proof/sii/usdc">Proof</a>
         <a href="/developers">API</a>
+        <a href="/terms">Terms</a>
     </nav>
     <p>Structured, timestamped, hash-verified archive of stablecoin issuer disclosures. Basis does not modify source documents.</p>
     <table>
@@ -5187,7 +5189,7 @@ def _render_witness_html() -> str:
     </table>
     <footer>
         <p>Basis Protocol · basisprotocol.xyz · Witness is the disclosure primitive in the Basis Protocol stack.</p>
-        <p>API: <a href="/api/cda/issuers">/api/cda/issuers</a> · <a href="/api/cda/coverage">/api/cda/coverage</a> · <a href="/developers">Developer docs</a></p>
+        <p>API: <a href="/api/cda/issuers">/api/cda/issuers</a> · <a href="/api/cda/coverage">/api/cda/coverage</a> · <a href="/developers">Developer docs</a> · <a href="/terms">Terms</a></p>
     </footer>
 </body>
 </html>"""
@@ -5431,6 +5433,7 @@ def _render_proof_html(identifier: str, surface: str) -> str:
         <a href="/witness">Witness</a>
         <a href="/proof/sii/usdc">Proof</a>
         <a href="/developers">API</a>
+        <a href="/terms">Terms</a>
     </nav>
 
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
@@ -5495,7 +5498,7 @@ def _render_proof_html(identifier: str, surface: str) -> str:
 
     <footer>
         <p>Basis Protocol · basisprotocol.xyz · {surface.upper()} {formula_version} · Methodology: deterministic, version-controlled, open</p>
-        <p>Score proof pages are public by design — open methodology means open proof.</p>
+        <p>Score proof pages are public by design — open methodology means open proof. · <a href="/terms">Terms</a></p>
     </footer>
 </body>
 </html>"""

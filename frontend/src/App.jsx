@@ -3114,7 +3114,7 @@ function Footer({ mobile }) {
       fontSize: 10, color: T.inkFaint, fontFamily: T.mono,
     }}>
       <span>Basis Protocol · Stablecoin Integrity Index</span>
-      <span><a href="/developers" style={{ color: 'inherit', textDecoration: 'none', borderBottom: `1px solid ${T.ruleMid}` }}>API &amp; Pricing</a> · Risk surfaces for on-chain finance · basisprotocol.xyz</span>
+      <span><a href="/developers" style={{ color: 'inherit', textDecoration: 'none', borderBottom: `1px solid ${T.ruleMid}` }}>API &amp; Pricing</a> · <a href="/terms" style={{ color: 'inherit', textDecoration: 'none', borderBottom: `1px solid ${T.ruleMid}` }}>Terms</a> · Risk surfaces for on-chain finance · basisprotocol.xyz</span>
     </footer>
   );
 }
