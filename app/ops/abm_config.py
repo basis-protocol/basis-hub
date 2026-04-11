@@ -14,6 +14,9 @@ ABM_ICP_TYPES = {
             "Auditors asking for methodology documentation",
         ],
         "default_coins": ["USDT", "USDC", "DAI", "FDUSD", "TUSD"],
+        "consumption_modes": ["watchtower"],
+        "primary_mode": "watchtower",
+        "guide_sections": ["monitoring_setup", "compliance_workflow", "audit_trail"],
     },
     "exchange_us": {
         "label": "US Exchange",
@@ -23,6 +26,9 @@ ABM_ICP_TYPES = {
             "No permitted payment stablecoin classification",
         ],
         "default_coins": ["USDT", "USDC", "PYUSD", "GUSD"],
+        "consumption_modes": ["watchtower", "governance"],
+        "primary_mode": "watchtower",
+        "guide_sections": ["monitoring_setup", "compliance_workflow", "governance_proposal"],
     },
     "exchange_apac": {
         "label": "APAC Exchange",
@@ -32,6 +38,9 @@ ABM_ICP_TYPES = {
             "Banking partner due diligence demands",
         ],
         "default_coins": ["USDT", "USDC", "FDUSD", "XSGD"],
+        "consumption_modes": ["watchtower"],
+        "primary_mode": "watchtower",
+        "guide_sections": ["monitoring_setup", "compliance_workflow", "audit_trail"],
     },
     "lending_protocol": {
         "label": "Lending Protocol",
@@ -41,6 +50,9 @@ ABM_ICP_TYPES = {
             "Gauntlet/Chaos Labs reports non-comparable",
         ],
         "default_coins": ["USDT", "USDC", "DAI", "FRAX", "LUSD"],
+        "consumption_modes": ["parameter", "watchtower", "enforcement", "governance"],
+        "primary_mode": "parameter",
+        "guide_sections": ["parameter_mapping", "watchtower_setup", "collateral_checker", "governance_proposal"],
     },
     "dao_treasury": {
         "label": "DAO Treasury",
@@ -50,6 +62,9 @@ ABM_ICP_TYPES = {
             "Governance proposals lack risk data",
         ],
         "default_coins": ["USDC", "DAI", "FRAX", "LUSD"],
+        "consumption_modes": ["governance", "watchtower"],
+        "primary_mode": "governance",
+        "guide_sections": ["governance_proposal", "portfolio_monitoring"],
     },
     "insurance_defi": {
         "label": "DeFi Insurance",
@@ -59,6 +74,9 @@ ABM_ICP_TYPES = {
             "Exploit correlation data fragmented",
         ],
         "default_coins": ["USDT", "USDC", "DAI"],
+        "consumption_modes": ["parameter", "watchtower"],
+        "primary_mode": "parameter",
+        "guide_sections": ["parameter_mapping", "watchtower_setup", "divergence_monitoring"],
     },
     "bank_custodian": {
         "label": "Bank / Custodian",
@@ -68,6 +86,9 @@ ABM_ICP_TYPES = {
             "No standardized classification methodology",
         ],
         "default_coins": ["USDC", "PYUSD", "GUSD"],
+        "consumption_modes": ["watchtower", "governance"],
+        "primary_mode": "watchtower",
+        "guide_sections": ["monitoring_setup", "audit_trail", "compliance_workflow"],
     },
 }
 

@@ -2293,6 +2293,216 @@ async def abm_delete_campaign(campaign_id: int, request: Request):
         return JSONResponse(status_code=500, content={"error": str(e), "traceback": _traceback_mod.format_exc()})
 
 
+@router.post("/abm/campaigns/{campaign_id}/generate-guide")
+async def abm_generate_guide(campaign_id: int, request: Request):
+    """Generate a personalized Protocol Integration Guide for an ABM campaign."""
+    _check_admin_key(request)
+    try:
+        campaign = fetch_one("SELECT * FROM abm_campaigns WHERE id = %s", (campaign_id,))
+        if not campaign:
+            return JSONResponse(status_code=404, content={"error": "Campaign not found"})
+
+        c = dict(campaign)
+        for k in ("stablecoins", "lenses", "pain_points"):
+            if isinstance(c.get(k), str):
+                c[k] = json.loads(c[k])
+
+        icp_type = c["icp_type"]
+        org = c["org"]
+        coins = c.get("stablecoins") or []
+        lenses = c.get("lenses") or []
+        pain_points = c.get("pain_points") or []
+
+        icp_cfg = ABM_ICP_TYPES.get(icp_type, {})
+        consumption_modes = icp_cfg.get("consumption_modes", ["watchtower"])
+        primary_mode = icp_cfg.get("primary_mode", "watchtower")
+        guide_sections = icp_cfg.get("guide_sections", [])
+
+        # Fetch live SII scores for campaign stablecoins
+        score_rows = []
+        if coins:
+            placeholders = ", ".join(["%s"] * len(coins))
+            score_rows = fetch_all(
+                f"""SELECT stablecoin_id, overall_score, grade,
+                       peg_score, liquidity_score, mint_burn_score,
+                       distribution_score, structural_score
+                FROM scores WHERE stablecoin_id IN ({placeholders})""",
+                coins,
+            ) or []
+
+        scores_table = []
+        for s in score_rows:
+            scores_table.append({
+                "coin": s["stablecoin_id"],
+                "score": float(s["overall_score"]) if s.get("overall_score") else None,
+                "grade": s.get("grade"),
+                "peg": float(s["peg_score"]) if s.get("peg_score") else None,
+                "liquidity": float(s["liquidity_score"]) if s.get("liquidity_score") else None,
+                "structural": float(s["structural_score"]) if s.get("structural_score") else None,
+            })
+
+        # Pre-generate report hashes for each coin
+        report_hashes = []
+        for coin in coins:
+            try:
+                from app.report import assemble_report_data
+                data = assemble_report_data("stablecoin", coin)
+                if data:
+                    import hashlib
+                    rj = json.dumps(data, sort_keys=True, default=str)
+                    rh = hashlib.sha256(rj.encode()).hexdigest()[:16]
+                    report_hashes.append({"coin": coin, "hash": rh})
+            except Exception:
+                pass
+
+        # Build the guide markdown
+        lines = []
+        lines.append(f"# Protocol Integration Guide — {org}")
+        lines.append(f"")
+        lines.append(f"**ICP Type**: {icp_cfg.get('label', icp_type)}")
+        lines.append(f"**Primary consumption mode**: {primary_mode}")
+        lines.append(f"**Regulatory lenses**: {', '.join(lenses)}")
+        lines.append(f"**Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
+        lines.append(f"")
+        lines.append(f"---")
+        lines.append(f"")
+
+        # Pain points
+        if pain_points:
+            lines.append(f"## Why This Matters for {org}")
+            lines.append(f"")
+            for pp in pain_points:
+                lines.append(f"- {pp}")
+            lines.append(f"")
+
+        # Scores table
+        if scores_table:
+            lines.append(f"## Current SII Scores")
+            lines.append(f"")
+            lines.append(f"| Asset | SII Score | Grade | Peg | Liquidity | Structural |")
+            lines.append(f"|-------|-----------|-------|-----|-----------|------------|")
+            for s in scores_table:
+                lines.append(
+                    f"| {s['coin']} | {s['score'] or '—'} | {s['grade'] or '—'} "
+                    f"| {s['peg'] or '—'} | {s['liquidity'] or '—'} | {s['structural'] or '—'} |"
+                )
+            lines.append(f"")
+
+        # Consumption modes
+        lines.append(f"## Integration Architecture for {org}")
+        lines.append(f"")
+        lines.append(f"{org} uses Basis in the following modes:")
+        lines.append(f"")
+
+        mode_descriptions = {
+            "watchtower": (
+                "### Watchtower — Continuous Monitoring\n\n"
+                f"Poll `/api/scores` every 60 minutes to monitor all {org}'s stablecoin exposure. "
+                "Configure alerts for threshold crossings:\n\n"
+                "- **SII < 75**: notify risk/compliance team\n"
+                "- **SII < 60**: trigger emergency parameter review\n"
+                "- **SII < 40**: escalate to leadership\n\n"
+                "Supplement with divergence signals from `/api/discovery/latest` for early warning "
+                "when capital flows and quality metrics disagree.\n"
+            ),
+            "parameter": (
+                "### Parameter Input — Component-Level Risk Data\n\n"
+                f"Map SII category scores to {org}'s risk parameters:\n\n"
+                "| Basis Component | Parameter | Logic |\n"
+                "|----------------|-----------|-------|\n"
+                "| `peg` score | Liquidation threshold | Higher peg → higher LT |\n"
+                "| `liquidity` score | LTV ceiling | Deeper liquidity → higher LTV |\n"
+                "| `flows` score | Supply/borrow caps | Abnormal flows → tighter caps |\n"
+                "| `structural` composite | Collateral tier | Below 60 → restricted |\n\n"
+                "Access individual components via `GET /api/scores/{coin}` — "
+                "each of the 37 components is individually queryable with source attribution.\n"
+            ),
+            "governance": (
+                "### Governance Citation — Verifiable References\n\n"
+                f"All {org} governance proposals referencing stablecoin risk should cite "
+                "Basis reports with attestation hashes:\n\n"
+                "1. Generate report: `GET /api/reports/stablecoin/{symbol}?lens={lens}`\n"
+                "2. Include the `report_hash` in the proposal\n"
+                "3. Verify on-chain: `oracle.getReportHash(entityId)` on Base\n\n"
+                "Oracle address: `0x1651d7b2e238a952167e51a1263ffe607584db83`\n"
+            ),
+            "enforcement": (
+                "### Enforcement — On-Chain Score Checks\n\n"
+                "Read from the Basis Oracle before accepting collateral or executing transactions:\n\n"
+                "```solidity\n"
+                "(uint16 score, bytes2 grade, uint48 ts, ) = oracle.getScore(tokenAddress);\n"
+                "require(score >= 7500, \"Basis: below threshold\"); // 75.0\n"
+                "require(!oracle.isStale(tokenAddress, 7200), \"Basis: stale\"); // 2h\n"
+                "```\n\n"
+                "Oracle on Base + Arbitrum: `0x1651d7b2e238a952167e51a1263ffe607584db83`\n"
+            ),
+        }
+
+        for mode in consumption_modes:
+            desc = mode_descriptions.get(mode, "")
+            if desc:
+                # Substitute lens placeholder
+                first_lens = lenses[0] if lenses else "SCO60"
+                desc = desc.replace("{lens}", first_lens)
+                lines.append(desc)
+                lines.append("")
+
+        # Report hashes
+        if report_hashes:
+            lines.append(f"## Report Attestations")
+            lines.append(f"")
+            for rh in report_hashes:
+                lines.append(f"- **{rh['coin']}**: `{rh['hash']}`")
+            lines.append(f"")
+
+        # API quick reference
+        lines.append(f"## API Quick Reference")
+        lines.append(f"")
+        lines.append(f"| Endpoint | Returns |")
+        lines.append(f"|----------|---------|")
+        lines.append(f"| `GET /api/scores` | All SII scores |")
+        lines.append(f"| `GET /api/scores/{{coin}}` | Full SII detail + components |")
+        lines.append(f"| `GET /api/psi/scores` | All protocol solvency scores |")
+        lines.append(f"| `GET /api/compose/cqi` | Composed quality index |")
+        lines.append(f"| `GET /api/discovery/latest` | Divergence signals |")
+        lines.append(f"| `GET /api/reports/stablecoin/{{symbol}}` | Attested compliance report |")
+        lines.append(f"| `GET /api/provenance/verify/{{hash}}` | Attestation verification |")
+        lines.append(f"")
+        lines.append(f"---")
+        lines.append(f"*Generated by Basis Protocol ABM Engine*")
+
+        guide_text = "\n".join(lines)
+
+        # Hash the guide
+        import hashlib
+        guide_hash = hashlib.sha256(guide_text.encode()).hexdigest()[:16]
+
+        # Store guide hash on campaign
+        execute(
+            "UPDATE abm_campaigns SET report_hash = %s, updated_at = NOW() WHERE id = %s",
+            (guide_hash, campaign_id)
+        )
+        execute(
+            "INSERT INTO abm_touch_log (campaign_id, note) VALUES (%s, %s)",
+            (campaign_id, f"Integration guide generated (hash: {guide_hash})")
+        )
+
+        return {
+            "status": "ok",
+            "guide_hash": guide_hash,
+            "guide_markdown": guide_text,
+            "scores": scores_table,
+            "consumption_modes": consumption_modes,
+            "primary_mode": primary_mode,
+            "guide_sections": guide_sections,
+            "report_hashes": report_hashes,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": _traceback_mod.format_exc()})
+
+
 @router.post("/migrate/049")
 async def run_migration_049(request: Request):
     _check_admin_key(request)

@@ -2296,6 +2296,19 @@ function ABMPanel() {
     setBusy(null);
   };
 
+  const [guideText, setGuideText] = useState(null);
+
+  const handleGenerateGuide = async (campaignId) => {
+    setBusy("guide");
+    try {
+      const res = await opsFetch(`/api/ops/abm/campaigns/${campaignId}/generate-guide`, { method: "POST" });
+      setGuideText(res.guide_markdown || null);
+      showFlash(`Guide generated (hash: ${res.guide_hash})`);
+      if (selectedId) await openDetail(selectedId);
+    } catch (e) { showFlash(e.message, false); }
+    setBusy(null);
+  };
+
   const handleDelete = async (campaignId) => {
     setBusy("delete");
     try {
@@ -2573,6 +2586,10 @@ function ABMPanel() {
               style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer" }}>
               ← Back
             </button>
+            <button onClick={() => handleGenerateGuide(c.id)} disabled={busy === "guide"}
+              style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: busy === "guide" ? 0.5 : 1 }}>
+              {busy === "guide" ? "Generating..." : "Generate Guide"}
+            </button>
             <button onClick={() => handleDelete(c.id)} disabled={busy === "delete"}
               style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.accent}44`, background: "transparent", color: "#fc988f", cursor: "pointer", opacity: busy === "delete" ? 0.5 : 1 }}>
               {busy === "delete" ? "..." : "Delete"}
@@ -2712,6 +2729,19 @@ function ABMPanel() {
         </Section>
 
         {/* Touch Log */}
+        {/* Generated Guide Preview */}
+        {guideText && (
+          <Section title="INTEGRATION GUIDE PREVIEW">
+            <pre style={{
+              fontFamily: T.mono, fontSize: 10, background: T.paperWarm,
+              padding: 12, border: `1px solid ${T.ruleLight}`, overflow: "auto",
+              maxHeight: 400, whiteSpace: "pre-wrap", lineHeight: 1.5,
+            }}>
+              {guideText}
+            </pre>
+          </Section>
+        )}
+
         <AbmLogSection campaignId={c.id} log={log} onAddLog={handleAddLog} busy={busy} />
       </>
     );
