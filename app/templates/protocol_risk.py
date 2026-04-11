@@ -75,9 +75,20 @@ def render(report_data: dict, lens_result: dict = None,
                                timestamp, lens_result.get("lens_id") if lens_result else None,
                                lens_result.get("lens_version") if lens_result else None)
 
-    return page(f"{name} — Protocol Risk Report", body,
-                f"Protocol risk report for {name}. PSI {score:.1f} ({grade}).",
-                f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}")
+    cat_scores = d.get("category_scores") or {}
+    exposure = d.get("stablecoin_exposure") or []
+    return page(
+        f"{name} — Protocol Risk Report", body,
+        description=f"Protocol risk report for {name}. PSI {score:.1f} ({grade}).",
+        canonical=f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}",
+        form_id="FORM PSI-RPT-001 · BASIS PROTOCOL",
+        stats=[
+            f"PSI {float(score):.1f}" if score else "PSI —",
+            f"GRADE {grade}",
+            f"{len(cat_scores)} CATEGORIES",
+            f"{len(exposure)} STABLECOIN EXPOSURES" if exposure else "NO EXPOSURE DATA",
+        ],
+    )
 
 
 def _render_lens_section(lens_result: dict) -> str:

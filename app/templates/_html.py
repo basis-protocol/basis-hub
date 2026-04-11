@@ -8,35 +8,225 @@ import os
 CANONICAL_BASE_URL = os.environ.get("CANONICAL_BASE_URL", "https://basisprotocol.xyz").rstrip("/")
 
 CSS = """
-body { font-family: 'Georgia', serif; max-width: 960px; margin: 0 auto; padding: 24px 20px; background: #F3F2ED; color: #0B090A; line-height: 1.6; }
-h1 { font-family: 'Georgia', serif; font-size: 1.6rem; font-weight: 400; letter-spacing: -0.3px; margin-bottom: 4px; }
-h3 { font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1.5px; color: #6a6a6a; margin: 0 0 12px; }
-.meta { font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: #6a6a6a; margin-bottom: 6px; }
-nav { margin-bottom: 24px; font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; }
-nav a { color: #6a6a6a; text-decoration: none; margin-right: 16px; border-bottom: 1px solid #c8c4bc; }
-nav a:hover { color: #0B090A; }
-.section { border: 1px solid #ccc; padding: 16px 20px; margin-bottom: 20px; }
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+:root {
+    --paper: #f5f2ec;
+    --paper-warm: #f0ece3;
+    --ink: #0a0a0a;
+    --ink-mid: #3a3a3a;
+    --ink-light: #6a6a6a;
+    --ink-faint: #9a9a9a;
+    --rule-mid: #c8c4bc;
+    --rule-light: #e0ddd6;
+    --accent: #c0392b;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', system-ui, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { background: var(--paper); }
+body {
+    font-family: var(--sans);
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    line-height: 1.6;
+}
+.page-frame {
+    border: 3px solid var(--ink);
+    box-shadow: 6px 6px 0 0 var(--rule-mid);
+    background: var(--paper);
+}
+.page-nav {
+    padding: 12px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.page-nav a {
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--ink-light);
+    text-decoration: none;
+    margin-right: 16px;
+}
+.page-nav a:hover { color: var(--ink); }
+.page-content { padding: 0 24px 24px; }
+.tab-header {
+    border: 1.5px solid var(--ink);
+    margin-top: 20px;
+    margin-bottom: 24px;
+}
+.tab-header-top {
+    padding: 18px 24px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.tab-header-title {
+    font-family: var(--sans);
+    font-size: 28px;
+    font-weight: 400;
+    color: var(--ink);
+    letter-spacing: -0.3px;
+}
+.tab-header-form-id {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+.tab-header-rule { height: 1px; background: var(--rule-mid); margin: 12px 24px; }
+.tab-header-stats {
+    display: flex;
+    align-items: center;
+    padding: 0 24px 14px;
+    flex-wrap: wrap;
+}
+.tab-header-stats span {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-light);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 0 12px;
+}
+.tab-header-divider {
+    width: 1px;
+    height: 12px;
+    background: var(--rule-mid);
+    flex-shrink: 0;
+}
+.tab-header-chain {
+    border-top: 1px solid var(--rule-mid);
+    padding: 8px 24px;
+    display: flex;
+    gap: 10px;
+}
+.chain-pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-mid);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--paper-warm);
+    padding: 4px 12px;
+    border-radius: 999px;
+}
+.chain-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block;
+}
+h3 {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--ink-light);
+    margin: 0 0 12px;
+    font-weight: 500;
+}
+.meta {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+    margin-bottom: 6px;
+}
+.section {
+    border: 1px solid var(--rule-mid);
+    padding: 16px 20px;
+    margin-bottom: 20px;
+}
 table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #0B090A; font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 1px; color: #6a6a6a; }
-td { padding: 6px 8px; border-bottom: 1px dotted #ccc; }
-.num { font-family: 'IBM Plex Mono', monospace; text-align: right; }
-.score { font-family: 'IBM Plex Mono', monospace; font-size: 1.8rem; font-weight: 700; }
+th {
+    text-align: left; padding: 8px 8px;
+    border-bottom: 3px solid var(--ink);
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--ink-light);
+    font-weight: 500;
+}
+td {
+    padding: 8px 8px;
+    border-bottom: 1px dotted var(--rule-light);
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--ink-mid);
+}
+.num { font-family: var(--mono); text-align: right; }
+.score { font-family: var(--mono); font-size: 1.8rem; font-weight: 700; }
 .grade { font-size: 1.4rem; font-weight: 700; }
-code { font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; background: #e8e6e0; padding: 1px 4px; border-radius: 2px; }
-footer { margin-top: 32px; font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: #6a6a6a; border-top: 1px solid #ccc; padding-top: 12px; }
-.pass { color: #2d6b45; } .fail { color: #c0392b; }
+code { font-family: var(--mono); font-size: 0.8rem; background: var(--paper-warm); padding: 1px 4px; border-radius: 2px; }
+footer {
+    margin-top: 32px;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+    border-top: 1px solid var(--rule-mid);
+    padding-top: 12px;
+}
+footer a { color: var(--ink-faint); text-decoration: none; border-bottom: 1px solid var(--rule-mid); }
+.pass { color: #2d6b45; } .fail { color: var(--accent); }
 .src-live { color: #2d6b45; } .src-cda { color: #6b5b2d; } .src-static { color: #9a9a9a; }
-.bar { display: inline-block; height: 8px; background: #0B090A; border-radius: 1px; }
-.pill { font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; padding: 2px 6px; border-radius: 2px; display: inline-block; }
+.bar { display: inline-block; height: 8px; background: var(--ink); border-radius: 1px; }
+.pill { font-family: var(--mono); font-size: 0.65rem; padding: 2px 6px; border-radius: 2px; display: inline-block; }
 .pill-pass { background: rgba(45,107,69,0.1); color: #2d6b45; }
-.pill-fail { background: rgba(192,57,43,0.1); color: #c0392b; }
-@media (max-width: 600px) { body { padding: 12px 10px; } .score { font-size: 1.4rem; } }
+.pill-fail { background: rgba(192,57,43,0.1); color: var(--accent); }
+@media (max-width: 600px) {
+    body { padding: 8px 6px; }
+    .page-frame { border-width: 2px; box-shadow: none; }
+    .page-content { padding: 0 12px 16px; }
+    .tab-header-top { flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 12px 0; }
+    .tab-header-title { font-size: 20px; }
+    .tab-header-stats span { font-size: 8px; padding: 2px 6px; }
+    .tab-header-divider { display: none; }
+    .score { font-size: 1.4rem; }
+}
 """
 
 
 def page(title: str, body: str, description: str = "", canonical: str = "",
-         report_hash: str = "", timestamp: str = "") -> str:
-    """Wrap body content in a full HTML page."""
+         report_hash: str = "", timestamp: str = "",
+         form_id: str = "", stats: list = None) -> str:
+    """Wrap body content in a full HTML page matching explorer design."""
+
+    # Build tab-header if form_id provided
+    header_html = ""
+    if form_id:
+        stats_html = ""
+        if stats:
+            parts = []
+            for i, s in enumerate(stats):
+                parts.append(f'<span>{s}</span>')
+                if i < len(stats) - 1:
+                    parts.append('<div class="tab-header-divider"></div>')
+            stats_html = f'<div class="tab-header-stats">{"".join(parts)}</div>'
+
+        header_html = f"""
+        <div class="tab-header">
+          <div class="tab-header-top">
+            <div class="tab-header-title">{title}</div>
+            <div class="tab-header-form-id">{form_id}</div>
+          </div>
+          <div class="tab-header-rule"></div>
+          {stats_html}
+          <div class="tab-header-chain">
+            <a href="https://basescan.org/address/0x1651d7b2E238a952167E51A1263FFe607584DB83" target="_blank" rel="noopener noreferrer" class="chain-pill">
+              <span class="chain-dot" style="background: #378ADD;"></span> Base
+            </a>
+            <a href="https://arbiscan.io/address/0x1651d7b2E238a952167E51A1263FFe607584DB83" target="_blank" rel="noopener noreferrer" class="chain-pill">
+              <span class="chain-dot" style="background: #28A0F0;"></span> Arbitrum
+            </a>
+          </div>
+        </div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -49,13 +239,26 @@ def page(title: str, body: str, description: str = "", canonical: str = "",
 <style>{CSS}</style>
 </head>
 <body>
-<h1>Basis Protocol</h1>
-<nav>
-<a href="/">Rankings</a>
-<a href="/witness">Witness</a>
-<a href="/developers">API</a>
-</nav>
-{body}
+<div class="page-frame">
+  <div class="page-nav">
+    <div>
+      <a href="/">Stablecoins</a>
+      <a href="/#protocols">Protocols</a>
+      <a href="/#wallets">Wallets</a>
+      <a href="/#witness">Witness</a>
+      <a href="/developers">API</a>
+    </div>
+  </div>
+  <div style="border-top: 1px solid var(--rule-light);"></div>
+  <div class="page-content">
+    {header_html}
+    {body}
+  </div>
+  <div style="border-top: 1px solid var(--rule-light); padding: 10px 24px; display: flex; justify-content: space-between;">
+    <span style="font-family: var(--mono); font-size: 10px; color: var(--ink-faint);">Basis Protocol</span>
+    <span style="font-family: var(--mono); font-size: 10px; color: var(--ink-faint);">basisprotocol.xyz</span>
+  </div>
+</div>
 </body>
 </html>"""
 

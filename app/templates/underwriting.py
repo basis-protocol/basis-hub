@@ -79,6 +79,14 @@ def render(report_data: dict, lens_result: dict = None,
 
     body += attestation_footer(report_hash, d.get("formula_version", ""), timestamp)
 
-    return page(f"{name} — Underwriting Report", body,
-                f"Underwriting risk analysis for {name}.",
-                f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}")
+    return page(
+        f"{name} — Underwriting Report", body,
+        description=f"Underwriting risk analysis for {name}.",
+        canonical=f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}",
+        form_id="FORM UND-001 · BASIS PROTOCOL",
+        stats=[
+            f"PSI {float(score):.1f}" if score else "PSI —",
+            f"GRADE {grade}",
+            "DEFI INSURANCE",
+        ],
+    )

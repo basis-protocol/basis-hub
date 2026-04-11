@@ -67,6 +67,15 @@ def render(report_data: dict, lens_result: dict = None,
 
     body += attestation_footer(report_hash, d.get("formula_version", ""), timestamp)
 
-    return page(f"Wallet {short_addr} — Risk Report", body,
-                f"Wallet risk report for {short_addr}. Score {score:.1f} ({grade})." if score else "",
-                f"{CANONICAL_BASE_URL}/report/wallet/{addr}")
+    holdings_count = d.get("num_scored", 0) + d.get("num_unscored", 0)
+    return page(
+        f"Wallet {short_addr} — Risk Report", body,
+        description=f"Wallet risk report for {short_addr}. Score {score:.1f} ({grade})." if score else "",
+        canonical=f"{CANONICAL_BASE_URL}/report/wallet/{addr}",
+        form_id="FORM WRG-RPT-001 · BASIS PROTOCOL",
+        stats=[
+            f"RISK {float(score):.1f}" if score else "RISK —",
+            f"GRADE {grade}" if grade else "GRADE —",
+            f"{holdings_count} HOLDINGS" if holdings_count else "HOLDINGS —",
+        ],
+    )

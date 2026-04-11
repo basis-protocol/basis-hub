@@ -80,6 +80,16 @@ def render(report_data: dict, lens_result: dict = None,
     body += attestation_footer(report_hash, d.get("formula_version", ""),
                                timestamp, lens_id, lens_version)
 
-    return page(f"{name} — Compliance Report ({framework})", body,
-                f"Compliance classification for {name} under {framework}.",
-                f"{CANONICAL_BASE_URL}/report/stablecoin/{entity_id}?lens={lens_id}")
+    return page(
+        f"{name} — Compliance Report ({framework})", body,
+        description=f"Compliance classification for {name} under {framework}.",
+        canonical=f"{CANONICAL_BASE_URL}/report/stablecoin/{entity_id}?lens={lens_id}",
+        form_id=f"FORM CMP-001 · {lens_id} · BASIS PROTOCOL",
+        stats=[
+            f"SII {float(score):.1f}" if score else "SII —",
+            f"GRADE {grade}",
+            status,
+            framework,
+            f"LENS v{lens_version}",
+        ],
+    )
