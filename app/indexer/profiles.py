@@ -149,14 +149,29 @@ def build_unified_profile(address: str) -> dict | None:
     }
 
 
-def rebuild_all_profiles() -> dict:
+def rebuild_all_profiles(limit: int = 0) -> dict:
     """
-    Rebuild unified profiles for all distinct addresses across chains.
+    Rebuild unified profiles for distinct addresses across chains.
+
+    Args:
+        limit: Max wallets to process (0 = unlimited, stalest first).
     """
-    rows = fetch_all("SELECT DISTINCT address FROM wallet_graph.wallets")
+    if limit > 0:
+        # Stalest profiles first: wallets that either have no profile yet
+        # (LEFT JOIN … IS NULL) or the oldest updated_at in wallet_profiles.
+        rows = fetch_all(
+            """SELECT DISTINCT w.address
+               FROM wallet_graph.wallets w
+               LEFT JOIN wallet_graph.wallet_profiles p ON w.address = p.address
+               ORDER BY p.updated_at ASC NULLS FIRST
+               LIMIT %s""",
+            (limit,),
+        )
+    else:
+        rows = fetch_all("SELECT DISTINCT address FROM wallet_graph.wallets")
     addresses = [r["address"] for r in rows]
 
-    logger.info(f"Rebuilding profiles for {len(addresses)} distinct addresses")
+    logger.info(f"Rebuilding profiles for {len(addresses)} distinct addresses (limit={limit})")
 
     built = 0
     errors = 0

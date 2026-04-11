@@ -706,15 +706,20 @@ async def run_scoring_cycle():
             except Exception as e:
                 logger.warning(f"Wallet expansion failed: {e}")
 
-            # Profile rebuild — piggyback on daily gate so new wallets get profiled
+            # Profile rebuild — cap at 2000 stalest wallets, 30-min timeout
             try:
                 from app.indexer.profiles import rebuild_all_profiles
-                logger.info("Rebuilding wallet profiles...")
-                profile_result = rebuild_all_profiles()
+                logger.info("Rebuilding wallet profiles (max 2000, 30-min timeout)...")
+                profile_result = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, rebuild_all_profiles, 2000),
+                    timeout=1800,
+                )
                 logger.info(
                     f"Profile rebuild complete: {profile_result.get('built', 0)} built, "
                     f"{profile_result.get('errors', 0)} errors out of {profile_result.get('total', 0)} addresses"
                 )
+            except asyncio.TimeoutError:
+                logger.warning("Profile rebuild hit 30-minute timeout — will continue next cycle")
             except Exception as e:
                 logger.warning(f"Profile rebuild failed: {e}")
         else:
@@ -758,12 +763,17 @@ async def run_scoring_cycle():
             for edge_chain in ["ethereum", "base", "arbitrum", "solana"]:
                 try:
                     from app.indexer.edges import run_edge_builder
-                    logger.info(f"Running edge builder for {edge_chain} (top 200 unbuilt wallets by value)...")
-                    edge_result = asyncio.run(run_edge_builder(max_wallets=200, priority="value", chain=edge_chain))
+                    logger.info(f"Running edge builder for {edge_chain} (top 100 unbuilt wallets by value, 15-min timeout)...")
+                    edge_result = await asyncio.wait_for(
+                        run_edge_builder(max_wallets=100, priority="value", chain=edge_chain),
+                        timeout=900,
+                    )
                     logger.info(
                         f"Edge builder ({edge_chain}) complete: {edge_result.get('wallets_processed', 0)} wallets, "
                         f"{edge_result.get('total_edges_created', 0)} edges"
                     )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Edge building for {edge_chain} hit 15-minute timeout — moving to next chain")
                 except Exception as e:
                     logger.warning(f"Edge building failed for {edge_chain}: {e}")
 
