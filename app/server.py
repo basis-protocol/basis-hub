@@ -6571,6 +6571,79 @@ async def provenance_attestor_pubkey():
 
 
 # =============================================================================
+# Static Component Provenance
+# =============================================================================
+
+@app.get("/api/provenance/static/{index_id}/{entity_slug}/{component_name}")
+async def provenance_static_component(index_id: str, entity_slug: str, component_name: str):
+    """Retrieve provenance evidence for a single static component.
+
+    Returns all three evidence layers:
+      1. HTML snapshot (content, machine-parseable)
+      2. Screenshot (rendered, human-readable)
+      3. TLSNotary proof (cryptographic, independently verifiable)
+    """
+    from app.provenance.static_provenance import get_static_evidence
+
+    evidence = get_static_evidence(index_id, entity_slug, component_name)
+    if not evidence:
+        raise HTTPException(status_code=404, detail="Static evidence not found")
+
+    return {
+        "component": component_name,
+        "value": evidence.get("current_value"),
+        "source_url": evidence.get("source_url"),
+        "source_category": evidence.get("source_category"),
+        "captured_at": str(evidence.get("proof_captured_at") or evidence.get("snapshot_captured_at") or ""),
+        "proof_available": evidence.get("proof_r2_path") is not None,
+        "proof_url": evidence.get("proof_r2_path"),
+        "proof_attestation_hash": evidence.get("proof_attestation_hash"),
+        "proof_response_hash": evidence.get("proof_response_hash"),
+        "proof_captured_range": evidence.get("proof_captured_range"),
+        "screenshot_url": evidence.get("screenshot_r2_path"),
+        "snapshot_available": evidence.get("snapshot_html") is not None,
+        "attestor_pubkey": evidence.get("attestor_pubkey") or os.environ.get("ATTESTOR_PUBLIC_KEY", ""),
+        "evidence_hash": evidence.get("evidence_hash"),
+        "verification": f"proof covers {evidence.get('proof_captured_range', 'full')} of response"
+            if evidence.get("proof_r2_path") else "no proof yet",
+    }
+
+
+@app.get("/api/provenance/static/{index_id}/{entity_slug}")
+async def provenance_static_entity(index_id: str, entity_slug: str):
+    """Retrieve all static component evidence for an entity."""
+    from app.provenance.static_provenance import get_entity_evidence
+
+    evidence = get_entity_evidence(index_id, entity_slug)
+    return {
+        "index_id": index_id,
+        "entity": entity_slug,
+        "components": [
+            {
+                "component": e.get("component_name"),
+                "value": e.get("current_value"),
+                "source_url": e.get("source_url"),
+                "proof_available": e.get("proof_r2_path") is not None,
+                "screenshot_available": e.get("screenshot_r2_path") is not None,
+                "snapshot_available": e.get("snapshot_html") is not None,
+                "last_checked": str(e.get("last_checked_at") or ""),
+            }
+            for e in evidence
+        ],
+        "count": len(evidence),
+        "total_with_proof": sum(1 for e in evidence if e.get("proof_r2_path")),
+    }
+
+
+@app.get("/api/provenance/static-summary")
+async def provenance_static_summary():
+    """Summary statistics for static component provenance."""
+    from app.provenance.static_provenance import get_evidence_summary
+
+    return get_evidence_summary()
+
+
+# =============================================================================
 
 def _register_spa_catch_all(app_instance):
     """Register the SPA catch-all AFTER all other routes so it doesn't shadow them."""

@@ -1123,6 +1123,28 @@ async def main():
                     except Exception as e:
                         logger.warning(f"Governance crawl failed: {e}")
 
+                # Static provenance capture — weekly gate (7-day interval)
+                # Runs TLSNotary proofs for static component sources.
+                # ~50 URLs at ~3s/proof = ~2.5 min. Safe to run inline.
+                if cycle_counter % 6 == 0:
+                    try:
+                        from app.provenance.static_provenance import (
+                            should_run_static_provenance,
+                            run_static_provenance_capture,
+                        )
+                        if should_run_static_provenance():
+                            logger.info("Running static provenance capture (weekly)...")
+                            summary = run_static_provenance_capture()
+                            logger.info(
+                                f"Static provenance complete: "
+                                f"{summary.get('successful', 0)} succeeded, "
+                                f"{summary.get('failed', 0)} failed"
+                            )
+                        else:
+                            logger.debug("Static provenance: not due yet (weekly gate)")
+                    except Exception as e:
+                        logger.warning(f"Static provenance capture failed: {e}")
+
                 logger.info(f"Sleeping {args.interval} minutes...")
                 await asyncio.sleep(args.interval * 60)
         else:
