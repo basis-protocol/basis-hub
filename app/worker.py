@@ -641,6 +641,52 @@ async def run_fast_cycle():
         logger.warning(f"Health sweep failed: {e}")
 
     # -------------------------------------------------------------------------
+    # Coherence sweep — daily cross-domain consistency validation
+    # -------------------------------------------------------------------------
+    try:
+        last_coherence = fetch_one(
+            "SELECT MAX(created_at) AS latest FROM coherence_reports"
+        )
+        coherence_age_hours = 25
+        if last_coherence and last_coherence.get("latest"):
+            _coh_ts = last_coherence["latest"]
+            if _coh_ts.tzinfo is None:
+                _coh_ts = _coh_ts.replace(tzinfo=timezone.utc)
+            coherence_age_hours = (datetime.now(timezone.utc) - _coh_ts).total_seconds() / 3600
+
+        if coherence_age_hours >= 24:
+            from app.coherence import run_coherence_sweep
+            logger.info("Running coherence sweep...")
+            coh_report = run_coherence_sweep()
+            logger.info(
+                f"Coherence sweep: {coh_report['domains_checked']} domains, "
+                f"{coh_report['issues_found']} issues"
+            )
+
+            # Alert on critical issues via existing health alert channel
+            critical_issues = [
+                i for i in coh_report.get("details", []) if i.get("severity") == "critical"
+            ]
+            if critical_issues:
+                try:
+                    from app.ops.tools.alerter import send_alert as _send_coherence_alert
+                    summary = "\n".join(
+                        f"  - {i['domain']}: {i['description']}" for i in critical_issues[:5]
+                    )
+                    await _send_coherence_alert(
+                        "health_failure",
+                        f"*COHERENCE*: {len(critical_issues)} critical issue(s)\n{summary}",
+                        {"source": "coherence_sweep", "issues": critical_issues},
+                    )
+                    logger.info(f"Coherence alerts dispatched for {len(critical_issues)} critical issue(s)")
+                except Exception as alert_err:
+                    logger.warning(f"Coherence alert dispatch failed: {alert_err}")
+        else:
+            logger.debug(f"Coherence sweep skipped — last ran {coherence_age_hours:.1f}h ago")
+    except Exception as e:
+        logger.warning(f"Coherence sweep failed: {e}")
+
+    # -------------------------------------------------------------------------
     # Generate daily pulse after scoring
     # -------------------------------------------------------------------------
     try:
