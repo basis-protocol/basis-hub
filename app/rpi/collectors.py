@@ -592,18 +592,21 @@ def _infer_parameter_type(func_name: str) -> str:
 
 
 # =============================================================================
-# Revenue Collector (DeFiLlama — reuses same pattern as PSI)
+# Revenue Collector (reuses PSI's DeFiLlama client)
 # =============================================================================
-
-DEFILLAMA_FEES = "https://api.llama.fi/summary/fees"
 
 
 def collect_protocol_revenue(protocol_slug: str) -> dict | None:
-    """Fetch protocol revenue from DeFiLlama for spend_ratio calculation."""
+    """Fetch protocol revenue from DeFiLlama for spend_ratio calculation.
+
+    Reuses the PSI collector's fetch_fees_data() to avoid duplicating
+    the DeFiLlama HTTP client.
+    """
     try:
-        resp = requests.get(f"{DEFILLAMA_FEES}/{protocol_slug}", timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        from app.collectors.psi_collector import fetch_fees_data
+        data = fetch_fees_data(protocol_slug)
+        if not data:
+            return None
 
         # Extract 30d revenue
         revenue_30d = None
