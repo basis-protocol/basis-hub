@@ -2757,3 +2757,10 @@ def register_ops_routes(app):
     """Register the ops router with the main FastAPI app."""
     app.include_router(router)
     logger.info("Operations Hub routes registered")
+
+    # Entity view routes (stablecoin, protocol, wallet deep dives)
+    try:
+        from app.ops.entity_routes import register_entity_routes
+        register_entity_routes(app)
+    except Exception as e:
+        logger.warning(f"Entity view routes not available: {e}")
