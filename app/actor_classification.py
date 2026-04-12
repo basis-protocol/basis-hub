@@ -383,7 +383,7 @@ def classify_all_active(limit: int = 2000) -> dict:
         if classified > 0:
             attest_state("actors", [{"classified": classified, "reclassified": reclassified, "by_type": by_type}])
     except Exception as ae:
-        logger.debug(f"Actor attestation skipped: {ae}")
+        logger.warning(f"Actor attestation skipped: {ae}")
 
     return {
         "classified": classified,

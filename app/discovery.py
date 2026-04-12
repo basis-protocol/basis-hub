@@ -228,6 +228,6 @@ def run_discovery_cycle():
         if all_signals:
             attest_state("discovery_signals", [{"type": s.get("signal_type"), "novelty": s.get("novelty_score")} for s in all_signals])
     except Exception as ae:
-        logger.debug(f"Discovery attestation skipped: {ae}")
+        logger.warning(f"Discovery attestation skipped: {ae}")
 
     return all_signals

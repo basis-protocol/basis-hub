@@ -684,6 +684,22 @@ async def get_integrity():
     return result
 
 
+@app.get("/api/integrity/history")
+async def integrity_history(domain: str = Query(None), days: int = Query(7)):
+    """Integrity check results over time."""
+    if domain:
+        rows = fetch_all(
+            "SELECT domain, check_type, status, detail, cycle_timestamp FROM integrity_checks WHERE domain = %s AND cycle_timestamp > NOW() - INTERVAL '%s days' ORDER BY cycle_timestamp DESC",
+            (domain, days),
+        )
+    else:
+        rows = fetch_all(
+            "SELECT domain, check_type, status, detail, cycle_timestamp FROM integrity_checks WHERE cycle_timestamp > NOW() - INTERVAL '%s days' ORDER BY cycle_timestamp DESC",
+            (days,),
+        )
+    return {"checks": rows or [], "domain": domain, "days": days}
+
+
 @app.get("/api/integrity/{domain}")
 async def get_integrity_domain(domain: str):
     """Data integrity status for a specific domain."""
@@ -4762,22 +4778,49 @@ async def pulse_by_date(date_str: str):
 # =============================================================================
 
 @app.get("/api/divergence")
-async def divergence_all():
-    """Combined divergence signals — capital-flow / quality mismatches."""
+async def divergence_all(force: bool = Query(False)):
+    """Combined divergence signals — reads stored results, ?force=true for live."""
+    if not force:
+        rows = fetch_all("""
+            SELECT detector_name, entity_type, entity_id, signal_direction,
+                   magnitude, severity, detail, cycle_timestamp
+            FROM divergence_signals
+            WHERE cycle_timestamp = (SELECT MAX(cycle_timestamp) FROM divergence_signals)
+            ORDER BY magnitude DESC NULLS LAST
+        """)
+        if rows:
+            signals = [r.get("detail") if isinstance(r.get("detail"), dict) else r for r in rows]
+            return {"divergence_signals": signals, "summary": {"total_signals": len(rows)}, "source": "stored"}
     from app.divergence import detect_all_divergences
     return detect_all_divergences()
 
 
 @app.get("/api/divergence/assets")
-async def divergence_assets():
+async def divergence_assets(force: bool = Query(False)):
     """Asset quality divergence: score declining while capital flows in."""
+    if not force:
+        rows = fetch_all("""
+            SELECT detail FROM divergence_signals
+            WHERE detector_name = 'asset_quality'
+              AND cycle_timestamp = (SELECT MAX(cycle_timestamp) FROM divergence_signals WHERE detector_name = 'asset_quality')
+        """)
+        if rows:
+            return {"signals": [r["detail"] for r in rows], "type": "asset_quality", "source": "stored"}
     from app.divergence import detect_asset_divergence
     return {"signals": detect_asset_divergence(), "type": "asset_quality"}
 
 
 @app.get("/api/divergence/wallets")
-async def divergence_wallets():
+async def divergence_wallets(force: bool = Query(False)):
     """Wallet concentration divergence: HHI rising while value grows."""
+    if not force:
+        rows = fetch_all("""
+            SELECT detail FROM divergence_signals
+            WHERE detector_name = 'wallet_concentration'
+              AND cycle_timestamp = (SELECT MAX(cycle_timestamp) FROM divergence_signals WHERE detector_name = 'wallet_concentration')
+        """)
+        if rows:
+            return {"signals": [r["detail"] for r in rows], "type": "wallet_concentration", "source": "stored"}
     from app.divergence import detect_wallet_concentration_divergence
     return {"signals": detect_wallet_concentration_divergence(), "type": "wallet_concentration"}
 
@@ -4794,9 +4837,13 @@ async def divergence_spec():
 # =============================================================================
 
 @app.get("/api/compose/cqi")
-async def compose_cqi(asset: str = Query(...), protocol: str = Query(...)):
-    """Compute Collateral Quality Index for an asset-in-protocol pair."""
-    from app.composition import compute_cqi
+async def compose_cqi(asset: str = Query(...), protocol: str = Query(...), force: bool = Query(False)):
+    """Collateral Quality Index for an asset-in-protocol pair. Reads stored result; falls back to live compute."""
+    from app.composition import get_stored_cqi, compute_cqi
+    if not force:
+        stored = get_stored_cqi(asset, protocol)
+        if stored:
+            return stored
     result = compute_cqi(asset, protocol)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])

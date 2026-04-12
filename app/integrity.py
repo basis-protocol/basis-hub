@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_one
+from app.database import execute, fetch_one
 
 logger = logging.getLogger(__name__)
 
@@ -460,6 +460,28 @@ def check_all() -> dict:
         overall = "degraded"
     else:
         overall = "healthy"
+
+    # Persist results to integrity_checks table
+    try:
+        for domain_name, result in domains.items():
+            freshness_detail = {
+                "last_updated": result.get("last_updated"),
+                "age_hours": result.get("age_hours"),
+                "max_age_hours": result.get("max_age_hours"),
+                "row_count": result.get("row_count"),
+            }
+            execute(
+                "INSERT INTO integrity_checks (domain, check_type, status, detail, cycle_timestamp) VALUES (%s, %s, %s, %s, %s)",
+                (domain_name, "freshness", result.get("status", "unknown"), json.dumps(freshness_detail), now),
+            )
+            warnings = result.get("warnings", [])
+            coherence_status = "fail" if any(w.get("level") == "error" for w in warnings) else ("warn" if warnings else "pass")
+            execute(
+                "INSERT INTO integrity_checks (domain, check_type, status, detail, cycle_timestamp) VALUES (%s, %s, %s, %s, %s)",
+                (domain_name, "coherence", coherence_status, json.dumps({"warnings": warnings}), now),
+            )
+    except Exception:
+        logger.warning("Failed to persist integrity check results", exc_info=True)
 
     return {
         "status": overall,

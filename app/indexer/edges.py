@@ -308,7 +308,7 @@ async def run_edge_builder(
         if total_edges > 0:
             attest_state("edges", [{"chain": chain, "wallets": wallets_processed, "edges": total_edges}], entity_id=chain)
     except Exception as ae:
-        logger.debug(f"Edge attestation skipped for {chain}: {ae}")
+        logger.warning(f"Edge attestation skipped for {chain}: {ae}")
 
     return {
         "chain": chain,

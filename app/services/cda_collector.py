@@ -1220,7 +1220,7 @@ async def run_collection():
         if recent:
             attest_state("cda_extractions", [dict(r) for r in recent])
     except Exception as ae:
-        logger.debug(f"CDA attestation skipped: {ae}")
+        logger.warning(f"CDA attestation skipped: {ae}")
 
 
 async def collect_single_issuer(asset_symbol: str):

@@ -164,7 +164,7 @@ def run_worker_loop():
                     if cda_rows:
                         attest_state("cda_extractions", [dict(r) for r in cda_rows])
                 except Exception as ae:
-                    logger.debug(f"CDA attestation skipped: {ae}")
+                    logger.warning(f"CDA attestation skipped: {ae}")
             except Exception as e:
                 logger.warning(f"CDA collection failed: {e}")
 
@@ -192,7 +192,7 @@ def run_worker_loop():
                 if reindex_result.get('processed', 0) > 0:
                     attest_state("wallets", [{"cycle": "batch_reindex", "processed": reindex_result.get('processed', 0), "scored": reindex_result.get('scored', 0)}])
             except Exception as ae:
-                logger.debug(f"Wallet attestation skipped: {ae}")
+                logger.warning(f"Wallet attestation skipped: {ae}")
         except Exception as e:
             logger.warning(f"Wallet batch re-index failed: {e}")
 
@@ -210,7 +210,7 @@ def run_worker_loop():
                 if psi_results:
                     attest_state("psi_components", [{"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")} for r in psi_results if isinstance(r, dict)])
             except Exception as ae:
-                logger.debug(f"PSI attestation skipped: {ae}")
+                logger.warning(f"PSI attestation skipped: {ae}")
         except Exception as e:
             logger.warning(f"PSI scoring failed: {e}")
 
@@ -242,7 +242,7 @@ def run_worker_loop():
                     if discovered or promoted:
                         attest_state("psi_discoveries", [{"synced": synced, "discovered": discovered, "enriched": enriched, "promoted": promoted}])
                 except Exception as ae:
-                    logger.debug(f"PSI discovery attestation skipped: {ae}")
+                    logger.warning(f"PSI discovery attestation skipped: {ae}")
             except Exception as e:
                 logger.warning(f"PSI expansion pipeline failed: {e}")
 
@@ -277,7 +277,7 @@ def run_worker_loop():
                     if profile_result.get('built', 0) > 0:
                         attest_state("wallet_profiles", [{"built": profile_result.get('built', 0), "total": profile_result.get('total', 0)}])
                 except Exception as ae:
-                    logger.debug(f"Profile attestation skipped: {ae}")
+                    logger.warning(f"Profile attestation skipped: {ae}")
             except Exception as e:
                 logger.warning(f"Profile rebuild failed: {e}")
 
@@ -293,7 +293,7 @@ def run_worker_loop():
                     if result.get('assessments', 0) > 0:
                         attest_state("actors", [{"assessments": result.get('assessments', 0), "severities": result.get('severities', {})}])
                 except Exception as ae:
-                    logger.debug(f"Actor attestation skipped: {ae}")
+                    logger.warning(f"Actor attestation skipped: {ae}")
         except Exception as e:
             logger.error(f"Agent cycle error: {e}")
 
@@ -326,7 +326,7 @@ def run_worker_loop():
                         if edge_result.get('total_edges_created', 0) > 0:
                             attest_state("edges", [{"chain": edge_chain, "wallets": edge_result.get('wallets_processed', 0), "edges": edge_result.get('total_edges_created', 0)}])
                     except Exception as ae:
-                        logger.debug(f"Edge attestation skipped for {edge_chain}: {ae}")
+                        logger.warning(f"Edge attestation skipped for {edge_chain}: {ae}")
                 except Exception as e:
                     logger.warning(f"Edge building failed for {edge_chain}: {e}")
 

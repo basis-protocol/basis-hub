@@ -102,7 +102,39 @@ def _store_cqi_attestation(sii_symbol, psi_slug, sii_score, psi_score,
              sii_hash, psi_hash, method, "composition-v1.0.0"),
         )
     except Exception as e:
-        logger.debug(f"CQI attestation skipped for {sii_symbol}/{psi_slug}: {e}")
+        logger.warning(f"CQI attestation skipped for {sii_symbol}/{psi_slug}: {e}")
+
+
+def get_stored_cqi(asset_symbol, protocol_slug, max_age_seconds=7200):
+    """Read the most recent CQI attestation for a pair. Returns None if stale or missing."""
+    row = fetch_one(
+        """
+        SELECT sii_symbol, psi_slug, sii_score, psi_score, cqi_score,
+               composition_method, methodology_version, computed_at
+        FROM cqi_attestations
+        WHERE UPPER(sii_symbol) = UPPER(%s) AND psi_slug = %s
+          AND computed_at > NOW() - INTERVAL '%s seconds'
+        ORDER BY computed_at DESC LIMIT 1
+        """,
+        (asset_symbol, protocol_slug, max_age_seconds),
+    )
+    if not row:
+        return None
+    return {
+        "composite_id": "cqi",
+        "name": "Collateral Quality Index",
+        "asset": row["sii_symbol"],
+        "protocol_slug": row["psi_slug"],
+        "cqi_score": float(row["cqi_score"]) if row["cqi_score"] else None,
+        "inputs": {
+            "sii": {"score": float(row["sii_score"]) if row["sii_score"] else None},
+            "psi": {"score": float(row["psi_score"]) if row["psi_score"] else None},
+        },
+        "method": row["composition_method"],
+        "formula_version": row["methodology_version"],
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        "source": "stored",
+    }
 
 
 def compute_cqi(asset_symbol, protocol_slug):

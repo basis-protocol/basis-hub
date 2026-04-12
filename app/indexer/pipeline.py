@@ -785,7 +785,7 @@ async def run_pipeline_batch(batch_size: int = 500) -> dict:
         if indexed > 0:
             attest_state("wallets", [{"cycle": "batch_reindex", "processed": indexed, "scored": scored, "balances_updated": balances_updated}])
     except Exception as ae:
-        reindex_logger.debug(f"Wallet attestation skipped: {ae}")
+        reindex_logger.warning(f"Wallet attestation skipped: {ae}")
 
     return {
         "processed": indexed,

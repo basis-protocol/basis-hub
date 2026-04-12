@@ -193,6 +193,6 @@ def rebuild_all_profiles(limit: int = 0) -> dict:
         if built > 0:
             attest_state("wallet_profiles", [{"built": built, "total": len(addresses)}])
     except Exception as ae:
-        logger.debug(f"Wallet profile attestation skipped: {ae}")
+        logger.warning(f"Wallet profile attestation skipped: {ae}")
 
     return {"total": len(addresses), "built": built, "errors": errors}

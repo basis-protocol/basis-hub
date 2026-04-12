@@ -272,6 +272,6 @@ async def collect_smart_contract_components(
         if components:
             attest_state("smart_contracts", [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components], entity_id=stablecoin_id)
     except Exception as ae:
-        pass  # attestation is non-critical
+        logger.warning(f"Smart contract attestation skipped: {ae}")
 
     return components

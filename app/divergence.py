@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one
 
 logger = logging.getLogger(__name__)
 
@@ -525,6 +525,35 @@ def detect_all_divergences():
         key=lambda s: _SEVERITY_ORDER.get(s.get("severity", "silent"), 0),
         reverse=True,
     )
+
+    # Persist signals to divergence_signals table
+    cycle_ts = datetime.now(timezone.utc)
+    try:
+        for sig in all_signals:
+            sig_type = sig.get("type", "unknown")
+            entity_id = sig.get("symbol") or sig.get("wallet_address") or sig.get("protocol") or sig.get("stablecoin")
+            execute(
+                """INSERT INTO divergence_signals
+                   (detector_name, entity_type, entity_id, signal_direction,
+                    magnitude, severity, detail, cycle_timestamp)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (sig_type, sig_type, entity_id, sig.get("direction"),
+                 sig.get("magnitude"), sig.get("severity"), json.dumps(sig), cycle_ts),
+            )
+        logger.info(f"Stored {len(all_signals)} divergence signals")
+    except Exception as e:
+        logger.warning(f"Failed to store divergence signals: {e}")
+
+    try:
+        from app.state_attestation import attest_state
+        if all_signals:
+            attest_state("divergence_signals", [
+                {"type": s.get("type"), "severity": s.get("severity"),
+                 "entity_id": s.get("symbol") or s.get("wallet_address") or s.get("protocol")}
+                for s in all_signals
+            ])
+    except Exception as e:
+        logger.warning(f"Divergence attestation skipped: {e}")
 
     return {
         "divergence_signals": all_signals,

@@ -29,7 +29,7 @@ from x402.http.types import RouteConfig, PaymentOption
 from x402.mechanisms.evm.exact import ExactEvmServerScheme
 from x402.schemas import SupportedKind, SupportedResponse
 
-from app.database import fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all
 
 logger = logging.getLogger("payments")
 
@@ -210,12 +210,28 @@ def create_x402_middleware():
 # The x402 middleware handles 402 challenge/response before these run.
 # =============================================================================
 
+def _log_payment(request: Request, endpoint: str, price_usd: str):
+    """Log a successful x402 payment to payment_log table."""
+    try:
+        payer = request.headers.get("x-payer-address") or request.headers.get("x-402-payer")
+        tx_hash = request.headers.get("x-tx-hash") or request.headers.get("x-402-tx-hash")
+        ip = request.client.host if request.client else None
+        price_val = float(price_usd.replace("$", "")) if price_usd else 0
+        execute(
+            "INSERT INTO payment_log (endpoint, price_usd, payer_address, tx_hash, verified, ip_address) VALUES (%s, %s, %s, %s, TRUE, %s)",
+            (endpoint, price_val, payer, tx_hash, ip),
+        )
+    except Exception as e:
+        logger.warning(f"Payment logging failed for {endpoint}: {e}")
+
+
 paid_router = APIRouter(prefix="/api/paid", tags=["paid"])
 
 
 @paid_router.get("/sii/rankings")
-async def paid_sii_rankings():
+async def paid_sii_rankings(request: Request):
     """Paid: All stablecoin SII scores."""
+    _log_payment(request, "/api/paid/sii/rankings", "$0.005")
     from app.scoring import FORMULA_VERSION
     rows = fetch_all("""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
@@ -251,8 +267,9 @@ async def paid_sii_rankings():
 
 
 @paid_router.get("/sii/{coin}")
-async def paid_sii_detail(coin: str):
+async def paid_sii_detail(request: Request, coin: str):
     """Paid: Single stablecoin detail."""
+    _log_payment(request, f"/api/paid/sii/{coin}", "$0.001")
     from app.scoring import SII_V1_WEIGHTS, FORMULA_VERSION
     row = fetch_one("""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
@@ -299,8 +316,9 @@ async def paid_sii_detail(coin: str):
 
 
 @paid_router.get("/psi/scores")
-async def paid_psi_all():
+async def paid_psi_all(request: Request):
     """Paid: All PSI scores."""
+    _log_payment(request, "/api/paid/psi/scores", "$0.005")
     rows = fetch_all("""
         SELECT DISTINCT ON (protocol_slug)
             protocol_slug, protocol_name, overall_score, grade,
@@ -326,8 +344,9 @@ async def paid_psi_all():
 
 
 @paid_router.get("/psi/scores/{slug}")
-async def paid_psi_detail(slug: str):
+async def paid_psi_detail(request: Request, slug: str):
     """Paid: Single PSI detail."""
+    _log_payment(request, f"/api/paid/psi/scores/{slug}", "$0.001")
     row = fetch_one("""
         SELECT protocol_slug, protocol_name, overall_score, grade,
                category_scores, component_scores, raw_values, formula_version, computed_at
@@ -348,8 +367,9 @@ async def paid_psi_detail(slug: str):
 
 
 @paid_router.get("/cqi")
-async def paid_cqi(asset: str = Query(...), protocol: str = Query(...)):
+async def paid_cqi(request: Request, asset: str = Query(...), protocol: str = Query(...)):
     """Paid: CQI score for an asset-in-protocol pair."""
+    _log_payment(request, "/api/paid/cqi", "$0.001")
     from app.composition import compute_cqi
     result = compute_cqi(asset, protocol)
     if "error" in result:
@@ -359,8 +379,9 @@ async def paid_cqi(asset: str = Query(...), protocol: str = Query(...)):
 
 
 @paid_router.get("/pulse/latest")
-async def paid_pulse():
+async def paid_pulse(request: Request):
     """Paid: Latest daily pulse."""
+    _log_payment(request, "/api/paid/pulse/latest", "$0.002")
     row = fetch_one("SELECT * FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1")
     if not row:
         raise HTTPException(status_code=404, detail="No pulse data available")
@@ -378,8 +399,9 @@ async def paid_pulse():
 
 
 @paid_router.get("/discovery/latest")
-async def paid_discovery():
+async def paid_discovery(request: Request):
     """Paid: Latest cross-domain discovery signals."""
+    _log_payment(request, "/api/paid/discovery/latest", "$0.005")
     rows = fetch_all("""
         SELECT id, signal_type, domain, title, description, entities,
                novelty_score, direction, magnitude, baseline, detail,
@@ -392,8 +414,9 @@ async def paid_discovery():
 
 
 @paid_router.get("/wallets/{address}/profile")
-async def paid_wallet_profile(address: str):
+async def paid_wallet_profile(request: Request, address: str):
     """Paid: Full wallet risk profile with behavioral signals."""
+    _log_payment(request, f"/api/paid/wallets/{address}/profile", "$0.005")
     from app.wallet_profile import generate_wallet_profile
     profile = generate_wallet_profile(address)
     if not profile:
@@ -425,12 +448,14 @@ async def paid_wallet_profile(address: str):
 
 @paid_router.get("/report/{entity_type}/{entity_id}")
 async def paid_report(
+    request: Request,
     entity_type: str,
     entity_id: str,
     template: str = "protocol_risk",
     lens: str = None,
 ):
     """Paid: Attested risk report with optional regulatory lens."""
+    _log_payment(request, f"/api/paid/report/{entity_type}/{entity_id}", "$0.01")
     from app.report import assemble_report_data
     from app.report_attestation import compute_report_hash, store_report_attestation
     from app.templates import get_template

@@ -231,7 +231,8 @@ def run_daily_pulse():
             "sii_components", "psi_components", "cda_extractions",
             "wallets", "wallet_profiles", "edges", "actors",
             "psi_discoveries", "smart_contracts", "flows",
-            "cqi_compositions", "discovery_signals",
+            "cqi_compositions", "discovery_signals", "provenance",
+            "divergence_signals",
         ]
 
         state_root_inputs = {}

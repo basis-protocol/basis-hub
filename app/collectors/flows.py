@@ -346,7 +346,7 @@ async def collect_flows_components(
         from app.state_attestation import attest_state
         if components:
             attest_state("flows", [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components], entity_id=stablecoin_id)
-    except Exception:
-        pass  # attestation is non-critical
+    except Exception as ae:
+        logger.warning(f"Flows attestation skipped: {ae}")
 
     return components

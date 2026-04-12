@@ -524,7 +524,7 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
             for c in components
         ], entity_id=stablecoin_id)
     except Exception as e:
-        logger.debug(f"SII attestation skipped for {stablecoin_id}: {e}")
+        logger.warning(f"SII attestation skipped for {stablecoin_id}: {e}")
 
     elapsed = time.time() - start
     logger.info(
@@ -597,7 +597,7 @@ async def run_scoring_cycle():
             if psi_results:
                 attest_state("psi_components", [{"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")} for r in psi_results if isinstance(r, dict)])
         except Exception as ae:
-            logger.debug(f"PSI attestation skipped: {ae}")
+            logger.warning(f"PSI attestation skipped: {ae}")
     except Exception as e:
         logger.warning(f"PSI scoring failed: {e}")
 
@@ -647,7 +647,7 @@ async def run_scoring_cycle():
                 if discovered or promoted:
                     attest_state("psi_discoveries", [{"synced": synced, "discovered": discovered, "enriched": enriched, "promoted": promoted}])
             except Exception as ae:
-                logger.debug(f"PSI discovery attestation skipped: {ae}")
+                logger.warning(f"PSI discovery attestation skipped: {ae}")
         else:
             logger.info(f"PSI expansion skipped — last ran {hours_since:.0f}h ago")
     except Exception as e:
@@ -837,6 +837,44 @@ async def run_scoring_cycle():
     except Exception as e:
         logger.warning(f"Daily pulse generation failed: {e}")
 
+    # -------------------------------------------------------------------------
+    # Daily report generation — attested snapshots for all scored entities
+    # -------------------------------------------------------------------------
+    try:
+        from app.report import assemble_report_data
+        from app.report_attestation import compute_report_hash, store_report_attestation
+        from app.scoring import FORMULA_VERSION as _FV
+
+        # Reports for all scored stablecoins
+        sii_entities = fetch_all("SELECT DISTINCT st.symbol FROM scores s JOIN stablecoins st ON st.id = s.stablecoin_id WHERE s.overall_score IS NOT NULL")
+        # Reports for all scored protocols
+        psi_entities = fetch_all("SELECT DISTINCT protocol_slug FROM psi_scores WHERE overall_score IS NOT NULL")
+
+        report_count = 0
+        for row in (sii_entities or []):
+            try:
+                data = assemble_report_data("stablecoin", row["symbol"])
+                if data:
+                    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                    rh = compute_report_hash(data, "compliance", None, None, ts, state_hashes=data.get("state_hashes"))
+                    store_report_attestation("stablecoin", row["symbol"], "compliance", None, None, rh, data.get("score_hashes", []), data.get("cqi_hashes"), _FV)
+                    report_count += 1
+            except Exception:
+                pass
+        for row in (psi_entities or []):
+            try:
+                data = assemble_report_data("protocol", row["protocol_slug"])
+                if data:
+                    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                    rh = compute_report_hash(data, "protocol_risk", None, None, ts, state_hashes=data.get("state_hashes"))
+                    store_report_attestation("protocol", row["protocol_slug"], "protocol_risk", None, None, rh, data.get("score_hashes", []), data.get("cqi_hashes"), _FV)
+                    report_count += 1
+            except Exception:
+                pass
+        logger.info(f"Report generation complete: {report_count} reports attested")
+    except Exception as e:
+        logger.warning(f"Scheduled report generation failed: {e}")
+
     # Run actor classification after pulse, before discovery
     try:
         from app.actor_classification import classify_all_active
@@ -847,6 +885,18 @@ async def run_scoring_cycle():
         )
     except Exception as e:
         logger.warning(f"Actor classification failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Divergence detection — runs after scores are fresh
+    # -------------------------------------------------------------------------
+    try:
+        from app.divergence import detect_all_divergences
+        logger.info("Running divergence detection...")
+        div_result = detect_all_divergences()
+        div_count = div_result.get("summary", {}).get("total_signals", 0)
+        logger.info(f"Divergence detection complete: {div_count} signals")
+    except Exception as e:
+        logger.warning(f"Divergence detection failed: {e}")
 
     # Run discovery layer after actor classification
     try:
@@ -863,7 +913,7 @@ async def run_scoring_cycle():
         if prov_rows:
             attest_state("provenance", [dict(r) for r in prov_rows])
     except Exception as e:
-        logger.debug(f"Provenance attestation skipped: {e}")
+        logger.warning(f"Provenance attestation skipped: {e}")
 
     # -------------------------------------------------------------------------
     # Daily digest — send operational summary once per 24h
