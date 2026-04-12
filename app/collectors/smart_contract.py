@@ -819,3 +819,278 @@ async def collect_smart_contract_components(
         pass  # attestation is non-critical
 
     return components
+
+
+# ============================================================================
+# Shared utilities for Circle 7 index collectors
+# ============================================================================
+
+# In-memory caches
+_contract_analysis_cache: dict[str, tuple[float, dict]] = {}
+_CONTRACT_ANALYSIS_TTL = 86400  # 24h — contract properties rarely change
+
+_immunefi_cache: dict[str, tuple[float, dict]] = {}
+_IMMUNEFI_TTL = 604800  # 7 days
+
+
+async def _check_proxy_pattern(
+    client: httpx.AsyncClient, contract: str, api_key: str
+) -> dict:
+    """Detect proxy pattern and implementation verification status.
+
+    Returns dict: {is_proxy, proxy_type, implementation_verified}.
+    """
+    result = {"is_proxy": False, "proxy_type": "none", "implementation_verified": False}
+
+    try:
+        # Check for proxy via getsourcecode (includes implementation address for proxies)
+        resp = await client.get(ETHERSCAN_V2_BASE, params={
+            "chainid": 1,
+            "module": "contract",
+            "action": "getsourcecode",
+            "address": contract,
+            "apikey": api_key,
+        }, timeout=20)
+        data = resp.json()
+
+        if data.get("status") == "1" and data.get("result"):
+            source = data["result"][0] if isinstance(data["result"], list) else {}
+            impl = source.get("Implementation", "")
+            proxy_val = source.get("Proxy", "0")
+
+            if impl or proxy_val == "1":
+                result["is_proxy"] = True
+
+                # Detect proxy type from source code or contract name
+                source_code = source.get("SourceCode", "")
+                contract_name = source.get("ContractName", "")
+                combined = (source_code + contract_name).lower()
+
+                if "uups" in combined:
+                    result["proxy_type"] = "uups"
+                elif "beacon" in combined:
+                    result["proxy_type"] = "beacon"
+                elif "transparent" in combined or "proxyadmin" in combined:
+                    result["proxy_type"] = "transparent"
+                elif "timelock" in combined:
+                    result["proxy_type"] = "timelock"
+                else:
+                    result["proxy_type"] = "unknown"
+
+                # Check if implementation is also verified
+                if impl:
+                    await asyncio.sleep(RATE_LIMIT_DELAY)
+                    impl_verified = await _check_contract_verified(client, impl, api_key)
+                    result["implementation_verified"] = impl_verified
+
+    except Exception as e:
+        logger.debug(f"Proxy check failed for {contract}: {e}")
+
+    return result
+
+
+async def _detect_admin_functions(
+    client: httpx.AsyncClient, contract: str, api_key: str
+) -> dict:
+    """Detect admin-related functions from contract ABI.
+
+    Returns dict: {has_owner, has_pause, has_admin, has_timelock, admin_function_count}.
+    """
+    result = {
+        "has_owner": False, "has_pause": False,
+        "has_admin": False, "has_timelock": False,
+        "admin_function_count": 0,
+    }
+
+    try:
+        resp = await client.get(ETHERSCAN_V2_BASE, params={
+            "chainid": 1,
+            "module": "contract",
+            "action": "getabi",
+            "address": contract,
+            "apikey": api_key,
+        }, timeout=20)
+        data = resp.json()
+
+        if data.get("status") == "1":
+            abi_str = data.get("result", "")
+            if abi_str and abi_str.startswith("["):
+                abi = json.loads(abi_str)
+                admin_keywords = ["owner", "admin", "pause", "unpause", "upgrade",
+                                  "setAdmin", "transferOwnership", "renounceOwnership",
+                                  "timelock", "delay", "guardian", "blacklist", "freeze"]
+                admin_count = 0
+                for item in abi:
+                    if item.get("type") != "function":
+                        continue
+                    fname = (item.get("name") or "").lower()
+                    if any(kw.lower() in fname for kw in admin_keywords):
+                        admin_count += 1
+                    if "owner" in fname:
+                        result["has_owner"] = True
+                    if "pause" in fname:
+                        result["has_pause"] = True
+                    if "admin" in fname:
+                        result["has_admin"] = True
+                    if "timelock" in fname or "delay" in fname:
+                        result["has_timelock"] = True
+
+                result["admin_function_count"] = admin_count
+    except Exception as e:
+        logger.debug(f"ABI admin detection failed for {contract}: {e}")
+
+    return result
+
+
+async def analyze_contract_for_index(contract_address: str, chain: str = "ethereum") -> dict:
+    """Analyze a contract for index scoring purposes.
+
+    Returns a normalized dict:
+        {
+            "audit_verified": bool,         # contract source verified on Etherscan
+            "admin_key_risk": float,        # 0-100: higher = safer (less admin risk)
+            "upgradeability_risk": float,   # 0-100: higher = safer (less upgrade risk)
+            "proxy_type": str,              # none, transparent, uups, beacon, timelock, unknown
+            "is_proxy": bool,
+            "implementation_verified": bool,
+        }
+
+    Results cached for 24h per contract address.
+    """
+    import time as _time
+
+    cache_key = contract_address.lower()
+    cached = _contract_analysis_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _CONTRACT_ANALYSIS_TTL:
+        return cached[1]
+
+    api_key = os.environ.get("ETHERSCAN_API_KEY", "")
+    if not api_key or not contract_address:
+        return {
+            "audit_verified": False, "admin_key_risk": 50,
+            "upgradeability_risk": 50, "proxy_type": "unknown",
+            "is_proxy": False, "implementation_verified": False,
+        }
+
+    result = {}
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        # 1. Check verification
+        verified = await _check_contract_verified(client, contract_address, api_key)
+        await asyncio.sleep(RATE_LIMIT_DELAY)
+        result["audit_verified"] = verified
+
+        # 2. Check proxy pattern
+        proxy_info = await _check_proxy_pattern(client, contract_address, api_key)
+        await asyncio.sleep(RATE_LIMIT_DELAY)
+        result.update(proxy_info)
+
+        # 3. Detect admin functions
+        admin_info = await _detect_admin_functions(client, contract_address, api_key)
+        await asyncio.sleep(RATE_LIMIT_DELAY)
+
+        # Map admin detection to 0-100 risk score (higher = safer)
+        admin_count = admin_info["admin_function_count"]
+        if admin_count == 0:
+            result["admin_key_risk"] = 95.0  # no admin = very safe
+        elif admin_count <= 2:
+            result["admin_key_risk"] = 80.0
+        elif admin_count <= 5:
+            result["admin_key_risk"] = 65.0
+        elif admin_count <= 10:
+            result["admin_key_risk"] = 50.0
+        else:
+            result["admin_key_risk"] = 30.0  # many admin functions = risky
+
+        # Bonus: timelock reduces risk
+        if admin_info["has_timelock"]:
+            result["admin_key_risk"] = min(100, result["admin_key_risk"] + 15)
+
+        # Map proxy type to upgradeability risk score (higher = safer / less upgradeable)
+        proxy_scores = {
+            "none": 100.0,       # no proxy = not upgradeable = safest
+            "timelock": 80.0,    # timelock proxy = controlled
+            "uups": 60.0,        # UUPS = self-upgrade
+            "transparent": 50.0, # transparent = admin-controlled
+            "beacon": 45.0,      # beacon = multiple contracts upgraded together
+            "unknown": 30.0,     # unidentified proxy = uncertain
+        }
+        result["upgradeability_risk"] = proxy_scores.get(result.get("proxy_type", "unknown"), 30.0)
+
+        # If verified + proxy with verified implementation, slightly better
+        if result["is_proxy"] and result["implementation_verified"]:
+            result["upgradeability_risk"] = min(100, result["upgradeability_risk"] + 10)
+
+    _contract_analysis_cache[cache_key] = (_time.time(), result)
+    logger.info(
+        f"Contract analysis {contract_address[:10]}...: "
+        f"verified={verified} proxy={result.get('proxy_type')} "
+        f"admin_risk={result['admin_key_risk']} upgrade_risk={result['upgradeability_risk']}"
+    )
+    return result
+
+
+def analyze_contract_for_index_sync(contract_address: str, chain: str = "ethereum") -> dict:
+    """Synchronous wrapper around analyze_contract_for_index().
+
+    Safe to call from synchronous collector code (runs in thread if needed).
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                analyze_contract_for_index(contract_address, chain),
+            )
+            return future.result(timeout=60)
+    else:
+        return asyncio.run(analyze_contract_for_index(contract_address, chain))
+
+
+def fetch_immunefi_bounty(slug: str) -> dict:
+    """Fetch bug bounty info from Immunefi for a protocol.
+
+    Attempts to check the Immunefi API. Returns dict:
+        {"active": bool, "max_bounty": float, "source": str}
+
+    Cached for 7 days. Falls back to empty result on failure.
+    """
+    import time as _time
+
+    cache_key = slug.lower()
+    cached = _immunefi_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _IMMUNEFI_TTL:
+        return cached[1]
+
+    result = {"active": False, "max_bounty": 0, "source": "immunefi"}
+
+    # Try the Immunefi bounties API (public, no key needed)
+    try:
+        _time.sleep(1)  # rate limit
+        resp = httpx.get("https://immunefi.com/api/bounties", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            bounties = data if isinstance(data, list) else data.get("bounties", [])
+            slug_lower = slug.lower()
+            for bounty in bounties:
+                b_id = (bounty.get("id") or bounty.get("slug") or "").lower()
+                b_project = (bounty.get("project") or "").lower()
+                if slug_lower in b_id or slug_lower in b_project:
+                    result["active"] = True
+                    max_reward = bounty.get("maxBounty") or bounty.get("maximumReward") or 0
+                    if isinstance(max_reward, str):
+                        max_reward = float(max_reward.replace(",", "").replace("$", ""))
+                    result["max_bounty"] = float(max_reward)
+                    break
+
+        _immunefi_cache[cache_key] = (_time.time(), result)
+    except Exception as e:
+        logger.debug(f"Immunefi bounty fetch failed for {slug}: {e}")
+        _immunefi_cache[cache_key] = (_time.time(), result)
+
+    return result

@@ -139,6 +139,69 @@ SCHEMAS_BY_TYPE = {
 }
 
 
+# TTI issuer disclosure schema — for tokenized treasury product pages and prospectuses
+TTI_DISCLOSURE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        # Issuer/counterparty
+        "issuer_name": {"type": "string", "description": "Name of the issuing entity"},
+        "issuer_aum_usd": {"type": "number", "description": "Total AUM in USD"},
+        "years_in_operation": {"type": "number", "description": "Years the issuer has been operating"},
+        "regulatory_registrations": {
+            "type": "array", "items": {"type": "string"},
+            "description": "List of regulatory registrations (e.g. SEC RIA, FINRA, state registrations)",
+        },
+        "banking_partners": {"type": "array", "items": {"type": "string"}, "description": "Banking partners"},
+        "custodians": {"type": "array", "items": {"type": "string"}, "description": "Custodians holding assets"},
+        "counterparties_count": {"type": "number", "description": "Number of counterparties"},
+        "named_officers": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Named officers, directors, or key personnel",
+        },
+        "conflict_of_interest_disclosed": {"type": "boolean", "description": "Whether conflicts of interest are disclosed"},
+        "business_continuity_plan": {"type": "boolean", "description": "Whether a BCP is mentioned"},
+
+        # Reserve/collateral
+        "total_nav_usd": {"type": "number", "description": "Total NAV in USD"},
+        "total_supply": {"type": "number", "description": "Total token supply"},
+        "reserve_coverage_ratio": {"type": "number", "description": "NAV / supply ratio"},
+        "underlying_asset_description": {"type": "string", "description": "Description of underlying assets"},
+        "collateral_segregation_disclosed": {"type": "boolean", "description": "Whether collateral segregation is disclosed"},
+        "rehypothecation_prohibited": {"type": "boolean", "description": "Whether rehypothecation is prohibited"},
+
+        # Redemption
+        "redemption_window_description": {"type": "string", "description": "How and when redemptions work"},
+        "settlement_time_hours": {"type": "number", "description": "Settlement time in hours"},
+        "minimum_redemption_usd": {"type": "number", "description": "Minimum redemption amount in USD"},
+        "redemption_fee_pct": {"type": "number", "description": "Redemption fee as a percentage"},
+        "gate_mechanism_described": {"type": "boolean", "description": "Whether a gate/queue mechanism is described"},
+        "instant_liquidity_available": {"type": "boolean", "description": "Whether instant liquidity is available"},
+
+        # Regulatory
+        "securities_registered": {"type": "boolean", "description": "Whether the token is registered as a security"},
+        "exemption_type": {"type": "string", "description": "e.g. Reg D 506(c), Reg S, Reg A+"},
+        "kyc_aml_required": {"type": "boolean", "description": "Whether KYC/AML is required"},
+        "accredited_only": {"type": "boolean", "description": "Whether limited to accredited investors"},
+        "prospectus_available": {"type": "boolean", "description": "Whether a prospectus or offering memo is available"},
+        "tax_reporting_provided": {"type": "boolean", "description": "Whether tax reporting (K-1, 1099) is provided"},
+        "jurisdiction": {"type": "string", "description": "Primary jurisdiction of the issuer"},
+        "transfer_restrictions_described": {"type": "boolean", "description": "Whether transfer restrictions are described"},
+
+        # Attestation
+        "attestation_date": {"type": "string", "description": "Date of most recent attestation or audit"},
+        "auditor_name": {"type": "string", "description": "Name of the auditing/attestation firm"},
+        "attestation_frequency": {"type": "string", "description": "e.g. monthly, quarterly, annually"},
+    },
+}
+
+TTI_DISCLOSURE_PROMPT = (
+    "This is a product page, prospectus, or attestation report for a tokenized treasury product "
+    "(e.g., tokenized US Treasury bills or money market funds). Extract issuer details, regulatory "
+    "registrations, custodian information, NAV data, redemption terms, compliance requirements, "
+    "and attestation details. If a field is not found on the page, leave it null."
+)
+
+
 # Custodian attestation PDF schema — narrow, for proof-of-custody documents
 CUSTODIAN_ATTESTATION_SCHEMA = {
     "type": "object",

@@ -3,9 +3,16 @@ DeFiLlama Collector
 ====================
 Collects TVL, chain distribution, and lending yield data.
 Produces liquidity components.
+
+Also provides shared utility functions used by Circle 7 collectors:
+- fetch_defillama_hacks(): exploit/hack history (24h cache)
+- fetch_defillama_treasury(): protocol treasury value
+- fetch_defillama_fees(): protocol fee/revenue data
+- fetch_defillama_protocol_detail(): full protocol detail
 """
 
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -16,6 +23,21 @@ logger = logging.getLogger(__name__)
 
 STABLECOINS_URL = "https://stablecoins.llama.fi"
 YIELDS_URL = "https://yields.llama.fi"
+LLAMA_BASE = "https://api.llama.fi"
+
+# =============================================================================
+# In-memory caches for shared utilities
+# =============================================================================
+
+_hacks_cache: dict[str, tuple[float, list]] = {}  # {"hacks": (timestamp, data)}
+_treasury_cache: dict[str, tuple[float, dict]] = {}
+_fees_cache: dict[str, tuple[float, dict]] = {}
+_protocol_cache: dict[str, tuple[float, dict]] = {}
+
+_HACKS_TTL = 86400       # 24 hours
+_TREASURY_TTL = 86400    # 24 hours
+_FEES_TTL = 86400        # 24 hours
+_PROTOCOL_TTL = 86400    # 24 hours
 
 
 async def fetch_stablecoin_data(client: httpx.AsyncClient, coingecko_id: str) -> dict:
@@ -146,3 +168,240 @@ async def collect_defillama_components(
             })
     
     return components
+
+
+# =============================================================================
+# Shared utilities for Circle 7 collectors
+# =============================================================================
+
+def fetch_defillama_hacks() -> list[dict]:
+    """Fetch all known exploits/hacks from DeFiLlama.
+
+    Returns list of dicts with keys: name, date, amount, chains, etc.
+    Cached for 24h. Used by LSTI, BRI, VSRI, CXRI collectors.
+    """
+    cached = _hacks_cache.get("hacks")
+    if cached and (time.time() - cached[0]) < _HACKS_TTL:
+        return cached[1]
+
+    try:
+        resp = httpx.get(f"{LLAMA_BASE}/hacks", timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        hacks = data if isinstance(data, list) else []
+        _hacks_cache["hacks"] = (time.time(), hacks)
+        logger.info(f"DeFiLlama hacks: fetched {len(hacks)} records")
+        return hacks
+    except Exception as e:
+        logger.warning(f"DeFiLlama hacks fetch failed: {e}")
+        # Return stale cache if available
+        if cached:
+            return cached[1]
+        return []
+
+
+def filter_hacks_by_name(hacks: list[dict], name: str) -> list[dict]:
+    """Filter hack records matching a protocol/bridge/exchange name.
+
+    Matches case-insensitively against the 'name' and 'project' fields.
+    """
+    name_lower = name.lower()
+    # Also try common variations
+    variations = {name_lower, name_lower.replace("-", " "), name_lower.replace(" ", "")}
+    matched = []
+    for h in hacks:
+        h_name = (h.get("name") or "").lower()
+        h_project = (h.get("project") or "").lower()
+        for v in variations:
+            if v in h_name or v in h_project:
+                matched.append(h)
+                break
+    return matched
+
+
+def score_exploit_history_from_hacks(hacks: list[dict]) -> float:
+    """Score exploit history from DeFiLlama hacks data.
+
+    Returns 0-100 score: 100 = no exploits, lower = worse.
+    Factors in severity (amount lost) and recency.
+    """
+    if not hacks:
+        return 100.0
+
+    import math
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    worst_score = 100.0
+
+    for h in hacks:
+        amount = h.get("amount", 0) or 0
+        # Parse date
+        date_str = h.get("date")
+        if not date_str:
+            continue
+        try:
+            if isinstance(date_str, (int, float)):
+                hack_date = datetime.fromtimestamp(date_str, tz=timezone.utc)
+            else:
+                ds = str(date_str).replace("Z", "+00:00")
+                hack_date = datetime.fromisoformat(ds)
+                if hack_date.tzinfo is None:
+                    hack_date = hack_date.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            hack_date = now  # assume recent if unparseable
+
+        days_ago = max(1, (now - hack_date).days)
+
+        # Base severity from amount: $0 = minor (80), $1M = 50, $10M = 30, $100M+ = 10
+        if amount <= 0:
+            severity = 80.0
+        elif amount < 1_000_000:
+            severity = 70.0
+        elif amount < 10_000_000:
+            severity = 50.0
+        elif amount < 100_000_000:
+            severity = 30.0
+        else:
+            severity = 10.0
+
+        # Recency factor: recent exploits are worse
+        # <90 days: full penalty, 90-365: partial, >365: reduced, >730: heavily reduced
+        if days_ago < 90:
+            recency_factor = 1.0
+        elif days_ago < 365:
+            recency_factor = 0.7
+        elif days_ago < 730:
+            recency_factor = 0.4
+        else:
+            recency_factor = 0.2
+
+        # Effective score for this exploit
+        effective = severity + (100 - severity) * (1 - recency_factor)
+        worst_score = min(worst_score, effective)
+
+    return round(max(0.0, worst_score), 1)
+
+
+def fetch_defillama_treasury(protocol: str) -> dict:
+    """Fetch treasury data for a protocol from DeFiLlama.
+
+    Returns dict with keys: total_usd, stablecoin_usd, native_token_usd,
+    token_breakdown (dict of token->usd_value).
+    Cached for 24h.
+    """
+    cache_key = protocol.lower()
+    cached = _treasury_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _TREASURY_TTL:
+        return cached[1]
+
+    result = {"total_usd": 0, "stablecoin_usd": 0, "native_token_usd": 0, "token_breakdown": {}}
+
+    try:
+        time.sleep(1)  # rate limit
+        resp = httpx.get(f"{LLAMA_BASE}/treasury/{protocol}", timeout=15)
+        if resp.status_code != 200:
+            _treasury_cache[cache_key] = (time.time(), result)
+            return result
+
+        data = resp.json()
+        chain_tvls = data.get("chainTvls", {})
+        total = 0
+        stablecoin_total = 0
+        native_total = 0
+        token_breakdown = {}
+
+        for chain_name, chain_data in chain_tvls.items():
+            if not isinstance(chain_data, dict):
+                continue
+            tvl_list = chain_data.get("tvl", [])
+            if tvl_list:
+                last = tvl_list[-1]
+                if isinstance(last, dict):
+                    total += last.get("totalLiquidityUSD", 0)
+
+            tokens_list = chain_data.get("tokens", [])
+            if tokens_list:
+                latest_tokens = tokens_list[-1].get("tokens", {}) if tokens_list else {}
+                for token_name, usd_value in latest_tokens.items():
+                    if isinstance(usd_value, (int, float)):
+                        token_breakdown[token_name] = token_breakdown.get(token_name, 0) + usd_value
+                        sym = token_name.upper()
+                        if any(s in sym for s in ["USDC", "USDT", "DAI", "FRAX", "USD", "LUSD", "BUSD"]):
+                            stablecoin_total += usd_value
+
+        result = {
+            "total_usd": total,
+            "stablecoin_usd": stablecoin_total,
+            "native_token_usd": native_total,
+            "token_breakdown": token_breakdown,
+        }
+        _treasury_cache[cache_key] = (time.time(), result)
+        logger.info(f"DeFiLlama treasury {protocol}: ${total:,.0f}")
+    except Exception as e:
+        logger.warning(f"DeFiLlama treasury fetch failed for {protocol}: {e}")
+
+    return result
+
+
+def fetch_defillama_fees(protocol: str) -> dict:
+    """Fetch fee/revenue data for a protocol from DeFiLlama.
+
+    Returns dict with keys: total_daily_fees, total_daily_revenue,
+    total_30d_fees, total_30d_revenue.
+    Cached for 24h.
+    """
+    cache_key = protocol.lower()
+    cached = _fees_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _FEES_TTL:
+        return cached[1]
+
+    result = {"total_daily_fees": 0, "total_daily_revenue": 0,
+              "total_30d_fees": 0, "total_30d_revenue": 0}
+
+    try:
+        time.sleep(1)  # rate limit
+        resp = httpx.get(f"{LLAMA_BASE}/summary/fees/{protocol}", timeout=15)
+        if resp.status_code != 200:
+            _fees_cache[cache_key] = (time.time(), result)
+            return result
+
+        data = resp.json()
+        result["total_daily_fees"] = data.get("total24h", 0) or 0
+        result["total_daily_revenue"] = data.get("totalRevenue24h") or data.get("revenue24h") or 0
+        result["total_30d_fees"] = data.get("total30d", 0) or 0
+        result["total_30d_revenue"] = data.get("totalRevenue30d") or data.get("revenue30d") or 0
+
+        _fees_cache[cache_key] = (time.time(), result)
+        logger.info(f"DeFiLlama fees {protocol}: daily=${result['total_daily_fees']:,.0f}")
+    except Exception as e:
+        logger.warning(f"DeFiLlama fees fetch failed for {protocol}: {e}")
+
+    return result
+
+
+def fetch_defillama_protocol_detail(protocol: str) -> dict:
+    """Fetch full protocol detail from DeFiLlama.
+
+    Returns the full protocol response dict including currentChainTvls,
+    tvl history, chains, etc. Cached for 24h.
+    """
+    cache_key = protocol.lower()
+    cached = _protocol_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _PROTOCOL_TTL:
+        return cached[1]
+
+    try:
+        time.sleep(1)  # rate limit
+        resp = httpx.get(f"{LLAMA_BASE}/protocol/{protocol}", timeout=15)
+        if resp.status_code != 200:
+            _protocol_cache[cache_key] = (time.time(), {})
+            return {}
+
+        data = resp.json()
+        _protocol_cache[cache_key] = (time.time(), data)
+        logger.info(f"DeFiLlama protocol detail {protocol}: fetched")
+        return data
+    except Exception as e:
+        logger.warning(f"DeFiLlama protocol detail failed for {protocol}: {e}")
+        return {}
