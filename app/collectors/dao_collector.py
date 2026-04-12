@@ -586,6 +586,148 @@ def _automate_dao_transparency(entity: dict, static: dict) -> dict:
 
 
 # =============================================================================
+# Phase 3D: DOHI Audit Cadence Scoring
+# Scrapes audit aggregator pages to count audits and check recency
+# =============================================================================
+
+# Audit docs/security page URL patterns per protocol
+DAO_AUDIT_PAGES = {
+    "aave-dao": [
+        "https://docs.aave.com/developers/guides/security",
+        "https://github.com/aave/aave-v3-core/tree/master/audits",
+    ],
+    "lido-dao": [
+        "https://docs.lido.fi/security/audits",
+        "https://github.com/lidofinance/audits",
+    ],
+    "compound-dao": [
+        "https://docs.compound.finance/security",
+        "https://github.com/compound-finance/compound-protocol/tree/master/audits",
+    ],
+    "uniswap-dao": [
+        "https://docs.uniswap.org/contracts/v3/reference/deployments",
+        "https://github.com/Uniswap/v3-core/tree/main/audits",
+    ],
+    "arbitrum-dao": [
+        "https://docs.arbitrum.io/audit-reports",
+    ],
+}
+
+# Known auditor names for detection
+KNOWN_AUDITORS = [
+    "openzeppelin", "trail of bits", "certora", "consensys diligence",
+    "sigma prime", "spearbit", "sherlock", "code4rena", "cantina",
+    "quantstamp", "halborn", "ottersec", "mixbytes", "chainsecurity",
+    "peckshield", "slowmist", "dedaub", "statemind",
+]
+
+# Cache audit scoring (30 day TTL — audits change very slowly)
+_audit_cache: dict[str, tuple[float, dict]] = {}
+_AUDIT_CACHE_TTL = 2592000  # 30 days
+
+
+def _automate_dao_audit_cadence(entity: dict, static: dict) -> dict:
+    """Score dao_audit_cadence from audit aggregator page scraping.
+
+    Fetches protocol security/audit docs pages, counts unique audit mentions,
+    and checks recency. Score = count_score * 0.5 + recency_score * 0.5.
+
+    Cached for 30 days.
+    """
+    automated = {}
+    slug = entity["slug"]
+
+    # Check cache
+    cached = _audit_cache.get(slug)
+    if cached and (time.time() - cached[0]) < _AUDIT_CACHE_TTL:
+        return cached[1]
+
+    audit_urls = DAO_AUDIT_PAGES.get(slug, [])
+    if not audit_urls:
+        return automated
+
+    # Also check if there's a docs URL from the protocol itself
+    protocol_slug = entity.get("protocol_slug")
+    if protocol_slug:
+        # Try standard patterns
+        audit_urls = audit_urls + [
+            f"https://docs.{protocol_slug.replace('-', '')}.com/security/audits",
+        ]
+
+    found_auditors = set()
+    found_years = set()
+
+    for url in audit_urls:
+        try:
+            time.sleep(1)
+            resp = requests.get(url, timeout=15, allow_redirects=True)
+            if resp.status_code != 200:
+                continue
+
+            text = resp.text.lower()
+
+            # Detect auditors mentioned
+            for auditor in KNOWN_AUDITORS:
+                if auditor in text:
+                    found_auditors.add(auditor)
+
+            # Detect years (audit dates)
+            import re
+            year_matches = re.findall(r'20(?:2[0-6]|1[0-9])', text)
+            for y in year_matches:
+                found_years.add(int(y))
+
+        except Exception as e:
+            logger.debug(f"DAO audit page fetch failed for {url}: {e}")
+            continue
+
+    if not found_auditors:
+        _audit_cache[slug] = (time.time(), automated)
+        return automated
+
+    audit_count = len(found_auditors)
+
+    # Count score: 0 audits = 0, 1 = 40, 2-3 = 70, 4+ = 90
+    if audit_count == 0:
+        count_score = 0
+    elif audit_count == 1:
+        count_score = 40
+    elif audit_count <= 3:
+        count_score = 70
+    else:
+        count_score = 90
+
+    # Recency score: most recent audit year
+    current_year = datetime.now().year
+    if found_years:
+        most_recent_year = max(found_years)
+        years_ago = current_year - most_recent_year
+        if years_ago <= 0:
+            recency_score = 90
+        elif years_ago <= 1:
+            recency_score = 70
+        elif years_ago <= 2:
+            recency_score = 50
+        else:
+            recency_score = 20
+    else:
+        recency_score = 30  # auditors found but no dates
+
+    cadence_score = (count_score * 0.5 + recency_score * 0.5)
+    static_cadence = static.get("dao_audit_cadence", 0)
+    automated["dao_audit_cadence"] = max(cadence_score, static_cadence)
+
+    logger.info(
+        f"DAO audit cadence {slug}: {audit_count} auditors "
+        f"({', '.join(sorted(found_auditors)[:3])}), "
+        f"years={sorted(found_years)[-3:] if found_years else '?'} → {cadence_score:.0f}"
+    )
+
+    _audit_cache[slug] = (time.time(), automated)
+    return automated
+
+
+# =============================================================================
 # Score and store
 # =============================================================================
 
@@ -638,6 +780,10 @@ def score_dao(entity: dict) -> dict | None:
     # Financial disclosure + reporting frequency from forum data
     transparency_automated = _automate_dao_transparency(entity, static)
     raw_values.update(transparency_automated)
+
+    # --- Phase 3D: Audit cadence from aggregator scraping ---
+    audit_automated = _automate_dao_audit_cadence(entity, static)
+    raw_values.update(audit_automated)
 
     if not raw_values:
         logger.warning(f"No data collected for DAO {slug}")

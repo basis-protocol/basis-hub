@@ -330,6 +330,17 @@ def extract_cex_raw_values(entity: dict, hacks_cache: list = None) -> dict:
     dashboard_automated = _automate_cex_reserve_dashboard(entity, static)
     raw.update(dashboard_automated)
 
+    # --- Phase 3B: Regulatory registry checks ---
+    try:
+        from app.collectors.regulatory_scraper import check_exchange_regulatory
+        reg_scores = check_exchange_regulatory(slug)
+        if reg_scores:
+            for comp_id, live_score in reg_scores.items():
+                static_score = static.get(comp_id, 0)
+                raw[comp_id] = max(live_score, static_score)
+    except Exception as e:
+        logger.debug(f"CXRI regulatory check failed for {slug}: {e}")
+
     return raw
 
 

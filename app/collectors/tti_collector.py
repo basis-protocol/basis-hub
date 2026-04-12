@@ -524,6 +524,18 @@ def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
     # Oracle dependency from contract ABI — only if contract exists
     raw.update(_automate_tti_oracle_dependency(entity, static))
 
+    # --- Phase 3A: TTI issuer disclosure parsing ---
+    try:
+        from app.services.tti_disclosure_collector import (
+            collect_entity_disclosures, map_disclosure_to_components,
+        )
+        disclosure_data = collect_entity_disclosures(slug, entity.get("name", slug))
+        if disclosure_data:
+            disclosure_components = map_disclosure_to_components(disclosure_data, static)
+            raw.update(disclosure_components)
+    except Exception as e:
+        logger.debug(f"TTI disclosure automation failed for {slug}: {e}")
+
     return raw
 
 

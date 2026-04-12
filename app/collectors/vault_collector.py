@@ -17,6 +17,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -30,6 +31,181 @@ logger = logging.getLogger(__name__)
 
 DEFILLAMA_BASE = "https://api.llama.fi"
 ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api"
+
+
+# =============================================================================
+# Phase 3C: VSRI Documentation Quality Scoring
+# Follows app/rpi/docs_scorer.py pattern — keyword rubric against docs sites
+# =============================================================================
+
+VAULT_DOCS = {
+    "yearn-usdc": "https://docs.yearn.fi",
+    "yearn-dai": "https://docs.yearn.fi",
+    "yearn-eth": "https://docs.yearn.fi",
+    "morpho-usdc-aave": "https://docs.morpho.org",
+    "morpho-eth-aave": "https://docs.morpho.org",
+    "beefy-usdc-eth": "https://docs.beefy.finance",
+    "beefy-usdt-usdc": "https://docs.beefy.finance",
+    "pendle-steth": "https://docs.pendle.finance",
+    "pendle-eeth": "https://docs.pendle.finance",
+    "sommelier-turbo-steth": "https://docs.sommelier.finance",
+}
+
+VAULT_DOCS_RUBRIC = {
+    "strategy_description": {
+        "label": "Strategy description available",
+        "keywords": [
+            "strategy", "how it works", "yield source", "deposit", "allocation",
+            "vault strategy", "strategy description", "earning mechanism",
+            "yield generation", "vault overview",
+        ],
+        "paths": ["/vaults", "/strategies", "/products", "/how-it-works", "/overview"],
+    },
+    "parameter_documentation": {
+        "label": "Parameters documented",
+        "keywords": [
+            "parameters", "fees", "management fee", "performance fee", "deposit limit",
+            "allocation target", "rebalance threshold", "withdrawal fee",
+            "fee structure", "protocol fees",
+        ],
+        "paths": ["/fees", "/parameters", "/protocol-fees", "/vaults/fees", "/tokenomics"],
+    },
+    "rebalance_logic": {
+        "label": "Rebalance logic documented",
+        "keywords": [
+            "rebalance", "harvest", "strategy migration", "allocation change",
+            "auto-compound", "yield optimization", "rebalancing", "compounding",
+            "harvest frequency",
+        ],
+        "paths": ["/strategies", "/rebalancing", "/harvesting", "/mechanics"],
+    },
+    "risk_disclosure": {
+        "label": "Risk disclosure published",
+        "keywords": [
+            "risk", "impermanent loss", "smart contract risk", "protocol risk",
+            "liquidation", "slippage", "counterparty risk", "audit",
+            "security", "risk factors", "disclaimer",
+        ],
+        "paths": ["/risks", "/security", "/safety", "/risk-disclosure", "/audits"],
+    },
+}
+
+# In-memory cache for docs scoring (24h TTL — docs change slowly)
+_vault_docs_cache: dict[str, tuple[float, dict]] = {}
+_VAULT_DOCS_CACHE_TTL = 86400  # 24 hours
+
+
+def _fetch_page_text(url: str) -> str | None:
+    """Fetch a web page and return cleaned text content."""
+    try:
+        resp = requests.get(url, timeout=15, allow_redirects=True)
+        if resp.status_code != 200:
+            return None
+        text = resp.text
+        # Strip HTML tags
+        text = re.sub(r'<[^>]+>', ' ', text)
+        # Normalize whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text.lower()
+    except Exception as e:
+        logger.debug(f"VSRI docs fetch failed for {url}: {e}")
+        return None
+
+
+def _score_vault_criterion(docs_url: str, criterion: dict) -> tuple[float, str | None, str | None]:
+    """Score a single rubric criterion against a docs site.
+
+    Returns (score, evidence_url, evidence_snippet).
+    Score: 25 (full match), 12 (partial), 0 (no match).
+    """
+    keywords = criterion["keywords"]
+    paths = criterion.get("paths", [])
+
+    # Check main docs page
+    main_text = _fetch_page_text(docs_url)
+    if main_text:
+        matches = [kw for kw in keywords if kw.lower() in main_text]
+        if len(matches) >= 2:
+            snippet = matches[0]
+            return 25.0, docs_url, f"Found: {', '.join(matches[:3])}"
+
+    # Check specific subpaths
+    for path in paths:
+        url = docs_url.rstrip("/") + path
+        text = _fetch_page_text(url)
+        if text:
+            matches = [kw for kw in keywords if kw.lower() in text]
+            if matches:
+                return 25.0, url, f"Found: {', '.join(matches[:3])}"
+        time.sleep(0.5)
+
+    # Partial credit if main page has at least 1 keyword
+    if main_text:
+        matches = [kw for kw in keywords if kw.lower() in main_text]
+        if matches:
+            return 12.0, docs_url, f"Partial: {matches[0]}"
+
+    return 0.0, None, None
+
+
+def score_vault_docs(entity_slug: str) -> dict:
+    """Score vault documentation quality against a 4-criterion rubric.
+
+    Returns dict of {component_id: score_0_to_100} for:
+    - strategy_description_avail
+    - parameter_visibility
+    - rebalance_logic_documented
+    - risk_disclosure
+
+    Results cached 24h and stored in rpi_doc_scores table.
+    """
+    # Check cache
+    cached = _vault_docs_cache.get(entity_slug)
+    if cached and (time.time() - cached[0]) < _VAULT_DOCS_CACHE_TTL:
+        return cached[1]
+
+    docs_url = VAULT_DOCS.get(entity_slug)
+    if not docs_url:
+        return {}
+
+    results = {}
+    component_map = {
+        "strategy_description": "strategy_description_avail",
+        "parameter_documentation": "parameter_visibility",
+        "rebalance_logic": "rebalance_logic_documented",
+        "risk_disclosure": "risk_disclosure",
+    }
+
+    for criterion_id, criterion_def in VAULT_DOCS_RUBRIC.items():
+        score, evidence_url, snippet = _score_vault_criterion(docs_url, criterion_def)
+        component_id = component_map[criterion_id]
+
+        # Normalize: 0-25 criterion score → 0-100 component score
+        normalized = min(100, score * 4)
+        results[component_id] = normalized
+
+        # Store evidence in rpi_doc_scores (reuse same table)
+        try:
+            execute("""
+                INSERT INTO rpi_doc_scores
+                    (protocol_slug, criterion, score, evidence_url, evidence_snippet, scored_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (protocol_slug, criterion) DO UPDATE SET
+                    score = EXCLUDED.score,
+                    evidence_url = EXCLUDED.evidence_url,
+                    evidence_snippet = EXCLUDED.evidence_snippet,
+                    scored_at = NOW()
+            """, (entity_slug, criterion_id, score, evidence_url, snippet))
+        except Exception as e:
+            logger.debug(f"VSRI docs evidence store failed: {e}")
+
+    _vault_docs_cache[entity_slug] = (time.time(), results)
+    if results:
+        logger.info(
+            f"VSRI docs scoring {entity_slug}: "
+            + " ".join(f"{k}={v:.0f}" for k, v in results.items())
+        )
+    return results
 
 # =============================================================================
 # Static config
@@ -408,6 +584,16 @@ def score_vault(entity: dict, all_pools: list[dict], hacks_cache: list = None) -
     # Withdrawal delay from DeFiLlama yields metadata
     delay_automated = _automate_vault_withdrawal_delay(entity, static, matched_pools)
     raw_values.update(delay_automated)
+
+    # --- Phase 3C: Documentation quality scoring ---
+    try:
+        docs_scores = score_vault_docs(slug)
+        if docs_scores:
+            for comp_id, live_score in docs_scores.items():
+                static_score = static.get(comp_id, 0)
+                raw_values[comp_id] = max(live_score, static_score)
+    except Exception as e:
+        logger.debug(f"VSRI docs scoring failed for {slug}: {e}")
 
     result = score_entity(VSRI_V01_DEFINITION, raw_values)
     result["entity_slug"] = slug
