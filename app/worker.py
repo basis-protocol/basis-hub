@@ -28,7 +28,7 @@ from app.config import STABLECOIN_REGISTRY, COLLECTION_INTERVAL_MINUTES
 from app.database import init_pool, close_pool, get_cursor, fetch_one, fetch_all
 from app.scoring import (
     calculate_sii, calculate_structural_composite,
-    aggregate_legacy_to_v1, FORMULA_VERSION, SII_V1_WEIGHTS,
+    aggregate_legacy_to_v1, score_to_grade, FORMULA_VERSION, SII_V1_WEIGHTS,
 )
 from app.collectors.coingecko import (
     collect_peg_components, collect_liquidity_components,
@@ -239,8 +239,10 @@ def compute_sii_from_components(components: list[dict]) -> dict:
         for sub, s in structural_buckets.items()
     }
     
+    rounded_overall = round(overall, 2)
     return {
-        "overall_score": round(overall, 2),
+        "overall_score": rounded_overall,
+        "grade": score_to_grade(rounded_overall),
         "peg_score": round(v1_scores.get("peg_stability") or 0, 2),
         "liquidity_score": round(v1_scores.get("liquidity_depth") or 0, 2),
         "mint_burn_score": round(v1_scores.get("mint_burn_dynamics") or 0, 2),
@@ -352,7 +354,7 @@ def store_score(stablecoin_id: str, score_data: dict, price_ctx: dict):
                 updated_at = NOW()
         """, (
             stablecoin_id,
-            score_data["overall_score"], None,
+            score_data["overall_score"], score_data["grade"],
             score_data["peg_score"], score_data["liquidity_score"],
             score_data["mint_burn_score"], score_data["distribution_score"],
             score_data["structural_score"],
@@ -398,7 +400,7 @@ def store_history_snapshot(stablecoin_id: str, score_data: dict):
                 component_count = EXCLUDED.component_count
         """, (
             stablecoin_id,
-            score_data["overall_score"], None,
+            score_data["overall_score"], score_data["grade"],
             score_data["peg_score"], score_data["liquidity_score"],
             score_data["mint_burn_score"], score_data["distribution_score"],
             score_data["structural_score"],
