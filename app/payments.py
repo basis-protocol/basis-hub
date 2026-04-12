@@ -34,6 +34,18 @@ from app.database import fetch_one, fetch_all, execute
 
 logger = logging.getLogger("payments")
 
+
+def _log_payment(request, endpoint: str, price_usd: float = 0.001):
+    """Best-effort payment logging."""
+    try:
+        from app.database import execute
+        execute(
+            "INSERT INTO payment_log (endpoint, price_usd, protocol, ip_address) VALUES (%s, %s, 'x402', %s)",
+            (endpoint, price_usd, request.client.host if request.client else "unknown"),
+        )
+    except Exception:
+        pass
+
 # --- Configuration ---
 BASIS_WALLET = os.environ.get("BASIS_PAYMENT_WALLET", "")
 
@@ -188,6 +200,9 @@ def create_x402_middleware():
         "GET /api/paid/cqi": _route(
             "$0.001", "Composite Quality Index for a stablecoin-protocol pair"
         ),
+        "GET /api/paid/rqs/{slug}": _route(
+            "$0.001", "Reserve Quality Score for a protocol's stablecoin treasury holdings"
+        ),
         "GET /api/paid/pulse/latest": _route(
             "$0.002", "Latest daily system pulse with integrity status"
         ),
@@ -199,6 +214,12 @@ def create_x402_middleware():
         ),
         "GET /api/paid/report/{entity_type}/{entity_id}": _route(
             "$0.01", "Attested risk report with optional regulatory lens"
+        ),
+        "GET /api/paid/rpi/scores": _route(
+            "$0.005", "All protocol Risk Posture Index scores"
+        ),
+        "GET /api/paid/rpi/scores/{slug}": _route(
+            "$0.001", "Single protocol RPI score with component breakdown"
         ),
     }
 
@@ -280,6 +301,7 @@ async def paid_sii_rankings(request: Request):
             },
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         })
+    _log_payment(request, request.url.path)
     return {
         "stablecoins": results,
         "count": len(results),
@@ -290,7 +312,7 @@ async def paid_sii_rankings(request: Request):
 
 
 @paid_router.get("/sii/{coin}")
-async def paid_sii_detail(coin: str, request: Request):
+async def paid_sii_detail(request: Request, coin: str):
     """Paid: Single stablecoin detail."""
     _log_payment(f"/api/paid/sii/{coin}", request, "$0.001")
     from app.scoring import SII_V1_WEIGHTS, FORMULA_VERSION
@@ -309,6 +331,7 @@ async def paid_sii_detail(coin: str, request: Request):
         WHERE stablecoin_id = %s AND collected_at > NOW() - INTERVAL '48 hours'
         ORDER BY component_id, collected_at DESC
     """, (coin,))
+    _log_payment(request, request.url.path)
     return {
         "id": row["stablecoin_id"],
         "name": row["name"],
@@ -349,6 +372,7 @@ async def paid_psi_all(request: Request):
         FROM psi_scores ORDER BY protocol_slug, computed_at DESC
     """)
     from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+    _log_payment(request, request.url.path)
     return {
         "protocols": [
             {
@@ -367,7 +391,7 @@ async def paid_psi_all(request: Request):
 
 
 @paid_router.get("/psi/scores/{slug}")
-async def paid_psi_detail(slug: str, request: Request):
+async def paid_psi_detail(request: Request, slug: str):
     """Paid: Single PSI detail."""
     _log_payment(f"/api/paid/psi/scores/{slug}", request, "$0.001")
     row = fetch_one("""
@@ -377,6 +401,7 @@ async def paid_psi_detail(slug: str, request: Request):
     """, (slug,))
     if not row:
         raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found")
+    _log_payment(request, request.url.path)
     return {
         "protocol_slug": row["protocol_slug"],
         "protocol_name": row["protocol_name"],
@@ -398,6 +423,18 @@ async def paid_cqi(request: Request, asset: str = Query(...), protocol: str = Qu
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     result["tier"] = "paid"
+    _log_payment(request, request.url.path)
+    return result
+
+
+@paid_router.get("/rqs/{slug}")
+async def paid_rqs(slug: str):
+    """Paid: Reserve Quality Score for a protocol's stablecoin treasury."""
+    from app.composition import compute_rqs_for_protocol
+    result = compute_rqs_for_protocol(slug)
+    if "error" in result and "rqs_score" not in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    result["tier"] = "paid"
     return result
 
 
@@ -413,6 +450,7 @@ async def paid_pulse(request: Request):
         summary = json.loads(summary)
     canonical = json.dumps(summary, sort_keys=True, separators=(",", ":"), default=str)
     content_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+    _log_payment(request, request.url.path)
     return {
         "pulse_date": row["pulse_date"].isoformat() if hasattr(row["pulse_date"], "isoformat") else str(row["pulse_date"]),
         "summary": summary,
@@ -433,11 +471,12 @@ async def paid_discovery(request: Request):
         WHERE detected_at >= NOW() - INTERVAL '7 days'
         ORDER BY novelty_score DESC LIMIT 20
     """)
+    _log_payment(request, request.url.path)
     return {"signals": rows, "count": len(rows), "tier": "paid"}
 
 
 @paid_router.get("/wallets/{address}/profile")
-async def paid_wallet_profile(address: str, request: Request):
+async def paid_wallet_profile(request: Request, address: str):
     """Paid: Full wallet risk profile with behavioral signals."""
     _log_payment(f"/api/paid/wallets/{address}/profile", request, "$0.005")
     from app.wallet_profile import generate_wallet_profile
@@ -466,6 +505,7 @@ async def paid_wallet_profile(address: str, request: Request):
         ],
     }
     profile["tier"] = "paid"
+    _log_payment(request, request.url.path)
     return profile
 
 
@@ -514,6 +554,7 @@ async def paid_report(
     )
 
     import json as _json
+    _log_payment(request, request.url.path)
     return {
         "entity_type": entity_type,
         "entity_id": entity_id,
@@ -521,5 +562,57 @@ async def paid_report(
         "lens_result": lens_result,
         "report_hash": report_hash,
         "generated_at": ts,
+        "tier": "paid",
+    }
+
+
+@paid_router.get("/rpi/scores")
+async def paid_rpi_all():
+    """Paid: All RPI scores."""
+    rows = fetch_all("""
+        SELECT DISTINCT ON (protocol_slug)
+            protocol_slug, protocol_name, overall_score, grade,
+            component_scores, methodology_version, computed_at
+        FROM rpi_scores ORDER BY protocol_slug, computed_at DESC
+    """)
+    from app.index_definitions.rpi_v2 import RPI_V2_DEFINITION
+    return {
+        "protocols": [
+            {
+                "protocol_slug": r["protocol_slug"],
+                "protocol_name": r["protocol_name"],
+                "score": float(r["overall_score"]) if r.get("overall_score") else None,
+                "grade": r.get("grade"),
+                "component_scores": r.get("component_scores"),
+                "computed_at": r["computed_at"].isoformat() if r.get("computed_at") else None,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+        "version": RPI_V2_DEFINITION["version"],
+        "tier": "paid",
+    }
+
+
+@paid_router.get("/rpi/scores/{slug}")
+async def paid_rpi_detail(slug: str):
+    """Paid: Single RPI detail."""
+    row = fetch_one("""
+        SELECT protocol_slug, protocol_name, overall_score, grade,
+               component_scores, raw_values, inputs_hash,
+               methodology_version, computed_at
+        FROM rpi_scores WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1
+    """, (slug,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in RPI scores")
+    return {
+        "protocol_slug": row["protocol_slug"],
+        "protocol_name": row["protocol_name"],
+        "score": float(row["overall_score"]) if row.get("overall_score") else None,
+        "grade": row.get("grade"),
+        "component_scores": row.get("component_scores"),
+        "raw_values": row.get("raw_values"),
+        "inputs_hash": row.get("inputs_hash"),
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         "tier": "paid",
     }

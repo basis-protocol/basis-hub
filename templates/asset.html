@@ -12,11 +12,23 @@
 {% endblock %}
 
 {% block content %}
-    <div style="height: 28px;"></div>
-
-    <div class="section-label">Stablecoin Integrity Index</div>
-    <div style="font-family: var(--mono); font-size: 18px; font-weight: 700; color: var(--ink); margin-bottom: 4px;">
-        {{ symbol }}
+    <div class="tab-header">
+      <div class="tab-header-top">
+        <div class="tab-header-title"><strong>{{ name or symbol }}</strong> Integrity Index</div>
+        <div class="tab-header-form-id">FORM SII-001 · BASIS PROTOCOL</div>
+      </div>
+      <div class="tab-header-rule"></div>
+      <div class="tab-header-stats">
+        <span>SII {{ score.overall_score }}</span>
+        <div class="tab-header-divider"></div>
+        <span>{{ score.component_count or '—' }} COMPONENTS</span>
+        <div class="tab-header-divider"></div>
+        <span>UPDATED HOURLY</span>
+      </div>
+      <div class="tab-header-chain">
+        <a href="https://basescan.org/address/0x1651d7b2E238a952167E51A1263FFe607584DB83" target="_blank" rel="noopener noreferrer" class="chain-pill"><span class="chain-dot" style="background:#378ADD"></span> Base</a>
+        <a href="https://arbiscan.io/address/0x1651d7b2E238a952167E51A1263FFe607584DB83" target="_blank" rel="noopener noreferrer" class="chain-pill"><span class="chain-dot" style="background:#28A0F0"></span> Arbitrum</a>
+      </div>
     </div>
 
     <div class="metric-row">

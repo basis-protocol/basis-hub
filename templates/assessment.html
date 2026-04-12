@@ -12,12 +12,17 @@
 {% endblock %}
 
 {% block content %}
-    <div style="height: 28px;"></div>
-
-    <div class="section-label">Assessment Event</div>
-    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
-        <span class="badge severity-{{ assessment.severity }}" style="border-color: currentColor;">{{ assessment.severity | upper }}</span>
-        <span style="font-family: var(--mono); font-size: 12px; color: var(--ink-mid);">{{ assessment.trigger_type }}</span>
+    <div class="tab-header">
+      <div class="tab-header-top">
+        <div class="tab-header-title"><strong>Assessment</strong> Event</div>
+        <div class="tab-header-form-id">FORM ASM-001 · BASIS PROTOCOL</div>
+      </div>
+      <div class="tab-header-rule"></div>
+      <div class="tab-header-stats">
+        <span class="severity-{{ assessment.severity }}">{{ assessment.severity | upper }}</span>
+        <div class="tab-header-divider"></div>
+        <span>{{ assessment.trigger_type }}</span>
+      </div>
     </div>
     <div style="font-family: var(--mono); font-size: 11px; color: var(--ink-mid); margin-bottom: 2px;">
         Wallet: <a class="link-subtle" href="/wallet/{{ assessment.wallet_address }}">{{ assessment.wallet_address }}</a>

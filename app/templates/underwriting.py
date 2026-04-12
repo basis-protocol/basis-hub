@@ -79,4 +79,6 @@ def render(report_data: dict, lens_result: dict = None,
 
     return page(f"{name} — Underwriting Report", body,
                 f"Underwriting risk analysis for {name}.",
-                f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}")
+                f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}",
+                form_id="FORM UND-001 · BASIS PROTOCOL",
+                stats=[f"PSI {score:.1f}" if score else "PSI —"])

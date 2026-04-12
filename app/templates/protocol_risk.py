@@ -71,9 +71,13 @@ def render(report_data: dict, lens_result: dict = None,
                                timestamp, lens_result.get("lens_id") if lens_result else None,
                                lens_result.get("lens_version") if lens_result else None)
 
+    cat_count = len(d.get("category_scores") or {})
+    exp_count = len(d.get("exposures") or d.get("holdings") or [])
     return page(f"{name} — Protocol Risk Report", body,
                 f"Protocol risk report for {name}. PSI {score:.1f}/100." if score else f"Protocol risk report for {name}.",
-                f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}")
+                f"{CANONICAL_BASE_URL}/report/protocol/{d.get('entity_id', '')}",
+                form_id="FORM PSI-RPT-001 · BASIS PROTOCOL",
+                stats=[f"PSI {score:.1f}" if score else "PSI —", f"{cat_count} categories", f"{exp_count} exposures"])
 
 
 def _render_lens_section(lens_result: dict) -> str:

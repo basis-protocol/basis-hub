@@ -12,12 +12,17 @@
 {% endblock %}
 
 {% block content %}
-    <div style="height: 28px;"></div>
-
-    {# === HEADER === #}
-    <div class="section-label">Wallet Risk Profile</div>
-    <div style="font-family: var(--mono); font-size: 12px; color: var(--ink-mid); word-break: break-all; margin-bottom: 4px;">
-        {{ address }}
+    <div class="tab-header">
+      <div class="tab-header-top">
+        <div class="tab-header-title"><strong>Wallet</strong> Risk Profile</div>
+        <div class="tab-header-form-id">FORM WRG-001 · BASIS PROTOCOL</div>
+      </div>
+      <div class="tab-header-rule"></div>
+      <div class="tab-header-stats">
+        <span>{{ address[:6] }}...{{ address[-4:] }}</span>
+        <div class="tab-header-divider"></div>
+        <span>RISK SCORE {{ risk.risk_score or '—' }}</span>
+      </div>
     </div>
 
     {# === SCORE CARD === #}

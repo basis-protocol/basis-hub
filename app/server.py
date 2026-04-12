@@ -195,6 +195,39 @@ async def rate_limit_and_track(request: Request, call_next):
                     entity_id = parts[1].split("/")[0].split("?")[0]
     elif path.startswith("/mcp"):
         entity_type = "mcp"
+    elif "/api/reports/" in path and "/verify/" not in path and "/templates" not in path and "/recent" not in path and "/lenses" not in path:
+        parts = path.split("/api/reports/")
+        if len(parts) > 1:
+            segments = parts[1].strip("/").split("/")
+            if len(segments) >= 2:
+                entity_type = segments[0]
+                entity_id = segments[1].split("?")[0]
+    elif "/api/paid/report/" in path:
+        parts = path.split("/api/paid/report/")
+        if len(parts) > 1:
+            segments = parts[1].strip("/").split("/")
+            if len(segments) >= 2:
+                entity_type = segments[0]
+                entity_id = segments[1].split("?")[0]
+    elif "/api/paid/sii/" in path:
+        entity_type = "stablecoin"
+        entity_id = path.split("/api/paid/sii/")[-1].split("/")[0].split("?")[0]
+    elif "/api/paid/psi/scores/" in path:
+        entity_type = "protocol"
+        entity_id = path.split("/api/paid/psi/scores/")[-1].split("/")[0].split("?")[0]
+    elif "/api/paid/wallets/" in path:
+        entity_type = "wallet"
+        entity_id = path.split("/api/paid/wallets/")[-1].split("/")[0].split("?")[0][:42]
+    elif path.startswith("/api/compose/cqi"):
+        entity_type = "composition"
+    elif path.startswith("/api/state-root"):
+        entity_type = "state_root"
+    elif path == "/api/query" or path.startswith("/api/query/"):
+        entity_type = "query"
+    elif path.startswith("/api/divergence"):
+        entity_type = "divergence"
+    elif path.startswith("/api/discovery"):
+        entity_type = "discovery"
 
     # Admin endpoints — exempt from rate limiting but still logged
     if path.startswith("/api/admin") or path.startswith("/api/ops"):
@@ -3969,6 +4002,280 @@ async def protocol_market_history(slug: str):
 
 
 # =============================================================================
+# RPI — Risk Posture Index endpoints
+# =============================================================================
+
+@app.get("/api/rpi/scores")
+async def rpi_scores():
+    """All scored protocols — latest base RPI score per protocol."""
+    cached = _cache.get("rpi_scores", ttl=60)
+    if cached:
+        return cached
+    rows = fetch_all("""
+        SELECT DISTINCT ON (protocol_slug)
+            id, protocol_slug, protocol_name, overall_score, grade,
+            component_scores, raw_values, inputs_hash,
+            methodology_version, computed_at
+        FROM rpi_scores
+        ORDER BY protocol_slug, computed_at DESC
+    """)
+    from app.index_definitions.rpi_v2 import RPI_V2_DEFINITION
+    results = []
+    for row in rows:
+        results.append({
+            "protocol_slug": row["protocol_slug"],
+            "protocol_name": row["protocol_name"],
+            "score": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row.get("grade"),
+            "component_scores": row.get("component_scores"),
+            "methodology_version": row.get("methodology_version"),
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        })
+    result = {
+        "protocols": results,
+        "count": len(results),
+        "index": "rpi",
+        "version": RPI_V2_DEFINITION["version"],
+        "methodology_version": f"rpi-{RPI_V2_DEFINITION['version']}",
+    }
+    _cache.set("rpi_scores", result)
+    return result
+
+
+@app.get("/api/rpi/rankings")
+async def rpi_rankings(lens: Optional[str] = Query(default=None)):
+    """Protocols ranked by base RPI score (or lensed score if lens= provided)."""
+    rows = fetch_all("""
+        SELECT DISTINCT ON (protocol_slug)
+            protocol_slug, protocol_name, overall_score, grade,
+            component_scores, computed_at
+        FROM rpi_scores
+        ORDER BY protocol_slug, computed_at DESC
+    """)
+    from app.index_definitions.rpi_v2 import RPI_V2_DEFINITION
+
+    results = []
+    for row in rows:
+        entry = {
+            "protocol_slug": row["protocol_slug"],
+            "protocol_name": row["protocol_name"],
+            "rpi_base": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row.get("grade"),
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        }
+
+        # If lenses requested, compute lensed score
+        if lens and entry["rpi_base"] is not None:
+            from app.rpi.scorer import _load_lens_components, compute_lensed_score
+            lens_ids = [l.strip() for l in lens.split(",") if l.strip()]
+            lens_components = _load_lens_components(row["protocol_slug"], lens_ids)
+            lensed = compute_lensed_score(entry["rpi_base"], lens_ids, lens_components)
+            entry["rpi_lensed"] = lensed["rpi_lensed"]
+            entry["lens_blend_used"] = lensed["lens_blend_used"]
+
+        results.append(entry)
+
+    # Sort by lensed score if lenses applied, otherwise base
+    sort_key = "rpi_lensed" if lens else "rpi_base"
+    results.sort(key=lambda x: x.get(sort_key) or 0, reverse=True)
+
+    return {
+        "rankings": results,
+        "count": len(results),
+        "index": "rpi",
+        "version": RPI_V2_DEFINITION["version"],
+        "ranked_by": sort_key,
+        "lenses_applied": lens.split(",") if lens else [],
+    }
+
+
+@app.get("/api/rpi/lenses")
+async def rpi_lenses():
+    """List available lenses and their components."""
+    from app.index_definitions.rpi_v2 import RPI_LENSES, LENS_BLEND
+    lenses = {}
+    for lens_id, lens_def in RPI_LENSES.items():
+        lenses[lens_id] = {
+            "name": lens_def["name"],
+            "description": lens_def["description"],
+            "components": {
+                comp_id: {"name": comp_def["name"], "weight": comp_def["weight"]}
+                for comp_id, comp_def in lens_def["components"].items()
+            },
+        }
+    return {
+        "lenses": lenses,
+        "lens_blend": LENS_BLEND,
+        "formula": "RPI_lensed = (1 - blend) * base + blend * lens_weighted_avg",
+    }
+
+
+@app.get("/api/rpi/components/{slug}")
+async def rpi_components(slug: str):
+    """Base component-level detail for a protocol."""
+    rows = fetch_all("""
+        SELECT DISTINCT ON (component_id)
+            component_id, component_type, raw_value, normalized_score,
+            source_type, data_source, collected_at
+        FROM rpi_components
+        WHERE protocol_slug = %s AND component_type = 'base'
+        ORDER BY component_id, collected_at DESC
+    """, (slug,))
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No RPI components found for '{slug}'")
+    return {
+        "protocol_slug": slug,
+        "components": [
+            {
+                "component_id": r["component_id"],
+                "raw_value": r["raw_value"],
+                "normalized_score": round(r["normalized_score"], 2) if r["normalized_score"] else None,
+                "source_type": r["source_type"],
+                "data_source": r["data_source"],
+                "collected_at": r["collected_at"].isoformat() if r.get("collected_at") else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/rpi/history/{slug}")
+async def rpi_history(slug: str, limit: int = Query(default=90)):
+    """Base score history for a protocol (live + backfilled). Includes confidence tags."""
+    rows = fetch_all("""
+        SELECT h.score_date, h.overall_score, h.component_scores, h.methodology_version,
+               d.confidence
+        FROM rpi_score_history h
+        LEFT JOIN historical_rpi_data d
+            ON d.protocol_slug = h.protocol_slug AND d.record_date = h.score_date
+        WHERE h.protocol_slug = %s
+        ORDER BY h.score_date DESC
+        LIMIT %s
+    """, (slug, limit))
+    return {
+        "protocol_slug": slug,
+        "history": [
+            {
+                "date": r["score_date"].isoformat() if hasattr(r["score_date"], "isoformat") else str(r["score_date"]),
+                "score": float(r["overall_score"]) if r.get("overall_score") else None,
+                "component_scores": r.get("component_scores"),
+                "confidence": r.get("confidence", "high"),
+                "reconstructed": "reconstructed" in (r.get("methodology_version") or ""),
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@app.get("/api/rpi/history/{slug}/at/{date_str}")
+async def rpi_history_at_date(slug: str, date_str: str):
+    """Reconstruct BASE RPI score for a protocol at a specific historical date."""
+    try:
+        from datetime import date as date_type
+        from app.rpi.historical import reconstruct_rpi_score
+        target = date_type.fromisoformat(date_str)
+        return reconstruct_rpi_score(slug, target)
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+
+@app.post("/api/admin/rpi-backfill")
+async def admin_rpi_backfill(request: Request, background_tasks: BackgroundTasks):
+    """Trigger historical RPI reconstruction for all protocols. Admin-key protected."""
+    _check_admin_key(request)
+    try:
+        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    except Exception:
+        body = {}
+
+    protocols = body.get("protocols")
+    since_years = body.get("since_years", 2)
+    interval_days = body.get("interval_days", 30)
+
+    def _run_backfill():
+        from app.rpi.historical import run_historical_backfill
+        run_historical_backfill(protocols, since_years, interval_days)
+
+    background_tasks.add_task(_run_backfill)
+    return {"status": "backfill_started", "protocols": protocols or "all", "since_years": since_years}
+
+
+@app.get("/api/rpi/compare")
+async def rpi_compare(slugs: str = Query(..., description="Comma-separated protocol slugs")):
+    """Multi-protocol comparison of base RPI scores."""
+    slug_list = [s.strip() for s in slugs.split(",") if s.strip()]
+    if not slug_list:
+        raise HTTPException(status_code=400, detail="Provide comma-separated protocol slugs via ?slugs=")
+
+    results = []
+    for slug in slug_list:
+        row = fetch_one("""
+            SELECT protocol_slug, protocol_name, overall_score, grade,
+                   component_scores, raw_values, computed_at
+            FROM rpi_scores
+            WHERE protocol_slug = %s
+            ORDER BY computed_at DESC LIMIT 1
+        """, (slug,))
+        if row:
+            results.append({
+                "protocol_slug": row["protocol_slug"],
+                "protocol_name": row["protocol_name"],
+                "score": float(row["overall_score"]) if row.get("overall_score") else None,
+                "grade": row.get("grade"),
+                "component_scores": row.get("component_scores"),
+                "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            })
+
+    return {
+        "protocols": results,
+        "count": len(results),
+        "index": "rpi",
+    }
+
+
+@app.get("/api/rpi/scores/{slug}")
+async def rpi_score_detail(slug: str, lens: Optional[str] = Query(default=None)):
+    """Detailed RPI breakdown for one protocol. Optionally include lens scores."""
+    row = fetch_one("""
+        SELECT id, protocol_slug, protocol_name, overall_score, grade,
+               component_scores, raw_values, inputs_hash,
+               methodology_version, computed_at
+        FROM rpi_scores
+        WHERE protocol_slug = %s
+        ORDER BY computed_at DESC LIMIT 1
+    """, (slug,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in RPI scores")
+
+    result = {
+        "protocol_slug": row["protocol_slug"],
+        "protocol_name": row["protocol_name"],
+        "rpi_base": float(row["overall_score"]) if row.get("overall_score") else None,
+        "grade": row.get("grade"),
+        "component_scores": row.get("component_scores"),
+        "raw_values": row.get("raw_values"),
+        "inputs_hash": row.get("inputs_hash"),
+        "methodology_version": row.get("methodology_version"),
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+    }
+
+    # If lenses requested, compute lensed score on-the-fly
+    if lens and result["rpi_base"] is not None:
+        from app.rpi.scorer import _load_lens_components, compute_lensed_score
+        lens_ids = [l.strip() for l in lens.split(",") if l.strip()]
+        lens_components = _load_lens_components(slug, lens_ids)
+        lensed = compute_lensed_score(result["rpi_base"], lens_ids, lens_components)
+        result["rpi_lensed"] = lensed["rpi_lensed"]
+        result["lens_scores"] = lensed["lens_scores"]
+        result["lens_blend_used"] = lensed["lens_blend_used"]
+        result["lenses_applied"] = lens_ids
+
+    return result
+
+
+# =============================================================================
 # Treasury Exposure — cross-reference protocol holdings with SII scores
 # =============================================================================
 
@@ -4959,6 +5266,27 @@ async def compose_cqi_matrix():
     """CQI for all stablecoin x protocol combinations."""
     from app.composition import compute_cqi_matrix
     return compute_cqi_matrix()
+
+
+# =============================================================================
+# RQS (Reserve Quality Score) — Composition API
+# =============================================================================
+
+@app.get("/api/compose/rqs")
+async def compose_rqs_all():
+    """Reserve Quality Score for all PSI-scored protocols."""
+    from app.composition import compute_rqs_all
+    return compute_rqs_all()
+
+
+@app.get("/api/compose/rqs/{slug}")
+async def compose_rqs_protocol(slug: str):
+    """Reserve Quality Score for a single protocol's stablecoin treasury."""
+    from app.composition import compute_rqs_for_protocol
+    result = compute_rqs_for_protocol(slug)
+    if "error" in result and "rqs_score" not in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
 
 
 @app.get("/api/specs/composition")
