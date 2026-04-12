@@ -937,7 +937,7 @@ async def run_scoring_cycle():
             total_cnt = len(health)
             failing = [r for r in health if r.get("status") in ("degraded", "down")]
 
-            sii_row = fetch_one("SELECT COUNT(*) as cnt, MAX(calculated_at) as latest FROM scores")
+            sii_row = fetch_one("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM scores")
             sii_count = sii_row["cnt"] if sii_row else 0
             sii_age = "?"
             if sii_row and sii_row.get("latest"):
