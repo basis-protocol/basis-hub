@@ -75,30 +75,44 @@ class BlockscoutFetcher:
         wallet_addresses: list[str],
         chain_id: int = 1,
     ) -> dict[str, dict[str, int]]:
-        """Fetch token balances for all addresses.
+        """Fetch token balances for all addresses with rate limiting.
 
         Returns:
             {wallet_address_lower: {token_address_lower: raw_balance_int, ...}, ...}
             Only includes non-zero balances.
+            Stops early if > 50 consecutive failures (API likely down).
         """
         base_url = _BLOCKSCOUT_BASES.get(chain_id)
         if not base_url:
             logger.warning(f"BlockscoutFetcher: no base URL for chain_id={chain_id}")
             return {}
 
-        tasks = [
-            self._fetch_single(client, addr, base_url)
-            for addr in wallet_addresses
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
         all_balances: dict[str, dict[str, int]] = {}
-        for addr, result in zip(wallet_addresses, results):
-            if isinstance(result, Exception):
-                logger.debug(f"Blockscout fetch exception for {addr[:10]}…: {result}")
-                continue
-            if result:
-                all_balances[addr.lower()] = result
+        consecutive_failures = 0
+        MAX_CONSECUTIVE_FAILURES = 50
+
+        for i, addr in enumerate(wallet_addresses):
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.error(
+                    f"Blockscout: {consecutive_failures} consecutive failures — "
+                    f"aborting batch early ({i}/{len(wallet_addresses)} processed)"
+                )
+                break
+
+            try:
+                result = await self._fetch_single(client, addr, base_url)
+                if result:
+                    all_balances[addr.lower()] = result
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+            except Exception as e:
+                logger.debug(f"Blockscout fetch exception for {addr[:10]}…: {e}")
+                consecutive_failures += 1
+
+            # Rate limit: small delay between calls to avoid saturating connections
+            if i < len(wallet_addresses) - 1:
+                await asyncio.sleep(EXPLORER_RATE_LIMIT_DELAY)
 
         return all_balances
 
