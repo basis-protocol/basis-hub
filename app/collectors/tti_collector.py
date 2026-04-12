@@ -332,7 +332,7 @@ def run_tti_scoring() -> list[dict]:
                 {"slug": r["entity_slug"], "score": r["overall_score"]}
                 for r in results
             ])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"TTI attestation failed: {e}")
 
     return results

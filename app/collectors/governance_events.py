@@ -423,8 +423,8 @@ def run_governance_event_collection() -> dict:
             {"protocol": slug, "new_events": total_new}
             for slug in protocols_processed
         ])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Governance events attestation failed: {e}")
 
     return {
         "protocols_processed": len(protocols_processed),

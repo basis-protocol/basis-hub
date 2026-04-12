@@ -209,6 +209,30 @@ def extract_peg_and_liquidity(data: dict, eth_price: float) -> dict:
 # DeFiLlama — pool depth, cross-chain liquidity
 # =============================================================================
 
+def fetch_defillama_all_pools() -> list:
+    """Fetch all pools from DeFiLlama yields API (single bulk call)."""
+    try:
+        resp = requests.get("https://yields.llama.fi/pools", timeout=30)
+        if resp.status_code == 200:
+            return resp.json().get("data", [])
+    except Exception as e:
+        logger.debug(f"DeFiLlama bulk pool fetch failed: {e}")
+    return []
+
+
+def _extract_pool_data_from_cache(symbol: str, all_pools: list) -> dict:
+    """Extract pool data for a symbol from pre-fetched pool cache."""
+    raw = {}
+    sym_upper = symbol.upper()
+    matching = [p for p in all_pools if sym_upper in (p.get("symbol") or "").upper()]
+    if matching:
+        total_tvl = sum(p.get("tvlUsd", 0) for p in matching)
+        raw["dex_pool_depth"] = total_tvl
+        chains = set(p.get("chain", "") for p in matching if p.get("chain"))
+        raw["cross_chain_liquidity"] = len(chains)
+    return raw
+
+
 def fetch_defillama_pool_data(symbol: str) -> dict:
     """Fetch pool data from DeFiLlama yields API for an LST."""
     raw = {}
@@ -277,16 +301,22 @@ def fetch_rated_data(protocol_slug: str) -> dict:
 # Score and store
 # =============================================================================
 
-def score_lst(entity: dict) -> dict | None:
-    """Score a single LST entity. Returns scoring result dict."""
+def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None) -> dict | None:
+    """Score a single LST entity. Returns scoring result dict.
+
+    Args:
+        entity: LST entity config dict
+        eth_price: Pre-fetched ETH price (avoids per-entity API call)
+        pool_cache: Pre-fetched DeFiLlama pools (avoids per-entity API call)
+    """
     slug = entity["slug"]
     cg_id = entity["coingecko_id"]
     symbol = entity["symbol"]
 
     logger.info(f"Scoring LST: {slug}")
 
-    # Fetch ETH price
-    eth_price = fetch_eth_price() or 3000.0
+    if eth_price is None:
+        eth_price = fetch_eth_price() or 3000.0
 
     # CoinGecko data
     cg_data = fetch_lst_market_data(cg_id)
@@ -294,9 +324,11 @@ def score_lst(entity: dict) -> dict | None:
     if cg_data:
         raw_values.update(extract_peg_and_liquidity(cg_data, eth_price))
 
-    # DeFiLlama pool data
-    pool_data = fetch_defillama_pool_data(symbol)
-    raw_values.update(pool_data)
+    # DeFiLlama pool data (use cache if provided)
+    if pool_cache is not None:
+        pool_data = _extract_pool_data_from_cache(symbol, pool_cache)
+    else:
+        pool_data = fetch_defillama_pool_data(symbol)
 
     # Rated.network validator data
     rated_data = fetch_rated_data(slug)
@@ -361,10 +393,14 @@ def store_lst_score(result: dict) -> None:
 
 def run_lsti_scoring() -> list[dict]:
     """Score all LST entities. Called from worker."""
+    # Pre-fetch shared data once (saves ~20 redundant API calls)
+    eth_price = fetch_eth_price() or 3000.0
+    pool_cache = fetch_defillama_all_pools()
+
     results = []
     for entity in LST_ENTITIES:
         try:
-            result = score_lst(entity)
+            result = score_lst(entity, eth_price=eth_price, pool_cache=pool_cache)
             if result:
                 store_lst_score(result)
                 results.append(result)
@@ -384,7 +420,7 @@ def run_lsti_scoring() -> list[dict]:
                 {"slug": r["entity_slug"], "score": r["overall_score"]}
                 for r in results
             ])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"LSTI attestation failed: {e}")
 
     return results

@@ -688,8 +688,9 @@ async def run_scoring_cycle():
         logger.warning(f"TTI scoring failed: {e}")
 
     # -------------------------------------------------------------------------
-    # Daily-gated collectors: governance events + DOHI (depend on Snapshot/Tally)
+    # Daily-gated: governance event collection (Snapshot/Tally)
     # -------------------------------------------------------------------------
+    _gov_daily_gate_open = False
     try:
         last_gov_row = fetch_one(
             "SELECT MAX(created_at) AS latest FROM governance_events WHERE created_at > NOW() - INTERVAL '48 hours'"
@@ -702,20 +703,27 @@ async def run_scoring_cycle():
             gov_age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
 
         if gov_age_hours >= 24:
+            _gov_daily_gate_open = True
             from app.collectors.governance_events import run_governance_event_collection
             logger.info("Running governance event collection...")
             gov_result = run_governance_event_collection()
             logger.info(f"Governance events: {gov_result.get('new_events', 0)} new across {gov_result.get('protocols_processed', 0)} protocols")
+        else:
+            logger.info(f"Governance events skipped — last ran {gov_age_hours:.1f}h ago")
+    except Exception as e:
+        logger.warning(f"Governance event collection failed: {e}")
 
-            # DOHI scoring runs after governance event collection
+    # -------------------------------------------------------------------------
+    # Daily-gated: DOHI scoring (independent of governance event success)
+    # -------------------------------------------------------------------------
+    if _gov_daily_gate_open:
+        try:
             from app.collectors.dao_collector import run_dohi_scoring
             logger.info("Running DOHI scoring cycle...")
             dohi_results = run_dohi_scoring()
             logger.info(f"DOHI scoring complete: {len(dohi_results)} DAOs scored")
-        else:
-            logger.info(f"Governance events/DOHI skipped — last ran {gov_age_hours:.1f}h ago")
-    except Exception as e:
-        logger.warning(f"Governance events/DOHI pipeline failed: {e}")
+        except Exception as e:
+            logger.warning(f"DOHI scoring failed: {e}")
 
     # -------------------------------------------------------------------------
     # CDA collection — daily gate via DB timestamp

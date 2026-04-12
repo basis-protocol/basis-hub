@@ -1217,8 +1217,18 @@ async def get_all_indices():
     """Return all registered index definitions for the methodology page."""
     from app.index_definitions.sii_v1 import SII_V1_DEFINITION
     from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
+    from app.index_definitions.lsti_v01 import LSTI_V01_DEFINITION
+    from app.index_definitions.bri_v01 import BRI_V01_DEFINITION
+    from app.index_definitions.dohi_v01 import DOHI_V01_DEFINITION
+    from app.index_definitions.vsri_v01 import VSRI_V01_DEFINITION
+    from app.index_definitions.cxri_v01 import CXRI_V01_DEFINITION
+    from app.index_definitions.tti_v01 import TTI_V01_DEFINITION
 
-    indices = [SII_V1_DEFINITION, PSI_V01_DEFINITION]
+    indices = [
+        SII_V1_DEFINITION, PSI_V01_DEFINITION,
+        LSTI_V01_DEFINITION, BRI_V01_DEFINITION, DOHI_V01_DEFINITION,
+        VSRI_V01_DEFINITION, CXRI_V01_DEFINITION, TTI_V01_DEFINITION,
+    ]
 
     result = []
     for idx in indices:
@@ -4597,42 +4607,6 @@ async def drift_vault_balances():
             "total_stablecoin_usd_approx": round(total_stablecoin, 2),
         },
         "note": "Post-exploit snapshot. Compare against DeFiLlama collateral exposure for discrepancy.",
-    }
-
-
-@app.get("/api/indices")
-async def list_indices():
-    """List all available index definitions."""
-    from app.index_definitions.sii_v1 import SII_V1_DEFINITION
-    from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
-    from app.index_definitions.lsti_v01 import LSTI_V01_DEFINITION
-    from app.index_definitions.bri_v01 import BRI_V01_DEFINITION
-    from app.index_definitions.dohi_v01 import DOHI_V01_DEFINITION
-    from app.index_definitions.vsri_v01 import VSRI_V01_DEFINITION
-    from app.index_definitions.cxri_v01 import CXRI_V01_DEFINITION
-    from app.index_definitions.tti_v01 import TTI_V01_DEFINITION
-
-    def _idx_entry(defn, status):
-        return {
-            "id": defn["index_id"],
-            "version": defn["version"],
-            "name": defn["name"],
-            "entity_type": defn["entity_type"],
-            "components": len(defn["components"]),
-            "status": status,
-        }
-
-    return {
-        "indices": [
-            _idx_entry(SII_V1_DEFINITION, "live"),
-            _idx_entry(PSI_V01_DEFINITION, "live"),
-            _idx_entry(LSTI_V01_DEFINITION, "accruing"),
-            _idx_entry(BRI_V01_DEFINITION, "accruing"),
-            _idx_entry(DOHI_V01_DEFINITION, "accruing"),
-            _idx_entry(VSRI_V01_DEFINITION, "accruing"),
-            _idx_entry(CXRI_V01_DEFINITION, "accruing"),
-            _idx_entry(TTI_V01_DEFINITION, "accruing"),
-        ]
     }
 
 

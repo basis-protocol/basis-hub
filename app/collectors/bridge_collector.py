@@ -354,7 +354,7 @@ def run_bri_scoring() -> list[dict]:
                 {"slug": r["entity_slug"], "score": r["overall_score"]}
                 for r in results
             ])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"BRI attestation failed: {e}")
 
     return results
