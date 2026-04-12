@@ -173,38 +173,162 @@ def fetch_exchange_data(coingecko_id: str) -> dict | None:
     return None
 
 
-def extract_cex_raw_values(entity: dict) -> dict:
-    """Extract raw values from CoinGecko + static config."""
+# =============================================================================
+# Phase 1: Live data automation for static components
+# =============================================================================
+
+# Exchange API endpoints for availability checks (public, no auth needed)
+CEX_API_ENDPOINTS = {
+    "binance": "https://api.binance.com/api/v3/ping",
+    "okx": "https://www.okx.com/api/v5/public/time",
+    "bybit": "https://api.bybit.com/v5/market/time",
+    "bitget": "https://api.bitget.com/api/v2/spot/public/time",
+    "kraken": "https://api.kraken.com/0/public/Time",
+    "coinbase": "https://api.coinbase.com/v2/time",
+    "gate-io": "https://api.gateio.ws/api/v4/spot/time",
+    "kucoin": "https://api.kucoin.com/api/v1/timestamp",
+}
+
+# Reserve dashboard URLs (checked for 200 response)
+CEX_RESERVE_URLS = {
+    "binance": "https://www.binance.com/en/proof-of-reserves",
+    "okx": "https://www.okx.com/proof-of-reserves",
+    "bybit": "https://www.bybit.com/app/proof-of-reserves",
+    "bitget": "https://www.bitget.com/proof-of-reserves",
+    "kraken": "https://www.kraken.com/proof-of-reserves",
+    "gate-io": "https://www.gate.io/proof-of-reserves",
+    "kucoin": "https://www.kucoin.com/proof-of-reserves",
+}
+
+
+def _automate_cex_years(entity: dict, cg_data: dict | None) -> dict:
+    """Automate years_in_operation from CoinGecko year_established."""
+    automated = {}
+    if cg_data:
+        year = cg_data.get("year_established")
+        if year and isinstance(year, int) and year > 2000:
+            automated["years_in_operation"] = datetime.now().year - year
+    return automated
+
+
+def _automate_cex_hacks(entity: dict, static: dict, hacks_cache: list = None) -> dict:
+    """Automate security_breach_count and withdrawal_freeze_count from DeFiLlama hacks."""
+    automated = {}
+    slug = entity["slug"]
+
+    try:
+        from app.collectors.defillama import fetch_defillama_hacks, filter_hacks_by_name
+        hacks = hacks_cache if hacks_cache is not None else fetch_defillama_hacks()
+        name = entity.get("name", "")
+        matched = filter_hacks_by_name(hacks, name)
+        if not matched:
+            matched = filter_hacks_by_name(hacks, slug.split("-")[0])
+
+        # security_breach_count: count of confirmed hacks/exploits
+        live_count = len(matched)
+        static_count = static.get("security_breach_count", 0)
+        automated["security_breach_count"] = max(live_count, static_count)
+
+        # withdrawal_freeze_count: major withdrawal issues often appear as incidents
+        # This is an imperfect proxy — supplement with static for known events
+        freeze_count = sum(
+            1 for h in matched
+            if any(kw in (h.get("name") or "").lower()
+                   for kw in ["freeze", "withdrawal", "halt", "suspend"])
+        )
+        static_freeze = static.get("withdrawal_freeze_count", 0)
+        automated["withdrawal_freeze_count"] = max(freeze_count, static_freeze)
+    except Exception as e:
+        logger.warning(f"CXRI hacks automation failed for {slug}: {e}")
+
+    return automated
+
+
+def _automate_cex_api_availability(entity: dict, static: dict) -> dict:
+    """Check exchange API availability with a simple health check."""
+    automated = {}
+    slug = entity["slug"]
+    endpoint = CEX_API_ENDPOINTS.get(slug)
+    if not endpoint:
+        return automated
+
+    try:
+        resp = requests.get(endpoint, timeout=10)
+        if resp.status_code == 200:
+            automated["api_availability"] = 95  # API responding
+        else:
+            automated["api_availability"] = 60  # API returned non-200
+    except requests.exceptions.Timeout:
+        automated["api_availability"] = 40  # timeout
+    except Exception:
+        automated["api_availability"] = min(50, static.get("api_availability", 50))
+
+    return automated
+
+
+def _automate_cex_reserve_dashboard(entity: dict, static: dict) -> dict:
+    """Check if exchange has a live reserve dashboard (HEAD request)."""
+    automated = {}
+    slug = entity["slug"]
+    url = CEX_RESERVE_URLS.get(slug)
+    if not url:
+        return automated
+
+    try:
+        resp = requests.head(url, timeout=10, allow_redirects=True)
+        if resp.status_code == 200:
+            automated["realtime_reserve_dashboard"] = 80  # dashboard exists
+        else:
+            automated["realtime_reserve_dashboard"] = 20
+    except Exception:
+        # Keep static value on failure
+        pass
+
+    return automated
+
+
+def extract_cex_raw_values(entity: dict, hacks_cache: list = None) -> dict:
+    """Extract raw values from CoinGecko + static config + live automation."""
     slug = entity["slug"]
     raw = {}
 
     # CoinGecko exchange data
     cg_id = entity.get("coingecko_id")
+    cg_data = None
     if cg_id:
-        data = fetch_exchange_data(cg_id)
-        if data:
+        cg_data = fetch_exchange_data(cg_id)
+        if cg_data:
             # Trust score
-            trust = data.get("trust_score")
+            trust = cg_data.get("trust_score")
             if trust:
                 raw["reserve_asset_diversity"] = trust * 10  # trust_score is 1-10
 
-            # Year established -> years in operation
-            year = data.get("year_established")
-            if year:
-                raw["years_in_operation"] = datetime.now().year - year
-
             # Trade volume 24h (BTC) as proxy for activity
-            vol_btc = data.get("trade_volume_24h_btc")
+            vol_btc = cg_data.get("trade_volume_24h_btc")
             if vol_btc:
                 # Very rough: known wallet balance proxy (exchange with more volume = larger reserves)
                 raw["known_wallet_balance"] = vol_btc * 60000  # approximate BTC price
 
-    # Static config (overrides CoinGecko where both exist, except years_in_operation)
+    # Static config (applied first)
     static = CEX_STATIC_CONFIG.get(slug, {})
-    for k, v in static.items():
-        if k == "years_in_operation" and k in raw:
-            continue  # Keep CoinGecko's live value
-        raw[k] = v
+    raw.update(static)
+
+    # --- Phase 1 automation: override static with live data ---
+    # years_in_operation from CoinGecko (live > static)
+    years_automated = _automate_cex_years(entity, cg_data)
+    raw.update(years_automated)
+
+    # security_breach_count and withdrawal_freeze_count from DeFiLlama hacks
+    hacks_automated = _automate_cex_hacks(entity, static, hacks_cache)
+    raw.update(hacks_automated)
+
+    # API availability from direct health check
+    api_automated = _automate_cex_api_availability(entity, static)
+    raw.update(api_automated)
+
+    # Reserve dashboard from URL check
+    dashboard_automated = _automate_cex_reserve_dashboard(entity, static)
+    raw.update(dashboard_automated)
 
     return raw
 
@@ -213,12 +337,12 @@ def extract_cex_raw_values(entity: dict) -> dict:
 # Score and store
 # =============================================================================
 
-def score_cex(entity: dict) -> dict | None:
+def score_cex(entity: dict, hacks_cache: list = None) -> dict | None:
     """Score a single CEX entity."""
     slug = entity["slug"]
     logger.info(f"Scoring CEX: {slug}")
 
-    raw_values = extract_cex_raw_values(entity)
+    raw_values = extract_cex_raw_values(entity, hacks_cache=hacks_cache)
     if not raw_values:
         logger.warning(f"No data collected for CEX {slug}")
         return None
@@ -268,10 +392,18 @@ def store_cex_score(result: dict) -> None:
 
 def run_cxri_scoring() -> list[dict]:
     """Score all CEX entities. Called from worker."""
+    # Pre-fetch DeFiLlama hacks data (cached 24h, shared across all entities)
+    hacks_cache = []
+    try:
+        from app.collectors.defillama import fetch_defillama_hacks
+        hacks_cache = fetch_defillama_hacks()
+    except Exception as e:
+        logger.warning(f"CXRI hacks pre-fetch failed: {e}")
+
     results = []
     for entity in CEX_ENTITIES:
         try:
-            result = score_cex(entity)
+            result = score_cex(entity, hacks_cache=hacks_cache)
             if result:
                 store_cex_score(result)
                 results.append(result)

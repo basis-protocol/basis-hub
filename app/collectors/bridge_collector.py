@@ -27,6 +27,7 @@ from app.scoring_engine import score_entity
 logger = logging.getLogger(__name__)
 
 DEFILLAMA_BASE = "https://api.llama.fi"
+ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api"
 
 # =============================================================================
 # Static config — security architecture, operational history, etc.
@@ -210,6 +211,179 @@ def fetch_bridge_volume(bridge_id: int) -> dict | None:
     return None
 
 
+# =============================================================================
+# Phase 1: Live data automation for static components
+# =============================================================================
+
+def _automate_bridge_contract_age(entity: dict, static: dict) -> dict:
+    """Fetch contract age via Etherscan V2 first transaction lookup."""
+    automated = {}
+    contract = entity.get("primary_contract")
+    if not contract:
+        return automated
+
+    api_key = os.environ.get("ETHERSCAN_API_KEY", "")
+    if not api_key:
+        return automated
+
+    try:
+        time.sleep(0.15)
+        resp = requests.get(ETHERSCAN_V2_BASE, params={
+            "chainid": 1,
+            "module": "account",
+            "action": "txlist",
+            "address": contract,
+            "startblock": 0,
+            "endblock": 99999999,
+            "page": 1,
+            "offset": 1,
+            "sort": "asc",
+            "apikey": api_key,
+        }, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            txs = data.get("result", [])
+            if isinstance(txs, list) and txs:
+                first_ts = int(txs[0].get("timeStamp", 0))
+                if first_ts > 0:
+                    first_date = datetime.fromtimestamp(first_ts, tz=timezone.utc)
+                    age_days = (datetime.now(timezone.utc) - first_date).days
+                    static_age = static.get("contract_age_days", 0)
+                    automated["contract_age_days"] = max(age_days, static_age)
+                    logger.info(f"BRI contract age {entity['slug']}: {age_days} days")
+    except Exception as e:
+        logger.debug(f"BRI contract age failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_bridge_hacks(entity: dict, static: dict, hacks_cache: list = None) -> dict:
+    """Automate incident_history and time_since_incident_days from DeFiLlama hacks."""
+    automated = {}
+
+    try:
+        from app.collectors.defillama import (
+            fetch_defillama_hacks, filter_hacks_by_name, score_exploit_history_from_hacks,
+        )
+        hacks = hacks_cache if hacks_cache is not None else fetch_defillama_hacks()
+        name = entity.get("name", "")
+        matched = filter_hacks_by_name(hacks, name)
+        if not matched:
+            matched = filter_hacks_by_name(hacks, entity["slug"].split("-")[0])
+
+        # incident_history: 0-100 score (direct normalization)
+        live_score = score_exploit_history_from_hacks(matched)
+        static_score = static.get("incident_history", 100)
+        automated["incident_history"] = min(live_score, static_score)
+
+        # time_since_incident_days: days since most recent hack
+        if matched:
+            now = datetime.now(timezone.utc)
+            most_recent_days = None
+            for h in matched:
+                date_str = h.get("date")
+                if not date_str:
+                    continue
+                try:
+                    if isinstance(date_str, (int, float)):
+                        hack_date = datetime.fromtimestamp(date_str, tz=timezone.utc)
+                    else:
+                        ds = str(date_str).replace("Z", "+00:00")
+                        hack_date = datetime.fromisoformat(ds)
+                        if hack_date.tzinfo is None:
+                            hack_date = hack_date.replace(tzinfo=timezone.utc)
+                    days = (now - hack_date).days
+                    if most_recent_days is None or days < most_recent_days:
+                        most_recent_days = days
+                except (ValueError, TypeError):
+                    pass
+            if most_recent_days is not None:
+                automated["time_since_incident_days"] = most_recent_days
+        else:
+            # No incidents found — use contract age if available, else static
+            automated["time_since_incident_days"] = static.get("time_since_incident_days", 1000)
+    except Exception as e:
+        logger.warning(f"BRI hacks automation failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_bridge_bounty(entity: dict, static: dict) -> dict:
+    """Fetch bug bounty size from Immunefi."""
+    automated = {}
+    slug = entity["slug"]
+
+    try:
+        from app.collectors.smart_contract import fetch_immunefi_bounty
+        # Try slug and also common bounty names
+        bounty = fetch_immunefi_bounty(slug)
+        if not bounty.get("active"):
+            # Try with just first part of slug (e.g., "wormhole" from "wormhole")
+            bounty = fetch_immunefi_bounty(slug.split("-")[0])
+
+        if bounty.get("active") and bounty.get("max_bounty", 0) > 0:
+            automated["bug_bounty_size"] = bounty["max_bounty"]
+        else:
+            # Keep static value if Immunefi didn't find it
+            automated["bug_bounty_size"] = static.get("bug_bounty_size", 0)
+    except Exception as e:
+        logger.debug(f"BRI Immunefi fetch failed for {slug}: {e}")
+
+    return automated
+
+
+def _automate_bridge_from_defillama(entity: dict, static: dict, bridges_data: list[dict]) -> dict:
+    """Automate uptime_pct, token_coverage, message_success_rate from DeFiLlama bridge data."""
+    automated = {}
+    slug = entity["slug"]
+    defillama_id = entity.get("defillama_id", "")
+
+    matched = None
+    for b in bridges_data:
+        b_name = (b.get("displayName") or b.get("name") or "").lower()
+        if defillama_id.lower() in b_name or slug.replace("-", " ") in b_name:
+            matched = b
+            break
+
+    if not matched:
+        return automated
+
+    # token_coverage: count unique tokens from bridge chains/tokens data
+    chains = matched.get("chains", [])
+    if chains:
+        # Number of supported chains as a proxy for token coverage breadth
+        automated["token_coverage"] = len(chains)
+
+    # uptime_pct: derive from volume consistency
+    # If the bridge has current volume > 0 and positive last hourly/daily data, it's "up"
+    daily_vol = matched.get("lastDailyVolume") or matched.get("currentDailyVolume", 0)
+    hourly_vol = matched.get("lastHourlyVolume", 0)
+
+    if daily_vol and daily_vol > 0:
+        # Active bridge — estimate high uptime
+        # We can't truly measure uptime from this API, but active volume = operational
+        static_uptime = static.get("uptime_pct", 99.0)
+        automated["uptime_pct"] = max(99.0, static_uptime)
+    elif hourly_vol == 0 and daily_vol == 0:
+        # No recent volume — potential downtime
+        automated["uptime_pct"] = min(95.0, static.get("uptime_pct", 95.0))
+
+    # message_success_rate: volume consistency as proxy
+    # If daily volume is consistent (>0 for both hourly and daily), high success rate
+    if daily_vol and daily_vol > 0 and hourly_vol and hourly_vol > 0:
+        static_msr = static.get("message_success_rate", 99.0)
+        automated["message_success_rate"] = max(99.0, static_msr)
+
+    # guardian_count: for Axelar (PoS validators), we can approximate from chain data
+    # But for most bridges this requires contract reads — keep static for now
+    # unless we find it in the bridge API response
+    validators = matched.get("validatorCount") or matched.get("validators")
+    if validators and isinstance(validators, (int, float)) and validators > 0:
+        automated["guardian_count"] = int(validators)
+
+    return automated
+
+
 def extract_bridge_raw_values(entity: dict, bridges_data: list[dict]) -> dict:
     """Extract raw component values from DeFiLlama bridge data + static config."""
     slug = entity["slug"]
@@ -274,7 +448,8 @@ def extract_bridge_raw_values(entity: dict, bridges_data: list[dict]) -> dict:
 # Score and store
 # =============================================================================
 
-def score_bridge(entity: dict, bridges_data: list[dict], holder_cache: dict = None) -> dict | None:
+def score_bridge(entity: dict, bridges_data: list[dict], holder_cache: dict = None,
+                 hacks_cache: list = None) -> dict | None:
     """Score a single bridge entity."""
     slug = entity["slug"]
     logger.info(f"Scoring bridge: {slug}")
@@ -283,6 +458,25 @@ def score_bridge(entity: dict, bridges_data: list[dict], holder_cache: dict = No
     if not raw_values:
         logger.warning(f"No data collected for bridge {slug}")
         return None
+
+    static = BRIDGE_STATIC_CONFIG.get(slug, {})
+
+    # --- Phase 1 automation: replace static with live data ---
+    # Contract age from Etherscan
+    age_automated = _automate_bridge_contract_age(entity, static)
+    raw_values.update(age_automated)
+
+    # Incident history + time since incident from DeFiLlama hacks
+    hacks_automated = _automate_bridge_hacks(entity, static, hacks_cache)
+    raw_values.update(hacks_automated)
+
+    # Bug bounty from Immunefi
+    bounty_automated = _automate_bridge_bounty(entity, static)
+    raw_values.update(bounty_automated)
+
+    # Uptime, token coverage, message success rate from DeFiLlama bridge data
+    dl_automated = _automate_bridge_from_defillama(entity, static, bridges_data)
+    raw_values.update(dl_automated)
 
     # Holder analysis for governance token (if available)
     token_contract = entity.get("token_contract")
@@ -339,6 +533,14 @@ def run_bri_scoring() -> list[dict]:
     bridges_data = fetch_bridge_data()
     time.sleep(1)
 
+    # Pre-fetch DeFiLlama hacks data (cached 24h, shared across all entities)
+    hacks_cache = []
+    try:
+        from app.collectors.defillama import fetch_defillama_hacks
+        hacks_cache = fetch_defillama_hacks()
+    except Exception as e:
+        logger.warning(f"BRI hacks pre-fetch failed: {e}")
+
     # Pre-fetch holder data for bridges with governance tokens (cached 24h)
     holder_cache = {}
     try:
@@ -359,7 +561,8 @@ def run_bri_scoring() -> list[dict]:
     results = []
     for entity in BRIDGE_ENTITIES:
         try:
-            result = score_bridge(entity, bridges_data, holder_cache=holder_cache)
+            result = score_bridge(entity, bridges_data, holder_cache=holder_cache,
+                                  hacks_cache=hacks_cache)
             if result:
                 store_bridge_score(result)
                 results.append(result)

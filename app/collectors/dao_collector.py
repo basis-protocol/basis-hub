@@ -18,6 +18,7 @@ AND governance event tagging (Prompt 7 / governance_events.py).
 import json
 import hashlib
 import logging
+import os
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 SNAPSHOT_GQL_URL = "https://hub.snapshot.org/graphql"
 DEFILLAMA_BASE = "https://api.llama.fi"
+ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api"
 
 # =============================================================================
 # Static config for manually assessed components
@@ -282,6 +284,308 @@ def import_psi_governance_components(protocol_slug: str) -> dict:
 
 
 # =============================================================================
+# Phase 1: Live data automation for static components
+# =============================================================================
+
+def _automate_dao_treasury_runway(entity: dict, static: dict) -> dict:
+    """Compute treasury_runway_months from DeFiLlama treasury + fees data."""
+    automated = {}
+    protocol_slug = entity.get("protocol_slug")
+    if not protocol_slug:
+        return automated
+
+    try:
+        from app.collectors.defillama import fetch_defillama_treasury, fetch_defillama_fees
+
+        treasury = fetch_defillama_treasury(protocol_slug)
+        fees = fetch_defillama_fees(protocol_slug)
+
+        total_usd = treasury.get("total_usd", 0)
+        monthly_fees = (fees.get("total_30d_fees", 0) or 0)
+
+        if total_usd > 0 and monthly_fees > 0:
+            # Runway = treasury / monthly expenses
+            # Rough assumption: DAO spends ~50-100% of fees on operations
+            monthly_expenses = monthly_fees * 0.75  # conservative estimate
+            if monthly_expenses > 0:
+                runway_months = total_usd / monthly_expenses
+                static_runway = static.get("treasury_runway_months", 12)
+                automated["treasury_runway_months"] = max(runway_months, static_runway)
+                logger.info(f"DAO treasury runway {entity['slug']}: {runway_months:.1f} months")
+    except Exception as e:
+        logger.warning(f"DAO treasury runway automation failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_dao_active_contributors(entity: dict, static: dict, snapshot_data: dict) -> dict:
+    """Derive active_contributor_count from Snapshot/Tally governance data.
+
+    Count unique proposal authors + unique voters with >3 votes in 90 days.
+    """
+    automated = {}
+    space_id = entity.get("snapshot_space")
+    if not space_id:
+        return automated
+
+    since_ts = int((datetime.now(timezone.utc) - timedelta(days=90)).timestamp())
+
+    try:
+        # Fetch proposal authors
+        query = """
+        query($space: String!, $created_gte: Int!) {
+          proposals(
+            first: 1000,
+            where: {space: $space, created_gte: $created_gte}
+          ) {
+            author
+          }
+        }
+        """
+        resp = requests.post(
+            SNAPSHOT_GQL_URL,
+            json={"query": query, "variables": {"space": space_id, "created_gte": since_ts}},
+            timeout=15,
+        )
+        unique_authors = set()
+        if resp.status_code == 200:
+            proposals = resp.json().get("data", {}).get("proposals", [])
+            unique_authors = set(p.get("author", "") for p in proposals if p.get("author"))
+
+        time.sleep(0.5)
+
+        # Count voters with >3 votes (active participants)
+        voter_query = """
+        query($space: String!, $created_gte: Int!) {
+          votes(
+            first: 1000,
+            where: {space: $space, created_gte: $created_gte}
+          ) {
+            voter
+          }
+        }
+        """
+        resp2 = requests.post(
+            SNAPSHOT_GQL_URL,
+            json={"query": voter_query, "variables": {"space": space_id, "created_gte": since_ts}},
+            timeout=15,
+        )
+        active_voters = set()
+        if resp2.status_code == 200:
+            votes = resp2.json().get("data", {}).get("votes", [])
+            voter_counts: dict[str, int] = {}
+            for v in votes:
+                voter = v.get("voter", "")
+                voter_counts[voter] = voter_counts.get(voter, 0) + 1
+            active_voters = set(v for v, c in voter_counts.items() if c >= 3)
+
+        contributor_count = len(unique_authors | active_voters)
+        if contributor_count > 0:
+            static_count = static.get("active_contributor_count", 0)
+            automated["active_contributor_count"] = max(contributor_count, static_count)
+            logger.info(f"DAO active contributors {entity['slug']}: {contributor_count}")
+
+        time.sleep(0.5)
+    except Exception as e:
+        logger.warning(f"DAO contributor count failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_dao_multisig(entity: dict, static: dict) -> dict:
+    """Read Safe multisig config from Etherscan contract reads.
+
+    getOwners() returns signer count, getThreshold() returns threshold.
+    Score = (threshold/signers) * 100 normalized.
+    """
+    automated = {}
+    multisig_contract = entity.get("multisig_contract")
+    if not multisig_contract:
+        return automated
+
+    api_key = os.environ.get("ETHERSCAN_API_KEY", "")
+    if not api_key:
+        return automated
+
+    try:
+        # Read getOwners() - returns array of addresses
+        time.sleep(0.15)
+        # Safe ABI: getOwners() returns address[]
+        # getOwners selector: 0xa0e67e2b
+        resp = requests.get(ETHERSCAN_V2_BASE, params={
+            "chainid": 1,
+            "module": "proxy",
+            "action": "eth_call",
+            "to": multisig_contract,
+            "data": "0xa0e67e2b",
+            "tag": "latest",
+            "apikey": api_key,
+        }, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            result_hex = data.get("result", "0x")
+            if result_hex and len(result_hex) > 66:
+                # Parse ABI-encoded array: count 20-byte addresses
+                # Skip first 64 chars (offset) + 64 chars (length)
+                hex_data = result_hex[2:]  # strip 0x
+                if len(hex_data) >= 128:
+                    count_hex = hex_data[64:128]
+                    owner_count = int(count_hex, 16)
+
+                    # Read getThreshold() — selector: 0xe75235b8
+                    time.sleep(0.15)
+                    resp2 = requests.get(ETHERSCAN_V2_BASE, params={
+                        "chainid": 1,
+                        "module": "proxy",
+                        "action": "eth_call",
+                        "to": multisig_contract,
+                        "data": "0xe75235b8",
+                        "tag": "latest",
+                        "apikey": api_key,
+                    }, timeout=15)
+                    if resp2.status_code == 200:
+                        data2 = resp2.json()
+                        threshold_hex = data2.get("result", "0x0")
+                        threshold = int(threshold_hex, 16) if threshold_hex else 0
+
+                        if owner_count > 0 and threshold > 0:
+                            # Score: threshold/owners ratio normalized to 0-100
+                            # 1/1 = 100, 3/5 = 60, 2/5 = 40, etc.
+                            # But also factor in total signers: more = better
+                            ratio_score = (threshold / owner_count) * 100
+                            # Bonus for more signers: +5 per signer beyond 3
+                            signer_bonus = min(20, max(0, (owner_count - 3) * 5))
+                            config_score = min(100, ratio_score + signer_bonus)
+
+                            static_config = static.get("multisig_config", 50)
+                            automated["multisig_config"] = max(config_score, static_config)
+                            logger.info(
+                                f"DAO multisig {entity['slug']}: {threshold}/{owner_count} "
+                                f"= {config_score:.0f}"
+                            )
+    except Exception as e:
+        logger.debug(f"DAO multisig read failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_dao_timelock(entity: dict, static: dict) -> dict:
+    """Read Timelock delay from Etherscan contract call.
+
+    delay() returns seconds. Convert to hours.
+    """
+    automated = {}
+    timelock_contract = entity.get("timelock_contract")
+    if not timelock_contract:
+        return automated
+
+    api_key = os.environ.get("ETHERSCAN_API_KEY", "")
+    if not api_key:
+        return automated
+
+    try:
+        time.sleep(0.15)
+        # Common timelock selectors: delay() = 0x6a42b8f8, getMinDelay() = 0xf3e73875
+        for selector in ["0x6a42b8f8", "0xf3e73875"]:
+            resp = requests.get(ETHERSCAN_V2_BASE, params={
+                "chainid": 1,
+                "module": "proxy",
+                "action": "eth_call",
+                "to": timelock_contract,
+                "data": selector,
+                "tag": "latest",
+                "apikey": api_key,
+            }, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                result_hex = data.get("result", "0x0")
+                if result_hex and result_hex != "0x" and len(result_hex) > 2:
+                    delay_seconds = int(result_hex, 16)
+                    if delay_seconds > 0:
+                        delay_hours = delay_seconds / 3600
+                        static_hours = static.get("dao_timelock_hours", 0)
+                        automated["dao_timelock_hours"] = max(delay_hours, static_hours)
+                        logger.info(f"DAO timelock {entity['slug']}: {delay_hours:.1f}h")
+                        break
+            time.sleep(0.15)
+    except Exception as e:
+        logger.debug(f"DAO timelock read failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_dao_transparency(entity: dict, static: dict) -> dict:
+    """Automate financial_disclosure and public_reporting_frequency from forum data.
+
+    Uses existing governance_forum_posts table data (populated by RPI forum scraper).
+    """
+    automated = {}
+    protocol_slug = entity.get("protocol_slug")
+    if not protocol_slug:
+        return automated
+
+    try:
+        # Count forum posts with financial report keywords in last 365 days
+        report_keywords = ['financial report', 'treasury report', 'quarterly',
+                           'monthly update', 'financial update', 'budget report',
+                           'spending report', 'treasury update']
+
+        # Check governance_forum_posts table for report-like posts
+        row = fetch_one("""
+            SELECT COUNT(*) AS report_count
+            FROM governance_forum_posts
+            WHERE protocol_slug = %s
+              AND collected_at >= NOW() - INTERVAL '365 days'
+              AND (
+                  LOWER(title) SIMILAR TO %s
+                  OR LOWER(raw_text) SIMILAR TO %s
+              )
+        """, (
+            protocol_slug,
+            '%(' + '|'.join(report_keywords) + ')%',
+            '%(' + '|'.join(report_keywords) + ')%',
+        ))
+
+        if row and row.get("report_count"):
+            report_count = int(row["report_count"])
+
+            # financial_disclosure: 0-100 based on report frequency
+            # 0 reports = 20, 1-2 = 40, 3-6 = 60, 7-12 = 80, 12+ = 90
+            if report_count >= 12:
+                fd_score = 90
+            elif report_count >= 7:
+                fd_score = 80
+            elif report_count >= 3:
+                fd_score = 60
+            elif report_count >= 1:
+                fd_score = 40
+            else:
+                fd_score = 20
+
+            static_fd = static.get("financial_disclosure", 20)
+            automated["financial_disclosure"] = max(fd_score, static_fd)
+
+            # public_reporting_frequency: reports per quarter
+            # 0 per Q = 20, 1 = 40, 2 = 60, 3+ = 80
+            per_quarter = report_count / 4  # ~4 quarters in a year
+            if per_quarter >= 3:
+                prf_score = 80
+            elif per_quarter >= 2:
+                prf_score = 60
+            elif per_quarter >= 1:
+                prf_score = 40
+            else:
+                prf_score = 20
+
+            static_prf = static.get("public_reporting_frequency", 20)
+            automated["public_reporting_frequency"] = max(prf_score, static_prf)
+    except Exception as e:
+        logger.debug(f"DAO transparency automation failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+# =============================================================================
 # Score and store
 # =============================================================================
 
@@ -310,9 +614,30 @@ def score_dao(entity: dict) -> dict | None:
         treasury_data = fetch_dao_treasury(protocol_slug)
         raw_values.update(treasury_data)
 
-    # Static config components
+    # Static config components (applied first, then overridden by live data)
     static = DAO_STATIC_CONFIG.get(slug, {})
     raw_values.update(static)
+
+    # --- Phase 1 automation: replace static with live data ---
+    # Treasury runway from DeFiLlama treasury + fees
+    runway_automated = _automate_dao_treasury_runway(entity, static)
+    raw_values.update(runway_automated)
+
+    # Active contributor count from Snapshot
+    contributor_automated = _automate_dao_active_contributors(entity, static, raw_values)
+    raw_values.update(contributor_automated)
+
+    # Multisig config from on-chain Safe reads
+    multisig_automated = _automate_dao_multisig(entity, static)
+    raw_values.update(multisig_automated)
+
+    # Timelock hours from on-chain timelock contract
+    timelock_automated = _automate_dao_timelock(entity, static)
+    raw_values.update(timelock_automated)
+
+    # Financial disclosure + reporting frequency from forum data
+    transparency_automated = _automate_dao_transparency(entity, static)
+    raw_values.update(transparency_automated)
 
     if not raw_values:
         logger.warning(f"No data collected for DAO {slug}")

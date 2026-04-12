@@ -301,8 +301,147 @@ def fetch_rated_data(protocol_slug: str) -> dict:
 # Score and store
 # =============================================================================
 
+def _automate_lst_smart_contract(entity: dict, static: dict) -> dict:
+    """Automate smart contract components using live Etherscan analysis.
+
+    Replaces static values for: audit_status, admin_key_risk, upgradeability_risk.
+    Falls back to static values on failure.
+    """
+    automated = {}
+    contract = entity.get("contract")
+    if not contract:
+        return automated
+
+    try:
+        from app.collectors.smart_contract import analyze_contract_for_index_sync
+        analysis = analyze_contract_for_index_sync(contract)
+
+        # audit_status: Etherscan verification check
+        # LSTI uses log normalization with thresholds {1:30, 2:50, 3:70, 5:85, 10:100}
+        # The raw_value is a count of audits. We use verification as a base signal.
+        static_audit = static.get("audit_status", 1)
+        if analysis.get("audit_verified"):
+            # Verified contract: base score of 5 (proxy detected + impl verified = 7)
+            live_audit = 5
+            if analysis.get("is_proxy") and analysis.get("implementation_verified"):
+                live_audit = 7
+            # Use max of live check and static (static may reflect manual audit count)
+            automated["audit_status"] = max(live_audit, static_audit)
+        else:
+            automated["audit_status"] = static_audit
+
+        # admin_key_risk: from live contract analysis (0-100 scale, direct normalization)
+        live_admin = analysis.get("admin_key_risk", 50)
+        static_admin = static.get("admin_key_risk", 50)
+        automated["admin_key_risk"] = max(live_admin, static_admin)
+
+        # upgradeability_risk: from proxy pattern detection (0-100 scale, direct normalization)
+        live_upgrade = analysis.get("upgradeability_risk", 50)
+        static_upgrade = static.get("upgradeability_risk", 50)
+        automated["upgradeability_risk"] = max(live_upgrade, static_upgrade)
+
+        logger.info(
+            f"LST smart contract automation {entity['slug']}: "
+            f"audit={automated.get('audit_status')} "
+            f"admin={automated.get('admin_key_risk')} "
+            f"upgrade={automated.get('upgradeability_risk')}"
+        )
+    except Exception as e:
+        logger.warning(f"LST smart contract automation failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_lst_exploit_history(entity: dict, static: dict, hacks_cache: list = None) -> dict:
+    """Automate exploit_history_lst from DeFiLlama hacks data.
+
+    Falls back to static value on failure.
+    """
+    automated = {}
+    protocol_name = entity.get("name", "")
+    slug = entity["slug"]
+
+    try:
+        from app.collectors.defillama import (
+            fetch_defillama_hacks, filter_hacks_by_name, score_exploit_history_from_hacks,
+        )
+        hacks = hacks_cache if hacks_cache is not None else fetch_defillama_hacks()
+        # Match by protocol name and slug
+        matched = filter_hacks_by_name(hacks, protocol_name)
+        if not matched:
+            matched = filter_hacks_by_name(hacks, slug.split("-")[0])  # try first part e.g. "lido"
+
+        live_score = score_exploit_history_from_hacks(matched)
+        static_score = static.get("exploit_history_lst", 100)
+        # Use the lower score (more conservative — if either source found an exploit, reflect it)
+        automated["exploit_history_lst"] = min(live_score, static_score)
+    except Exception as e:
+        logger.warning(f"LST exploit history automation failed for {slug}: {e}")
+
+    return automated
+
+
+def _automate_lst_withdrawal_queue(entity: dict, static: dict) -> dict:
+    """Automate withdrawal_queue_impl using DeFiLlama protocol detail.
+
+    For Lido: checks currentChainTvls to see if withdrawal is active.
+    Uses protocol TVL trend + chain coverage as operational maturity signal.
+    Falls back to static value as floor.
+    """
+    automated = {}
+    slug = entity["slug"]
+
+    # Only attempt for protocols with DeFiLlama protocol listings
+    protocol_map = {
+        "lido-steth": "lido", "lido-wsteth": "lido",
+        "rocket-pool-reth": "rocket-pool",
+        "coinbase-cbeth": "coinbase-wrapped-staked-eth",
+        "frax-sfrxeth": "frax-ether",
+        "mantle-meth": "mantle-staked-ether",
+        "swell-sweth": "swell",
+        "etherfi-eeth": "ether.fi-stake",
+        "etherfi-weeth": "ether.fi-stake",
+        "kelp-rseth": "kelp-dao",
+    }
+    defillama_slug = protocol_map.get(slug)
+    if not defillama_slug:
+        return automated
+
+    try:
+        from app.collectors.defillama import fetch_defillama_protocol_detail
+        data = fetch_defillama_protocol_detail(defillama_slug)
+        if not data:
+            return automated
+
+        # Check chain TVLs — more chains with active TVL = more operational maturity
+        chain_tvls = data.get("currentChainTvls", {})
+        active_chains = sum(1 for v in chain_tvls.values() if isinstance(v, (int, float)) and v > 0)
+
+        # TVL history — check if TVL has been stable/growing (operational maturity)
+        tvl_history = data.get("tvl", [])
+        if isinstance(tvl_history, list) and len(tvl_history) >= 30:
+            recent = tvl_history[-1].get("totalLiquidityUSD", 0) if isinstance(tvl_history[-1], dict) else 0
+            month_ago = tvl_history[-30].get("totalLiquidityUSD", 0) if isinstance(tvl_history[-30], dict) else 0
+            if recent > 0 and month_ago > 0:
+                growth = (recent - month_ago) / month_ago
+                # Stable or growing TVL + multiple chains = good withdrawal implementation
+                if active_chains >= 3 and growth >= -0.1:
+                    live_score = 85
+                elif active_chains >= 2 and growth >= -0.2:
+                    live_score = 75
+                else:
+                    live_score = 60
+
+                static_floor = static.get("withdrawal_queue_impl", 50)
+                automated["withdrawal_queue_impl"] = max(live_score, static_floor)
+    except Exception as e:
+        logger.warning(f"LST withdrawal queue automation failed for {slug}: {e}")
+
+    return automated
+
+
 def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
-              holder_cache: dict = None) -> dict | None:
+              holder_cache: dict = None, hacks_cache: list = None) -> dict | None:
     """Score a single LST entity. Returns scoring result dict.
 
     Args:
@@ -310,6 +449,7 @@ def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
         eth_price: Pre-fetched ETH price (avoids per-entity API call)
         pool_cache: Pre-fetched DeFiLlama pools (avoids per-entity API call)
         holder_cache: Pre-fetched holder analysis {contract_lower: result}
+        hacks_cache: Pre-fetched DeFiLlama hacks data (avoids per-entity API call)
     """
     slug = entity["slug"]
     cg_id = entity["coingecko_id"]
@@ -336,9 +476,22 @@ def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
     rated_data = fetch_rated_data(slug)
     raw_values.update(rated_data)
 
-    # Static config components
+    # Static config components (applied first, then overridden by live data)
     static = LST_STATIC_CONFIG.get(slug, {})
     raw_values.update(static)
+
+    # --- Phase 1 automation: replace static with live data ---
+    # Smart contract analysis (audit_status, admin_key_risk, upgradeability_risk)
+    sc_automated = _automate_lst_smart_contract(entity, static)
+    raw_values.update(sc_automated)
+
+    # Exploit history from DeFiLlama hacks
+    exploit_automated = _automate_lst_exploit_history(entity, static, hacks_cache)
+    raw_values.update(exploit_automated)
+
+    # Withdrawal queue implementation from DeFiLlama protocol detail
+    wq_automated = _automate_lst_withdrawal_queue(entity, static)
+    raw_values.update(wq_automated)
 
     # Holder distribution (Etherscan — daily-gated via 24h cache)
     contract = entity.get("contract")
@@ -409,6 +562,14 @@ def run_lsti_scoring() -> list[dict]:
     eth_price = fetch_eth_price() or 3000.0
     pool_cache = fetch_defillama_all_pools()
 
+    # Pre-fetch DeFiLlama hacks data (cached 24h, shared across all entities)
+    hacks_cache = []
+    try:
+        from app.collectors.defillama import fetch_defillama_hacks
+        hacks_cache = fetch_defillama_hacks()
+    except Exception as e:
+        logger.warning(f"LSTI hacks pre-fetch failed: {e}")
+
     # Pre-fetch holder data for all entities (cached 24h — only hits Etherscan once/day)
     holder_cache = {}
     try:
@@ -431,7 +592,7 @@ def run_lsti_scoring() -> list[dict]:
     for entity in LST_ENTITIES:
         try:
             result = score_lst(entity, eth_price=eth_price, pool_cache=pool_cache,
-                               holder_cache=holder_cache)
+                               holder_cache=holder_cache, hacks_cache=hacks_cache)
             if result:
                 store_lst_score(result)
                 results.append(result)

@@ -479,6 +479,109 @@ def _get_protocol_name(slug: str) -> str:
 
 
 # =============================================================================
+# Phase 1: Auto-write lens components from existing data sources
+# =============================================================================
+
+def _sync_lens_vendor_diversity(slug: str) -> float | None:
+    """Write vendor_diversity lens component from governance_forum_posts data.
+
+    Counts distinct risk vendors mentioned in forum posts for this protocol.
+    The forum_scraper already collects vendor mentions — we just need to
+    read the count and write the normalized score to rpi_components.
+    """
+    try:
+        row = fetch_one("""
+            SELECT COUNT(DISTINCT vendor_name) AS vendor_count
+            FROM (
+                SELECT UNNEST(vendor_mentions) AS vendor_name
+                FROM governance_forum_posts
+                WHERE protocol_slug = %s
+                  AND collected_at >= NOW() - INTERVAL '365 days'
+                  AND vendor_mentions IS NOT NULL
+                  AND ARRAY_LENGTH(vendor_mentions, 1) > 0
+            ) sub
+        """, (slug,))
+
+        if row and row.get("vendor_count") is not None:
+            count = int(row["vendor_count"])
+            normalized = _normalize_vendor_diversity(count)
+
+            # Write to rpi_components for the lens system to pick up
+            execute("""
+                INSERT INTO rpi_components
+                    (protocol_slug, component_id, component_type, lens_id,
+                     raw_value, normalized_score, source_type, data_source, collected_at)
+                VALUES (%s, 'vendor_diversity', 'lens', 'risk_organization',
+                        %s, %s, 'automated', 'forum_scraper', NOW())
+            """, (slug, count, normalized))
+
+            logger.info(f"RPI lens vendor_diversity {slug}: {count} vendors → {normalized}")
+            return normalized
+    except Exception as e:
+        logger.debug(f"RPI vendor_diversity sync failed for {slug}: {e}")
+    return None
+
+
+def _sync_lens_documentation_depth(slug: str) -> float | None:
+    """Write documentation_depth lens component from rpi_doc_scores data.
+
+    The docs_scorer already scores protocols on a 5-criterion rubric and stores
+    results in rpi_doc_scores. We just read the total score and write it
+    as a lens component.
+    """
+    try:
+        row = fetch_one("""
+            SELECT SUM(score) AS total_score
+            FROM rpi_doc_scores
+            WHERE protocol_slug = %s
+              AND scored_at >= NOW() - INTERVAL '30 days'
+        """, (slug,))
+
+        if row and row.get("total_score") is not None:
+            total_score = float(row["total_score"])
+            # rpi_doc_scores is 0-100 (5 criteria × 20 pts each)
+            normalized = min(100, max(0, total_score))
+
+            execute("""
+                INSERT INTO rpi_components
+                    (protocol_slug, component_id, component_type, lens_id,
+                     raw_value, normalized_score, source_type, data_source, collected_at)
+                VALUES (%s, 'documentation_depth', 'lens', 'risk_transparency',
+                        %s, %s, 'automated', 'docs_scorer', NOW())
+            """, (slug, total_score, normalized))
+
+            logger.info(f"RPI lens documentation_depth {slug}: {total_score} → {normalized}")
+            return normalized
+    except Exception as e:
+        logger.debug(f"RPI documentation_depth sync failed for {slug}: {e}")
+    return None
+
+
+def sync_all_lens_components(protocols: list[str]) -> dict:
+    """Sync all auto-derived lens components for all RPI protocols.
+
+    Called during RPI scoring to ensure lens data is fresh.
+    Returns dict of {slug: {component_id: normalized_score}}.
+    """
+    results = {}
+    for slug in protocols:
+        slug_results = {}
+
+        vd = _sync_lens_vendor_diversity(slug)
+        if vd is not None:
+            slug_results["vendor_diversity"] = vd
+
+        dd = _sync_lens_documentation_depth(slug)
+        if dd is not None:
+            slug_results["documentation_depth"] = dd
+
+        if slug_results:
+            results[slug] = slug_results
+
+    return results
+
+
+# =============================================================================
 # Orchestrator
 # =============================================================================
 
@@ -488,6 +591,14 @@ def run_rpi_scoring() -> list[dict]:
 
     # Pre-fetch all revenues (avoids repeated API calls)
     revenue_cache = get_all_revenues()
+
+    # Phase 1: Sync auto-derived lens components from existing data sources
+    try:
+        lens_results = sync_all_lens_components(list(RPI_TARGET_PROTOCOLS))
+        if lens_results:
+            logger.info(f"RPI lens sync: updated {len(lens_results)} protocols")
+    except Exception as e:
+        logger.warning(f"RPI lens sync failed: {e}")
 
     results = []
     for slug in RPI_TARGET_PROTOCOLS:

@@ -195,17 +195,268 @@ def fetch_tti_market_data(coingecko_id: str) -> dict | None:
     return None
 
 
+# =============================================================================
+# Phase 1: Live data automation for static components
+# =============================================================================
+
+# Sovereign risk lookup: issuing jurisdiction → risk score (0-100, higher = safer)
+SOVEREIGN_RISK_MAP = {
+    "us": 95,       # US treasuries
+    "uk": 90,       # UK gilts
+    "germany": 90,  # Bunds
+    "france": 85,
+    "japan": 85,
+    "canada": 90,
+    "australia": 88,
+    "switzerland": 92,
+    "singapore": 90,
+    "hong kong": 85,
+    "cayman": 70,
+    "bvi": 60,
+    "default_g7": 85,
+    "default_other": 70,
+}
+
+# Chain infrastructure quality mapping (chain → score)
+CHAIN_INFRA_SCORES = {
+    "ethereum": 100,
+    "base": 80,
+    "arbitrum": 80,
+    "optimism": 78,
+    "polygon": 75,
+    "solana": 75,
+    "avalanche": 72,
+    "bnb chain": 65,
+    "fantom": 55,
+    "default": 60,
+}
+
+# Issuer → primary jurisdiction
+ISSUER_JURISDICTION = {
+    "ondo finance": "us",
+    "blackrock": "us",
+    "franklin templeton": "us",
+    "backed finance": "switzerland",
+    "maple finance": "cayman",
+    "centrifuge": "us",
+    "superstate": "us",
+    "mountain protocol": "bvi",
+    "openeden": "singapore",
+}
+
+# Issuer → deployment chain
+ISSUER_CHAIN = {
+    "ondo finance": "ethereum",
+    "blackrock": "ethereum",
+    "franklin templeton": "ethereum",
+    "backed finance": "ethereum",
+    "maple finance": "ethereum",
+    "centrifuge": "ethereum",
+    "superstate": "ethereum",
+    "mountain protocol": "ethereum",
+    "openeden": "ethereum",
+}
+
+# Immunefi bounty name mapping for TTI issuers
+TTI_IMMUNEFI_SLUGS = {
+    "ondo-ousg": "ondo-finance",
+    "ondo-usdy": "ondo-finance",
+    "blackrock-buidl": "blackrock",
+    "franklin-benji": "franklin-templeton",
+    "backed-bib01": "backed",
+    "maple-cash": "maple",
+    "centrifuge-pools": "centrifuge",
+    "superstate-ustb": "superstate",
+    "mountain-usdm": "mountain-protocol",
+    "openeden-tbill": "openeden",
+}
+
+
+def _automate_tti_sovereign_risk(entity: dict, static: dict) -> dict:
+    """Map issuer jurisdiction to sovereign risk score (deterministic lookup)."""
+    automated = {}
+    issuer = (entity.get("issuer") or "").lower()
+    jurisdiction = ISSUER_JURISDICTION.get(issuer, "default_other")
+    live_score = SOVEREIGN_RISK_MAP.get(jurisdiction, SOVEREIGN_RISK_MAP["default_other"])
+
+    static_score = static.get("sovereign_risk", 70)
+    automated["sovereign_risk"] = max(live_score, static_score)
+    return automated
+
+
+def _automate_tti_chain_infrastructure(entity: dict, static: dict) -> dict:
+    """Map deployment chain to infrastructure quality score."""
+    automated = {}
+    issuer = (entity.get("issuer") or "").lower()
+    chain = ISSUER_CHAIN.get(issuer, "default")
+    live_score = CHAIN_INFRA_SCORES.get(chain, CHAIN_INFRA_SCORES["default"])
+
+    static_score = static.get("chain_infrastructure", 60)
+    automated["chain_infrastructure"] = max(live_score, static_score)
+    return automated
+
+
+def _automate_tti_bug_bounty(entity: dict, static: dict) -> dict:
+    """Fetch bug bounty from Immunefi for TTI issuer."""
+    automated = {}
+    slug = entity["slug"]
+    immunefi_slug = TTI_IMMUNEFI_SLUGS.get(slug, slug)
+
+    try:
+        from app.collectors.smart_contract import fetch_immunefi_bounty
+        bounty = fetch_immunefi_bounty(immunefi_slug)
+
+        if bounty.get("active") and bounty.get("max_bounty", 0) > 0:
+            # tti_bug_bounty is a direct 0-100 score
+            max_b = bounty["max_bounty"]
+            if max_b >= 10_000_000:
+                automated["tti_bug_bounty"] = 90
+            elif max_b >= 1_000_000:
+                automated["tti_bug_bounty"] = 70
+            elif max_b >= 250_000:
+                automated["tti_bug_bounty"] = 50
+            elif max_b >= 50_000:
+                automated["tti_bug_bounty"] = 35
+            else:
+                automated["tti_bug_bounty"] = 25
+        else:
+            automated["tti_bug_bounty"] = static.get("tti_bug_bounty", 20)
+    except Exception as e:
+        logger.debug(f"TTI Immunefi fetch failed for {slug}: {e}")
+
+    return automated
+
+
+def _automate_tti_smart_contract(entity: dict, static: dict) -> dict:
+    """Automate tti_contract_audit, tti_upgradeability, tti_admin_key_risk from live analysis.
+
+    Only runs if entity has a contract address.
+    """
+    automated = {}
+    contract = entity.get("contract")
+    if not contract:
+        return automated
+
+    try:
+        from app.collectors.smart_contract import analyze_contract_for_index_sync
+        analysis = analyze_contract_for_index_sync(contract)
+
+        # tti_contract_audit: log normalization {1:30, 2:50, 3:70, 5:85, 10:100}
+        static_audit = static.get("tti_contract_audit", 1)
+        if analysis.get("audit_verified"):
+            live_audit = 3
+            if analysis.get("is_proxy") and analysis.get("implementation_verified"):
+                live_audit = 5
+            automated["tti_contract_audit"] = max(live_audit, static_audit)
+
+        # tti_upgradeability: 0-100 direct
+        live_upgrade = analysis.get("upgradeability_risk", 50)
+        static_upgrade = static.get("tti_upgradeability", 50)
+        automated["tti_upgradeability"] = max(live_upgrade, static_upgrade)
+
+        # tti_admin_key_risk: 0-100 direct
+        live_admin = analysis.get("admin_key_risk", 50)
+        static_admin = static.get("tti_admin_key_risk", 50)
+        automated["tti_admin_key_risk"] = max(live_admin, static_admin)
+    except Exception as e:
+        logger.warning(f"TTI smart contract automation failed for {entity['slug']}: {e}")
+
+    return automated
+
+
+def _automate_tti_nav_update_frequency(entity: dict, static: dict, cg_data: dict | None) -> dict:
+    """Derive nav_update_frequency from CoinGecko price update patterns.
+
+    If price updates frequently (many tickers), NAV is effectively real-time.
+    """
+    automated = {}
+    if not cg_data:
+        return automated
+
+    tickers = cg_data.get("tickers", [])
+    if not tickers:
+        return automated
+
+    # More exchange listings and tickers = more frequent price updates = higher score
+    ticker_count = len(tickers)
+    if ticker_count >= 20:
+        live_score = 90  # very liquid, real-time NAV
+    elif ticker_count >= 10:
+        live_score = 80
+    elif ticker_count >= 5:
+        live_score = 70
+    elif ticker_count >= 2:
+        live_score = 60
+    else:
+        live_score = 50  # single exchange, limited updates
+
+    static_score = static.get("nav_update_frequency", 50)
+    automated["nav_update_frequency"] = max(live_score, static_score)
+    return automated
+
+
+def _automate_tti_oracle_dependency(entity: dict, static: dict) -> dict:
+    """Check if TTI contract integrates Chainlink or other oracle feeds.
+
+    Only runs if entity has a contract address.
+    """
+    automated = {}
+    contract = entity.get("contract")
+    if not contract:
+        return automated
+
+    api_key = os.environ.get("ETHERSCAN_API_KEY", "")
+    if not api_key:
+        return automated
+
+    try:
+        import time as _time
+        _time.sleep(0.15)
+        import httpx
+        resp = httpx.get("https://api.etherscan.io/v2/api", params={
+            "chainid": 1,
+            "module": "contract",
+            "action": "getabi",
+            "address": contract,
+            "apikey": api_key,
+        }, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("status") == "1":
+                import json
+                abi_str = data.get("result", "")
+                if abi_str and abi_str.startswith("["):
+                    abi_text = abi_str.lower()
+                    # Look for oracle-related function names
+                    oracle_keywords = ["latestanswer", "latestrounddata", "pricefeed",
+                                       "oracle", "getprice", "getlatestprice",
+                                       "chainlink", "aggregator"]
+                    oracle_count = sum(1 for kw in oracle_keywords if kw in abi_text)
+
+                    if oracle_count >= 3:
+                        automated["oracle_dependency"] = 85  # strong oracle integration
+                    elif oracle_count >= 1:
+                        automated["oracle_dependency"] = 70
+                    else:
+                        automated["oracle_dependency"] = static.get("oracle_dependency", 50)
+    except Exception as e:
+        logger.debug(f"TTI oracle dependency check failed for {entity['slug']}: {e}")
+
+    return automated
+
+
 def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
     """Extract raw values from all sources."""
     slug = entity["slug"]
     raw = {}
 
     # CoinGecko market data
+    cg_data = None
     cg_id = entity.get("coingecko_id")
     if cg_id:
-        data = fetch_tti_market_data(cg_id)
-        if data:
-            market = data.get("market_data", {})
+        cg_data = fetch_tti_market_data(cg_id)
+        if cg_data:
+            market = cg_data.get("market_data", {})
             mcap = market.get("market_cap", {}).get("usd")
             if mcap:
                 raw["tti_market_cap"] = mcap
@@ -222,7 +473,7 @@ def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
                 raw["nav_deviation"] = abs(price - 1.0) * 100 if price < 10 else 0
 
             # Holder count from tickers
-            tickers = data.get("tickers", [])
+            tickers = cg_data.get("tickers", [])
             if tickers:
                 raw["exchange_listing_count"] = len(set(t.get("market", {}).get("identifier", "") for t in tickers))
 
@@ -250,9 +501,28 @@ def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
         raw["tti_top10_concentration"] = holder_data.get("top_10_pct", 0)
         raw["defi_integration_count"] = holder_data.get("defi_protocol_count", 0)
 
-    # Static config (off-chain components — bulk of TTI data)
+    # Static config (off-chain components — bulk of TTI data, applied first)
     static = TTI_STATIC_CONFIG.get(slug, {})
     raw.update(static)
+
+    # --- Phase 1 automation: replace static with live data ---
+    # Sovereign risk from jurisdiction mapping (deterministic)
+    raw.update(_automate_tti_sovereign_risk(entity, static))
+
+    # Chain infrastructure from chain mapping (deterministic)
+    raw.update(_automate_tti_chain_infrastructure(entity, static))
+
+    # Bug bounty from Immunefi
+    raw.update(_automate_tti_bug_bounty(entity, static))
+
+    # Smart contract checks (audit, upgradeability, admin key) — only if contract exists
+    raw.update(_automate_tti_smart_contract(entity, static))
+
+    # NAV update frequency from CoinGecko ticker data
+    raw.update(_automate_tti_nav_update_frequency(entity, static, cg_data))
+
+    # Oracle dependency from contract ABI — only if contract exists
+    raw.update(_automate_tti_oracle_dependency(entity, static))
 
     return raw
 
