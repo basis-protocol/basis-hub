@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_one
+from app.database import fetch_one, fetch_all, execute
 
 logger = logging.getLogger(__name__)
 
@@ -466,3 +466,87 @@ def check_all() -> dict:
         "domains": domains,
         "checked_at": now.isoformat(),
     }
+
+
+def check_all_and_store() -> dict:
+    """Run check_all() and persist every domain result to integrity_checks."""
+    result = check_all()
+    now = datetime.now(timezone.utc)
+
+    for domain_name, domain_result in result.get("domains", {}).items():
+        # Freshness check
+        freshness_status = "pass"
+        if domain_result["status"] in ("stale", "empty"):
+            freshness_status = "fail"
+        elif domain_result["status"] == "error":
+            freshness_status = "fail"
+
+        try:
+            execute("""
+                INSERT INTO integrity_checks
+                    (domain, check_type, status, detail, cycle_timestamp)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                domain_name, "freshness", freshness_status,
+                json.dumps({
+                    "age_hours": domain_result.get("age_hours"),
+                    "max_age_hours": domain_result.get("max_age_hours"),
+                    "row_count": domain_result.get("row_count"),
+                    "last_updated": domain_result.get("last_updated"),
+                }, default=str),
+                now,
+            ))
+        except Exception as e:
+            logger.warning(f"Failed to store freshness check for {domain_name}: {e}")
+
+        # Coherence check
+        warnings = domain_result.get("warnings", [])
+        coherence_status = "pass"
+        if any(w.get("level") == "error" for w in warnings):
+            coherence_status = "fail"
+        elif warnings:
+            coherence_status = "warn"
+
+        try:
+            execute("""
+                INSERT INTO integrity_checks
+                    (domain, check_type, status, detail, cycle_timestamp)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                domain_name, "coherence", coherence_status,
+                json.dumps({"warnings": warnings}, default=str),
+                now,
+            ))
+        except Exception as e:
+            logger.warning(f"Failed to store coherence check for {domain_name}: {e}")
+
+    return result
+
+
+def get_integrity_history(domain: str = None, days: int = 7) -> list:
+    """Get integrity check history for trending analysis."""
+    if domain:
+        rows = fetch_all("""
+            SELECT domain, check_type, status, detail, cycle_timestamp
+            FROM integrity_checks
+            WHERE domain = %s AND cycle_timestamp >= NOW() - INTERVAL '%s days'
+            ORDER BY cycle_timestamp DESC
+        """, (domain, days))
+    else:
+        rows = fetch_all("""
+            SELECT domain, check_type, status, detail, cycle_timestamp
+            FROM integrity_checks
+            WHERE cycle_timestamp >= NOW() - INTERVAL '%s days'
+            ORDER BY cycle_timestamp DESC
+        """, (days,))
+
+    return [
+        {
+            "domain": r["domain"],
+            "check_type": r["check_type"],
+            "status": r["status"],
+            "detail": r["detail"],
+            "timestamp": str(r["cycle_timestamp"]),
+        }
+        for r in rows
+    ]

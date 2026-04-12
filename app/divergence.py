@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one
+from app.database import fetch_all, fetch_one, execute
 
 logger = logging.getLogger(__name__)
 
@@ -481,8 +481,52 @@ def detect_actor_flow_divergence():
     return results
 
 
-def detect_all_divergences():
-    """Run all divergence detectors and return combined results."""
+def _store_divergence_signals(signals: list) -> int:
+    """Store divergence signals in the divergence_signals table."""
+    now = datetime.now(timezone.utc)
+    stored = 0
+    for s in signals:
+        try:
+            execute("""
+                INSERT INTO divergence_signals
+                    (detector_name, entity_type, entity_id, signal_direction,
+                     magnitude, severity, detail, cycle_timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                s.get("type", "unknown"),
+                _infer_entity_type(s),
+                s.get("symbol") or s.get("protocol") or s.get("wallet_address") or s.get("stablecoin"),
+                s.get("signal", ""),
+                s.get("magnitude") or s.get("score_delta") or s.get("hhi_change") or 0,
+                s.get("severity", "notable"),
+                json.dumps(s, default=str),
+                now,
+            ))
+            stored += 1
+        except Exception as e:
+            logger.debug(f"Failed to store divergence signal: {e}")
+    return stored
+
+
+def _infer_entity_type(signal: dict) -> str:
+    """Infer entity type from signal keys."""
+    if signal.get("type") in ("asset_quality", "quality_flow"):
+        return "stablecoin"
+    if signal.get("type") == "protocol_solvency":
+        return "protocol"
+    if signal.get("type") == "wallet_concentration":
+        return "wallet"
+    if signal.get("type") in ("cross_index", "actor_flow_divergence"):
+        return "pair"
+    return "unknown"
+
+
+def detect_all_divergences(store: bool = False):
+    """Run all divergence detectors and return combined results.
+
+    Args:
+        store: If True, persist signals to divergence_signals table.
+    """
     asset_divs = []
     wallet_divs = []
     flow_divs = []
@@ -526,7 +570,7 @@ def detect_all_divergences():
         reverse=True,
     )
 
-    return {
+    result = {
         "divergence_signals": all_signals,
         "summary": {
             "total_signals": len(all_signals),
@@ -541,6 +585,43 @@ def detect_all_divergences():
         },
         "detected_at": datetime.now(timezone.utc).isoformat(),
         "version": "divergence-v1.2.0",
+    }
+
+    if store:
+        _store_divergence_signals(all_signals)
+
+    return result
+
+
+def get_stored_divergences(hours: int = 24) -> dict:
+    """Read stored divergence signals from the last N hours."""
+    rows = fetch_all("""
+        SELECT detector_name, entity_type, entity_id, signal_direction,
+               magnitude, severity, detail, cycle_timestamp
+        FROM divergence_signals
+        WHERE cycle_timestamp >= NOW() - INTERVAL '%s hours'
+        ORDER BY cycle_timestamp DESC, severity DESC
+    """, (hours,))
+    if not rows:
+        return {"divergence_signals": [], "summary": {"total_signals": 0}, "source": "stored", "hours": hours}
+
+    signals = []
+    for r in rows:
+        sig = r.get("detail") or {}
+        if isinstance(sig, str):
+            sig = json.loads(sig)
+        sig["_stored_at"] = str(r["cycle_timestamp"])
+        signals.append(sig)
+
+    return {
+        "divergence_signals": signals,
+        "summary": {
+            "total_signals": len(signals),
+            "critical": sum(1 for s in signals if s.get("severity") == "critical"),
+            "alerts": sum(1 for s in signals if s.get("severity") == "alert"),
+        },
+        "source": "stored",
+        "hours": hours,
     }
 
 

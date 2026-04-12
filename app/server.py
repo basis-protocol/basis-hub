@@ -678,10 +678,18 @@ async def get_integrity():
     cached = _cache.get("integrity", ttl=60)
     if cached:
         return cached
-    from app.integrity import check_all
-    result = check_all()
+    from app.integrity import check_all_and_store
+    result = check_all_and_store()
     _cache.set("integrity", result)
     return result
+
+
+@app.get("/api/integrity/history")
+async def get_integrity_history_endpoint(domain: str = None, days: int = 7):
+    """Integrity check history for trending analysis."""
+    from app.integrity import get_integrity_history
+    results = get_integrity_history(domain=domain, days=days)
+    return {"results": results, "count": len(results), "domain": domain, "days": days}
 
 
 @app.get("/api/integrity/{domain}")
@@ -4880,10 +4888,18 @@ async def pulse_by_date(date_str: str):
 # =============================================================================
 
 @app.get("/api/divergence")
-async def divergence_all():
-    """Combined divergence signals — capital-flow / quality mismatches."""
-    from app.divergence import detect_all_divergences
-    return detect_all_divergences()
+async def divergence_all(force: bool = False, hours: int = 24):
+    """Combined divergence signals — reads from stored signals, with live fallback."""
+    if force:
+        from app.divergence import detect_all_divergences
+        return detect_all_divergences(store=True)
+    from app.divergence import get_stored_divergences
+    result = get_stored_divergences(hours)
+    if result["summary"]["total_signals"] == 0:
+        # No stored signals — compute live and store
+        from app.divergence import detect_all_divergences
+        return detect_all_divergences(store=True)
+    return result
 
 
 @app.get("/api/divergence/assets")

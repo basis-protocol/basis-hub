@@ -15,25 +15,52 @@ from app.composition import compute_cqi, compose_geometric_mean
 logger = logging.getLogger(__name__)
 
 
-def assemble_report_data(entity_type: str, entity_id: str) -> dict | None:
+def assemble_report_data(entity_type: str, entity_id: str, persist: bool = True) -> dict | None:
     """
     Assemble full report data for an entity.
 
     Args:
         entity_type: 'stablecoin', 'protocol', or 'wallet'
         entity_id: stablecoin symbol, protocol slug, or wallet address
+        persist: If True, compute hash and store in report_attestations
 
     Returns:
         Structured dict with all data needed to render any template,
         or None if entity not found.
     """
     if entity_type == "stablecoin":
-        return _assemble_stablecoin(entity_id)
+        report = _assemble_stablecoin(entity_id)
     elif entity_type == "protocol":
-        return _assemble_protocol(entity_id)
+        report = _assemble_protocol(entity_id)
     elif entity_type == "wallet":
-        return _assemble_wallet(entity_id)
-    return None
+        report = _assemble_wallet(entity_id)
+    else:
+        return None
+
+    if report and persist:
+        try:
+            from app.report_attestation import compute_report_hash, store_report_attestation
+            timestamp = report.get("computed_at") or datetime.now(timezone.utc).isoformat()
+            report_hash = compute_report_hash(
+                report, "protocol_risk", None, None, timestamp,
+                state_hashes=report.get("state_hashes"),
+            )
+            store_report_attestation(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                template="protocol_risk",
+                lens=None,
+                lens_version=None,
+                report_hash=report_hash,
+                score_hashes=report.get("score_hashes", []),
+                cqi_hashes=report.get("cqi_hashes"),
+                methodology_version=report.get("formula_version", FORMULA_VERSION),
+            )
+            report["report_hash"] = report_hash
+        except Exception as e:
+            logger.warning(f"Report attestation failed for {entity_type}/{entity_id}: {e}")
+
+    return report
 
 
 def _assemble_stablecoin(symbol: str) -> dict | None:

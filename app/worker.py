@@ -879,6 +879,31 @@ async def run_scoring_cycle():
         logger.warning(f"Edge build gate check failed: {e}")
 
     # -------------------------------------------------------------------------
+    # Divergence detection — every cycle, store all signals
+    # -------------------------------------------------------------------------
+    try:
+        from app.divergence import detect_all_divergences
+        logger.info("Running divergence detection...")
+        div_result = detect_all_divergences(store=True)
+        div_summary = div_result.get("summary", {})
+        logger.info(
+            f"Divergence detection: {div_summary.get('total_signals', 0)} signals "
+            f"({div_summary.get('critical', 0)} critical, {div_summary.get('alerts', 0)} alerts)"
+        )
+        try:
+            from app.state_attestation import attest_state
+            signals = div_result.get("divergence_signals", [])
+            if signals:
+                attest_state("divergence_signals", [
+                    {"type": s.get("type"), "severity": s.get("severity")}
+                    for s in signals
+                ])
+        except Exception as e:
+            logger.warning(f"Divergence attestation failed: {e}")
+    except Exception as e:
+        logger.warning(f"Divergence detection failed: {e}")
+
+    # -------------------------------------------------------------------------
     # Health sweep + alerting — every cycle
     # -------------------------------------------------------------------------
     try:
@@ -901,6 +926,17 @@ async def run_scoring_cycle():
         logger.warning(f"Health sweep failed: {e}")
 
     # -------------------------------------------------------------------------
+    # Integrity checks — run and store for trending (every cycle)
+    # -------------------------------------------------------------------------
+    try:
+        from app.integrity import check_all_and_store
+        logger.info("Running integrity checks...")
+        integrity_result = check_all_and_store()
+        logger.info(f"Integrity: {integrity_result['status']} across {len(integrity_result['domains'])} domains")
+    except Exception as e:
+        logger.warning(f"Integrity check persistence failed: {e}")
+
+    # -------------------------------------------------------------------------
     # Generate daily pulse after all scoring + indexing
     # -------------------------------------------------------------------------
     try:
@@ -908,6 +944,54 @@ async def run_scoring_cycle():
         run_daily_pulse()
     except Exception as e:
         logger.warning(f"Daily pulse generation failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Daily report generation — persist report attestations for all scored entities
+    # -------------------------------------------------------------------------
+    try:
+        last_report = fetch_one(
+            "SELECT MAX(generated_at) AS latest FROM report_attestations WHERE generated_at > NOW() - INTERVAL '48 hours'"
+        )
+        report_age_hours = 25
+        if last_report and last_report.get("latest"):
+            latest = last_report["latest"]
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=timezone.utc)
+            report_age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+
+        if report_age_hours >= 24:
+            from app.report import assemble_report_data
+            logger.info("Generating daily report attestations...")
+            report_count = 0
+
+            # Stablecoin reports
+            stablecoin_ids = get_scoring_ids_from_db()
+            for sid in stablecoin_ids:
+                try:
+                    cfg = get_stablecoin_config(sid)
+                    if cfg:
+                        assemble_report_data("stablecoin", cfg["symbol"])
+                        report_count += 1
+                except Exception:
+                    pass
+
+            # Protocol reports
+            try:
+                from app.collectors.psi_collector import get_scoring_protocols
+                for slug in get_scoring_protocols():
+                    try:
+                        assemble_report_data("protocol", slug)
+                        report_count += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            logger.info(f"Report attestations: {report_count} reports generated")
+        else:
+            logger.info(f"Report generation skipped — last ran {report_age_hours:.1f}h ago")
+    except Exception as e:
+        logger.warning(f"Daily report generation failed: {e}")
 
     # Run actor classification after pulse, before discovery
     try:

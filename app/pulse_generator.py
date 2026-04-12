@@ -232,7 +232,7 @@ def run_daily_pulse():
             "wallets", "wallet_profiles", "edges", "actors",
             "psi_discoveries", "smart_contracts", "flows",
             "cqi_compositions", "discovery_signals", "provenance",
-            "governance_events",
+            "governance_events", "divergence_signals",
             "lsti_components", "bri_components", "dohi_components",
             "vsri_components", "cxri_components", "tti_components",
         ]
