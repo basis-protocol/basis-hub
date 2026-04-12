@@ -20,7 +20,7 @@ The SII dashboard and API are **live in production**. The following are stable a
 - `app/governance.py` — Governance document crawler + sentiment analysis (Aave, MakerDAO, Compound, Morpho, Frax forums).
 - `app/content_engine.py` — Content signal generation from governance data.
 - `frontend/src/App.jsx` (3,212 lines) — React dashboard. Vite build. Do not rewrite from scratch.
-- `migrations/` — 54 applied SQL migrations (001 through 054). Next migration: 055.
+- `migrations/` — 57 applied SQL migrations (001 through 057). Next migration: 058.
 
 ## Architecture
 
@@ -53,9 +53,11 @@ main.py (uvicorn + worker thread + keeper subprocess)
 │
 ├── app/worker.py (background scoring cycle — hourly)
 │   ├── collectors/ → component_readings table
+│   ├── app/collectors/registry.py — Declarative collector registry. Auto-instrumentation (timing, error tracking, CycleStats). To add a new SII collector: add one line to _make_async_collectors() or _make_sync_collectors().
 │   ├── scoring.py → scores table
 │   ├── CDA collection, wallet expansion, profile rebuilding
 │   ├── Edge building, state attestation, health sweeps
+│   ├── app/coherence.py — Daily cross-domain consistency validation. 4 checks: freshness gaps, record count drift, SII/PSI alignment, state root coverage.
 │   └── store_history_snapshot → score_history table
 │
 ├── app/indexer/ (wallet risk graph)
@@ -130,7 +132,7 @@ Structural = 0.30×Reserves + 0.20×SmartContract + 0.15×Oracle + 0.20×Governa
 
 ## Database (Neon Postgres)
 
-54 migrations applied (001 through 054). Key table groups:
+57 migrations applied (001 through 057). Key table groups:
 
 - **Core SII:** stablecoins, component_readings, scores, score_history, score_events, historical_prices, deviation_events, data_provenance
 - **Wallet graph:** wallets, wallet_holdings, wallet_risk_scores, wallet_edges, wallet_profiles, unscored_assets
@@ -139,7 +141,7 @@ Structural = 0.30×Reserves + 0.20×SmartContract + 0.15×Oracle + 0.20×Governa
 - **Assessment:** assessment_events, daily_pulses
 - **CDA:** cda_extractions, cda_monitors, cda_source_urls
 - **Ops:** ops_targets, ops_content, ops_alerts, abm_campaigns
-- **Infrastructure:** api_keys, api_usage, payment_log, keeper_cycles, state_attestations, provenance_proofs, discovery_signals, lens_configs, sbt_tokens
+- **Infrastructure:** api_keys, api_usage, payment_log, keeper_cycles, state_attestations, provenance_proofs, discovery_signals, lens_configs, sbt_tokens, collector_cycle_stats, coherence_reports
 - **Governance:** governance_documents, governance_stablecoin_mentions, governance_metric_mentions, governance_snapshots
 
 Connection via `DATABASE_URL` env var. Pool: min=2, max=10, with keepalives.

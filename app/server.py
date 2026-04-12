@@ -735,6 +735,23 @@ async def get_integrity_domain(domain: str):
     return result
 
 
+@app.get("/api/coherence/latest")
+async def get_coherence_latest():
+    """Most recent cross-domain coherence report."""
+    from app.coherence import get_latest_report
+    report = get_latest_report()
+    if not report:
+        raise HTTPException(status_code=404, detail="No coherence reports available")
+    return report
+
+
+@app.get("/api/coherence/history")
+async def get_coherence_history(days: int = Query(default=7, ge=1, le=90)):
+    """Recent coherence reports."""
+    from app.coherence import get_report_history
+    return get_report_history(days)
+
+
 # =============================================================================
 # 2. GET /api/scores — All stablecoin scores (main rankings table)
 # =============================================================================

@@ -30,28 +30,15 @@ from app.scoring import (
     calculate_sii, calculate_structural_composite,
     aggregate_legacy_to_v1, score_to_grade, FORMULA_VERSION, SII_V1_WEIGHTS,
 )
-from app.collectors.coingecko import (
-    collect_peg_components, collect_liquidity_components,
-    collect_market_activity_components, fetch_current, extract_price_context,
-)
-from app.collectors.defillama import collect_defillama_components
-from app.collectors.curve import collect_curve_components
-from app.collectors.offline import (
-    collect_transparency_components, collect_regulatory_components,
-    collect_governance_components, collect_reserve_components,
-    collect_network_components,
-)
-from app.collectors.etherscan import collect_holder_distribution
-from app.collectors.flows import collect_flows_components
-from app.collectors.smart_contract import collect_smart_contract_components
-from app.collectors.derived import collect_derived_components
-from app.collectors.solana import collect_solana_components
+from app.collectors.coingecko import fetch_current, extract_price_context
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("worker")
+
+_current_cycle_stats = None
 
 
 # =============================================================================
@@ -119,12 +106,6 @@ def _mark_scoring_status(coingecko_id: str, status: str) -> None:
 # Core: Collect all components for one stablecoin
 # =============================================================================
 
-async def _collect_actor_metrics(client, stablecoin_id):
-    """Lazy wrapper for actor metrics collector."""
-    from app.collectors.actor_metrics import collect_actor_metrics
-    return await collect_actor_metrics(client, stablecoin_id)
-
-
 async def collect_all_components(
     client: httpx.AsyncClient, stablecoin_id: str
 ) -> list[dict]:
@@ -136,11 +117,16 @@ async def collect_all_components(
     if not cfg:
         logger.error(f"Unknown stablecoin: {stablecoin_id}")
         return []
-    
-    cg_id = cfg["coingecko_id"]
+
     all_components = []
-    
-    # Async collectors (with timeouts)
+
+    # Run all registered collectors via the registry
+    from app.collectors.registry import run_all_collectors
+    all_components = await run_all_collectors(
+        client, stablecoin_id, cfg, _current_cycle_stats
+    )
+
+    # Blockscout shadow comparison (non-blocking, during evaluation period only)
     async def safe_collect(name, coro):
         try:
             result = await asyncio.wait_for(coro, timeout=20.0)
@@ -151,26 +137,7 @@ async def collect_all_components(
         except Exception as e:
             logger.error(f"{name} error for {stablecoin_id}: {e}")
             return []
-    
-    # Run API collectors in parallel
-    results = await asyncio.gather(
-        safe_collect("peg", collect_peg_components(client, cg_id, stablecoin_id)),
-        safe_collect("liquidity", collect_liquidity_components(client, cg_id, stablecoin_id)),
-        safe_collect("market", collect_market_activity_components(client, cg_id, stablecoin_id)),
-        safe_collect("defillama", collect_defillama_components(client, cg_id, stablecoin_id)),
-        safe_collect("curve", collect_curve_components(client, stablecoin_id)),
-        safe_collect("etherscan", collect_holder_distribution(client, stablecoin_id)),
-        safe_collect("flows", collect_flows_components(client, stablecoin_id)),
-        safe_collect("smart_contract", collect_smart_contract_components(client, stablecoin_id)),
-        safe_collect("solana", collect_solana_components(client, stablecoin_id)),
-        safe_collect("actor_metrics", _collect_actor_metrics(client, stablecoin_id)),
-    )
-    
-    for result in results:
-        if result:
-            all_components.extend(result)
 
-    # Blockscout shadow comparison (non-blocking, during evaluation period only)
     try:
         from app.utils.data_source_comparator import compare_contract_abi, compare_token_holder_count, is_comparison_active
         if is_comparison_active():
@@ -180,21 +147,6 @@ async def collect_all_components(
                 await safe_collect("blockscout_holder_compare", compare_token_holder_count(client, contract))
     except Exception:
         pass  # Shadow comparison is non-critical
-
-    # Offline collectors (synchronous, from config/scraped data)
-    for collector in [
-        collect_transparency_components,
-        collect_regulatory_components,
-        collect_governance_components,
-        collect_reserve_components,
-        collect_network_components,
-        collect_derived_components,
-    ]:
-        try:
-            offline = collector(stablecoin_id)
-            all_components.extend(offline)
-        except Exception as e:
-            logger.error(f"Offline collector error for {stablecoin_id}: {e}")
 
     # CDA vendor data (overlays/improves offline transparency + reserve components)
     try:
@@ -560,6 +512,10 @@ async def run_fast_cycle():
     fast_start = time.time()
     logger.info("=== Fast cycle start ===")
 
+    global _current_cycle_stats
+    from app.collectors.registry import CycleStats
+    _current_cycle_stats = CycleStats()
+
     # -------------------------------------------------------------------------
     # SII scoring — score all stablecoins
     # -------------------------------------------------------------------------
@@ -749,6 +705,12 @@ async def run_fast_cycle():
             logger.debug(f"Daily digest skipped — last sent {digest_age_hours:.1f}h ago")
     except Exception as e:
         logger.warning(f"Daily digest failed: {e}")
+
+    # Log and persist collector performance stats
+    if _current_cycle_stats:
+        _current_cycle_stats.log_summary()
+        _current_cycle_stats.store()
+        _current_cycle_stats = None
 
     elapsed = time.time() - fast_start
     logger.info(f"=== Fast cycle complete in {elapsed:.0f}s ===")
@@ -1357,6 +1319,33 @@ async def run_slow_cycle():
             logger.info(f"Pool wallet discovery skipped — last ran {pool_wallet_age_hours:.1f}h ago")
     except Exception as e:
         logger.warning(f"Pool wallet discovery failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Daily coherence sweep — cross-domain state consistency
+    # -------------------------------------------------------------------------
+    try:
+        last_coherence = fetch_one(
+            "SELECT MAX(created_at) AS latest FROM coherence_reports"
+        )
+        coherence_age_hours = 25
+        if last_coherence and last_coherence.get("latest"):
+            _coh_ts = last_coherence["latest"]
+            if _coh_ts.tzinfo is None:
+                _coh_ts = _coh_ts.replace(tzinfo=timezone.utc)
+            coherence_age_hours = (datetime.now(timezone.utc) - _coh_ts).total_seconds() / 3600
+
+        if coherence_age_hours >= 24:
+            from app.coherence import run_coherence_sweep
+            logger.info("Running coherence sweep...")
+            coh_report = run_coherence_sweep()
+            logger.info(
+                f"Coherence sweep: {coh_report['domains_checked']} domains, "
+                f"{coh_report['issues_found']} issues"
+            )
+        else:
+            logger.info(f"Coherence sweep skipped -- last ran {coherence_age_hours:.1f}h ago")
+    except Exception as e:
+        logger.warning(f"Coherence sweep failed: {e}")
 
     elapsed = time.time() - start
     logger.info(f"=== Slow cycle complete in {elapsed:.0f}s ===")
