@@ -3951,6 +3951,241 @@ async def protocol_market_history(slug: str):
 
 
 # =============================================================================
+# RPI — Risk Posture Index endpoints
+# =============================================================================
+
+@app.get("/api/rpi/scores")
+async def rpi_scores():
+    """All scored protocols — latest base RPI score per protocol."""
+    cached = _cache.get("rpi_scores", ttl=60)
+    if cached:
+        return cached
+    rows = fetch_all("""
+        SELECT DISTINCT ON (protocol_slug)
+            id, protocol_slug, protocol_name, overall_score, grade,
+            component_scores, raw_values, inputs_hash,
+            methodology_version, computed_at
+        FROM rpi_scores
+        ORDER BY protocol_slug, computed_at DESC
+    """)
+    from app.index_definitions.rpi_v2 import RPI_V2_DEFINITION
+    results = []
+    for row in rows:
+        results.append({
+            "protocol_slug": row["protocol_slug"],
+            "protocol_name": row["protocol_name"],
+            "score": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row.get("grade"),
+            "component_scores": row.get("component_scores"),
+            "methodology_version": row.get("methodology_version"),
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        })
+    result = {
+        "protocols": results,
+        "count": len(results),
+        "index": "rpi",
+        "version": RPI_V2_DEFINITION["version"],
+        "methodology_version": f"rpi-{RPI_V2_DEFINITION['version']}",
+    }
+    _cache.set("rpi_scores", result)
+    return result
+
+
+@app.get("/api/rpi/rankings")
+async def rpi_rankings(lens: Optional[str] = Query(default=None)):
+    """Protocols ranked by base RPI score (or lensed score if lens= provided)."""
+    rows = fetch_all("""
+        SELECT DISTINCT ON (protocol_slug)
+            protocol_slug, protocol_name, overall_score, grade,
+            component_scores, computed_at
+        FROM rpi_scores
+        ORDER BY protocol_slug, computed_at DESC
+    """)
+    from app.index_definitions.rpi_v2 import RPI_V2_DEFINITION
+
+    results = []
+    for row in rows:
+        entry = {
+            "protocol_slug": row["protocol_slug"],
+            "protocol_name": row["protocol_name"],
+            "rpi_base": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row.get("grade"),
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+        }
+
+        # If lenses requested, compute lensed score
+        if lens and entry["rpi_base"] is not None:
+            from app.rpi.scorer import _load_lens_components, compute_lensed_score
+            lens_ids = [l.strip() for l in lens.split(",") if l.strip()]
+            lens_components = _load_lens_components(row["protocol_slug"], lens_ids)
+            lensed = compute_lensed_score(entry["rpi_base"], lens_ids, lens_components)
+            entry["rpi_lensed"] = lensed["rpi_lensed"]
+            entry["lens_blend_used"] = lensed["lens_blend_used"]
+
+        results.append(entry)
+
+    # Sort by lensed score if lenses applied, otherwise base
+    sort_key = "rpi_lensed" if lens else "rpi_base"
+    results.sort(key=lambda x: x.get(sort_key) or 0, reverse=True)
+
+    return {
+        "rankings": results,
+        "count": len(results),
+        "index": "rpi",
+        "version": RPI_V2_DEFINITION["version"],
+        "ranked_by": sort_key,
+        "lenses_applied": lens.split(",") if lens else [],
+    }
+
+
+@app.get("/api/rpi/lenses")
+async def rpi_lenses():
+    """List available lenses and their components."""
+    from app.index_definitions.rpi_v2 import RPI_LENSES, LENS_BLEND
+    lenses = {}
+    for lens_id, lens_def in RPI_LENSES.items():
+        lenses[lens_id] = {
+            "name": lens_def["name"],
+            "description": lens_def["description"],
+            "components": {
+                comp_id: {"name": comp_def["name"], "weight": comp_def["weight"]}
+                for comp_id, comp_def in lens_def["components"].items()
+            },
+        }
+    return {
+        "lenses": lenses,
+        "lens_blend": LENS_BLEND,
+        "formula": "RPI_lensed = (1 - blend) * base + blend * lens_weighted_avg",
+    }
+
+
+@app.get("/api/rpi/components/{slug}")
+async def rpi_components(slug: str):
+    """Base component-level detail for a protocol."""
+    rows = fetch_all("""
+        SELECT DISTINCT ON (component_id)
+            component_id, component_type, raw_value, normalized_score,
+            source_type, data_source, collected_at
+        FROM rpi_components
+        WHERE protocol_slug = %s AND component_type = 'base'
+        ORDER BY component_id, collected_at DESC
+    """, (slug,))
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No RPI components found for '{slug}'")
+    return {
+        "protocol_slug": slug,
+        "components": [
+            {
+                "component_id": r["component_id"],
+                "raw_value": r["raw_value"],
+                "normalized_score": round(r["normalized_score"], 2) if r["normalized_score"] else None,
+                "source_type": r["source_type"],
+                "data_source": r["data_source"],
+                "collected_at": r["collected_at"].isoformat() if r.get("collected_at") else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/rpi/history/{slug}")
+async def rpi_history(slug: str):
+    """Base score history for a protocol."""
+    rows = fetch_all("""
+        SELECT score_date, overall_score, component_scores, methodology_version
+        FROM rpi_score_history
+        WHERE protocol_slug = %s
+        ORDER BY score_date DESC
+        LIMIT 90
+    """, (slug,))
+    return {
+        "protocol_slug": slug,
+        "history": [
+            {
+                "date": r["score_date"].isoformat() if hasattr(r["score_date"], "isoformat") else str(r["score_date"]),
+                "score": float(r["overall_score"]) if r.get("overall_score") else None,
+                "component_scores": r.get("component_scores"),
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@app.get("/api/rpi/compare")
+async def rpi_compare(slugs: str = Query(..., description="Comma-separated protocol slugs")):
+    """Multi-protocol comparison of base RPI scores."""
+    slug_list = [s.strip() for s in slugs.split(",") if s.strip()]
+    if not slug_list:
+        raise HTTPException(status_code=400, detail="Provide comma-separated protocol slugs via ?slugs=")
+
+    results = []
+    for slug in slug_list:
+        row = fetch_one("""
+            SELECT protocol_slug, protocol_name, overall_score, grade,
+                   component_scores, raw_values, computed_at
+            FROM rpi_scores
+            WHERE protocol_slug = %s
+            ORDER BY computed_at DESC LIMIT 1
+        """, (slug,))
+        if row:
+            results.append({
+                "protocol_slug": row["protocol_slug"],
+                "protocol_name": row["protocol_name"],
+                "score": float(row["overall_score"]) if row.get("overall_score") else None,
+                "grade": row.get("grade"),
+                "component_scores": row.get("component_scores"),
+                "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            })
+
+    return {
+        "protocols": results,
+        "count": len(results),
+        "index": "rpi",
+    }
+
+
+@app.get("/api/rpi/scores/{slug}")
+async def rpi_score_detail(slug: str, lens: Optional[str] = Query(default=None)):
+    """Detailed RPI breakdown for one protocol. Optionally include lens scores."""
+    row = fetch_one("""
+        SELECT id, protocol_slug, protocol_name, overall_score, grade,
+               component_scores, raw_values, inputs_hash,
+               methodology_version, computed_at
+        FROM rpi_scores
+        WHERE protocol_slug = %s
+        ORDER BY computed_at DESC LIMIT 1
+    """, (slug,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in RPI scores")
+
+    result = {
+        "protocol_slug": row["protocol_slug"],
+        "protocol_name": row["protocol_name"],
+        "rpi_base": float(row["overall_score"]) if row.get("overall_score") else None,
+        "grade": row.get("grade"),
+        "component_scores": row.get("component_scores"),
+        "raw_values": row.get("raw_values"),
+        "inputs_hash": row.get("inputs_hash"),
+        "methodology_version": row.get("methodology_version"),
+        "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+    }
+
+    # If lenses requested, compute lensed score on-the-fly
+    if lens and result["rpi_base"] is not None:
+        from app.rpi.scorer import _load_lens_components, compute_lensed_score
+        lens_ids = [l.strip() for l in lens.split(",") if l.strip()]
+        lens_components = _load_lens_components(slug, lens_ids)
+        lensed = compute_lensed_score(result["rpi_base"], lens_ids, lens_components)
+        result["rpi_lensed"] = lensed["rpi_lensed"]
+        result["lens_scores"] = lensed["lens_scores"]
+        result["lens_blend_used"] = lensed["lens_blend_used"]
+        result["lenses_applied"] = lens_ids
+
+    return result
+
+
+# =============================================================================
 # Treasury Exposure — cross-reference protocol holdings with SII scores
 # =============================================================================
 

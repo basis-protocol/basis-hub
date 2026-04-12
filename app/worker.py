@@ -644,6 +644,50 @@ async def run_scoring_cycle():
         logger.warning(f"PSI expansion pipeline failed: {e}")
 
     # -------------------------------------------------------------------------
+    # RPI scoring — daily gate (governance data changes slowly)
+    # -------------------------------------------------------------------------
+    try:
+        last_rpi = fetch_one(
+            "SELECT MAX(computed_at) AS latest FROM rpi_scores"
+        )
+        rpi_age_hours = 25  # default: run if no prior record
+        if last_rpi and last_rpi.get("latest"):
+            latest = last_rpi["latest"]
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=timezone.utc)
+            rpi_age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+
+        if rpi_age_hours >= 24:
+            logger.info("Running RPI scoring pipeline...")
+            # Collect governance data first
+            from app.rpi.snapshot_collector import collect_snapshot_proposals
+            from app.rpi.tally_collector import collect_tally_proposals
+            from app.rpi.parameter_collector import collect_parameter_changes
+            collect_snapshot_proposals()
+            collect_tally_proposals()
+            collect_parameter_changes()
+
+            # Score all protocols
+            from app.rpi.scorer import run_rpi_scoring
+            rpi_results = run_rpi_scoring()
+            logger.info(f"RPI scoring complete: {len(rpi_results)} protocols scored")
+
+            # Attest RPI scores (14th domain)
+            try:
+                from app.state_attestation import attest_state
+                if rpi_results:
+                    attest_state("rpi_components", [
+                        {"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")}
+                        for r in rpi_results if isinstance(r, dict)
+                    ])
+            except Exception as ae:
+                logger.debug(f"RPI attestation skipped: {ae}")
+        else:
+            logger.info(f"RPI scoring skipped — last ran {rpi_age_hours:.0f}h ago")
+    except Exception as e:
+        logger.warning(f"RPI scoring pipeline failed: {e}")
+
+    # -------------------------------------------------------------------------
     # CDA collection — daily gate via DB timestamp
     # -------------------------------------------------------------------------
     try:
