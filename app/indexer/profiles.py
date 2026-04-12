@@ -153,7 +153,13 @@ def rebuild_all_profiles() -> dict:
     """
     Rebuild unified profiles for all distinct addresses across chains.
     """
-    rows = fetch_all("SELECT DISTINCT address FROM wallet_graph.wallets")
+    rows = fetch_all("""
+        SELECT DISTINCT w.address
+        FROM wallet_graph.wallets w
+        LEFT JOIN wallet_graph.wallet_profiles p ON w.address = p.address
+        ORDER BY p.updated_at ASC NULLS FIRST
+        LIMIT 2000
+    """)
     addresses = [r["address"] for r in rows]
 
     logger.info(f"Rebuilding profiles for {len(addresses)} distinct addresses")

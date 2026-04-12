@@ -11,7 +11,10 @@ import re
 import logging
 import httpx
 
-from firecrawl import Firecrawl
+try:
+    from firecrawl import Firecrawl
+except ImportError:
+    Firecrawl = None
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,8 @@ FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
 
 def get_client():
+    if Firecrawl is None:
+        raise ImportError("firecrawl package not installed — pip install firecrawl-py")
     if not FIRECRAWL_API_KEY:
         raise ValueError("FIRECRAWL_API_KEY not set")
     return Firecrawl(api_key=FIRECRAWL_API_KEY)

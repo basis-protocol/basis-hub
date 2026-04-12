@@ -674,7 +674,7 @@ async def run_scoring_cycle():
     try:
         from app.indexer.pipeline import run_pipeline_batch
         logger.info("Running wallet batch re-index (500 stalest wallets)...")
-        reindex_result = run_pipeline_batch(batch_size=500)
+        reindex_result = await run_pipeline_batch(batch_size=500)
         logger.info(
             f"Wallet re-index complete: {reindex_result.get('processed', 0)} processed, "
             f"{reindex_result.get('scored', 0)} scored, "
