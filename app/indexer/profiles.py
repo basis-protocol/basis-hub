@@ -157,10 +157,11 @@ def rebuild_all_profiles(limit: int = 0) -> dict:
         # Stalest profiles first: wallets that either have no profile yet
         # (LEFT JOIN … IS NULL) or the oldest updated_at in wallet_profiles.
         rows = fetch_all(
-            """SELECT DISTINCT w.address
+            """SELECT w.address, MIN(p.updated_at) AS oldest_profile
                FROM wallet_graph.wallets w
                LEFT JOIN wallet_graph.wallet_profiles p ON w.address = p.address
-               ORDER BY p.updated_at ASC NULLS FIRST
+               GROUP BY w.address
+               ORDER BY oldest_profile ASC NULLS FIRST
                LIMIT %s""",
             (limit,),
         )

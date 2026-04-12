@@ -25,7 +25,7 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import STABLECOIN_REGISTRY, COLLECTION_INTERVAL_MINUTES
-from app.database import init_pool, close_pool, get_cursor, fetch_one, fetch_all
+from app.database import init_pool, close_pool, get_cursor, fetch_one, fetch_all, execute
 from app.scoring import (
     calculate_sii, calculate_structural_composite,
     aggregate_legacy_to_v1, score_to_grade, FORMULA_VERSION, SII_V1_WEIGHTS,
@@ -552,7 +552,7 @@ async def run_scoring_cycle():
     logger.info(f"Starting scoring cycle for {len(stablecoins)} stablecoins")
     
     results = []
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         for sid in stablecoins:
             # For promoted coins (not in hardcoded registry), mark in_progress
             is_promoted = sid not in STABLECOIN_REGISTRY
@@ -561,7 +561,9 @@ async def run_scoring_cycle():
                 if cfg:
                     _mark_scoring_status(cfg["coingecko_id"], "in_progress")
             try:
-                result = await score_stablecoin(client, sid)
+                result = await asyncio.wait_for(
+                    score_stablecoin(client, sid), timeout=120
+                )
                 results.append(result)
                 # After success, mark scored for promoted coins
                 if is_promoted and "score" in result:
@@ -570,6 +572,9 @@ async def run_scoring_cycle():
                         _mark_scoring_status(cfg["coingecko_id"], "scored")
                 # Rate limit: pause between coins
                 await asyncio.sleep(2.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout scoring {sid} (>120s) — skipping")
+                results.append({"stablecoin": sid, "error": "timeout_120s"})
             except Exception as e:
                 logger.error(f"Failed to score {sid}: {e}")
                 results.append({"stablecoin": sid, "error": str(e)})
@@ -650,13 +655,13 @@ async def run_scoring_cycle():
         if last_cda and last_cda.get("latest"):
             latest = last_cda["latest"]
             if latest.tzinfo is None:
-                latest = latest.replace(tzinfo=timezone)
+                latest = latest.replace(tzinfo=timezone.utc)
             cda_age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
 
         if cda_age_hours >= cda_interval_hours:
             logger.info("Running CDA collection pipeline...")
             from app.services.cda_collector import run_collection
-            asyncio.run(run_collection())
+            await run_collection()
             logger.info("CDA collection complete")
         else:
             logger.info(f"CDA collection skipped — last ran {cda_age_hours:.1f}h ago")
@@ -669,7 +674,7 @@ async def run_scoring_cycle():
     try:
         from app.indexer.pipeline import run_pipeline_batch
         logger.info("Running wallet batch re-index (500 stalest wallets)...")
-        reindex_result = run_pipeline_batch(batch_size=500)
+        reindex_result = await run_pipeline_batch(batch_size=500)
         logger.info(
             f"Wallet re-index complete: {reindex_result.get('processed', 0)} processed, "
             f"{reindex_result.get('scored', 0)} scored, "
@@ -690,7 +695,7 @@ async def run_scoring_cycle():
         if last_expansion_row and last_expansion_row.get("latest"):
             latest = last_expansion_row["latest"]
             if latest.tzinfo is None:
-                latest = latest.replace(tzinfo=timezone)
+                latest = latest.replace(tzinfo=timezone.utc)
             wallet_expansion_age = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
 
         if wallet_expansion_age >= 24:
@@ -698,7 +703,7 @@ async def run_scoring_cycle():
             try:
                 from app.indexer.expander import run_wallet_expansion
                 logger.info("Running wallet expansion pipeline...")
-                expansion_result = asyncio.run(run_wallet_expansion(max_etherscan_calls=50))
+                expansion_result = await run_wallet_expansion(max_etherscan_calls=50)
                 logger.info(
                     f"Wallet expansion complete: {expansion_result.get('new_wallets_seeded', 0)} seeded, "
                     f"{expansion_result.get('etherscan_calls_used', 0)} Etherscan calls used"
@@ -744,7 +749,7 @@ async def run_scoring_cycle():
     try:
         from app.collectors.treasury_flows import collect_treasury_events
         logger.info("Running treasury flow detection...")
-        treasury_events = asyncio.run(collect_treasury_events())
+        treasury_events = await collect_treasury_events()
         logger.info(f"Treasury flow detection: {len(treasury_events)} events")
     except Exception as e:
         logger.warning(f"Treasury flow detection failed: {e}")
@@ -806,9 +811,7 @@ async def run_scoring_cycle():
         if failures:
             try:
                 from app.ops.tools.alerter import check_and_alert_health
-                _aloop = asyncio.new_event_loop()
-                _aloop.run_until_complete(check_and_alert_health(health_results))
-                _aloop.close()
+                await check_and_alert_health(health_results)
                 logger.info(f"Health alerts dispatched for {len(failures)} failing system(s)")
             except Exception as alert_err:
                 logger.warning(f"Health alert dispatch failed: {alert_err}")
@@ -852,6 +855,72 @@ async def run_scoring_cycle():
     except Exception as e:
         logger.debug(f"Provenance attestation skipped: {e}")
 
+    # -------------------------------------------------------------------------
+    # Daily digest — send operational summary once per 24h
+    # -------------------------------------------------------------------------
+    try:
+        last_digest = fetch_one(
+            "SELECT MAX(sent_at) AS latest FROM ops_alert_log WHERE alert_type = 'daily_digest'"
+        )
+        digest_age_hours = 25
+        if last_digest and last_digest.get("latest"):
+            latest = last_digest["latest"]
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=timezone.utc)
+            digest_age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+
+        if digest_age_hours >= 24:
+            logger.info("Assembling daily digest...")
+            from app.ops.tools.health_checker import get_latest_health
+            health = get_latest_health()
+            healthy_cnt = sum(1 for r in health if r.get("status") == "healthy")
+            total_cnt = len(health)
+            failing = [r for r in health if r.get("status") in ("degraded", "down")]
+
+            sii_row = fetch_one("SELECT COUNT(*) as cnt, MAX(calculated_at) as latest FROM scores")
+            sii_count = sii_row["cnt"] if sii_row else 0
+            sii_age = "?"
+            if sii_row and sii_row.get("latest"):
+                _sii_ts = sii_row["latest"]
+                if _sii_ts.tzinfo is None:
+                    _sii_ts = _sii_ts.replace(tzinfo=timezone.utc)
+                sii_age = f"{(datetime.now(timezone.utc) - _sii_ts).total_seconds() / 3600:.1f}"
+
+            psi_row = fetch_one("SELECT COUNT(*) as cnt, MAX(scored_at) as latest FROM psi_scores")
+            psi_count = psi_row["cnt"] if psi_row else 0
+            psi_age = "?"
+            if psi_row and psi_row.get("latest"):
+                _psi_ts = psi_row["latest"]
+                if _psi_ts.tzinfo is None:
+                    _psi_ts = _psi_ts.replace(tzinfo=timezone.utc)
+                psi_age = f"{(datetime.now(timezone.utc) - _psi_ts).total_seconds() / 3600:.1f}"
+
+            db_conns = fetch_one("SELECT count(*) as cnt FROM pg_stat_activity WHERE datname = current_database()")
+            conn_count = db_conns["cnt"] if db_conns else "?"
+
+            failures_summary = ""
+            if failing:
+                failures_summary = "\nFailing systems:\n" + "\n".join(
+                    f"  - {f['system']}: {f.get('status', '?')}" for f in failing
+                )
+
+            msg = (
+                f"Basis Daily Digest\n\n"
+                f"Systems: {healthy_cnt}/{total_cnt} healthy\n"
+                f"SII: {sii_count} coins scored, last: {sii_age}h ago\n"
+                f"PSI: {psi_count} protocols scored, last: {psi_age}h ago\n"
+                f"DB: {conn_count} active connections\n"
+                f"{failures_summary if failing else 'All systems operational.'}"
+            )
+
+            from app.ops.tools.alerter import send_alert as _send_digest
+            await _send_digest("daily_digest", msg)
+            logger.info("Daily digest sent")
+        else:
+            logger.debug(f"Daily digest skipped — last sent {digest_age_hours:.1f}h ago")
+    except Exception as e:
+        logger.warning(f"Daily digest failed: {e}")
+
     return {
         "results": results,
         "successes": successes,
@@ -873,17 +942,47 @@ async def main():
     args = parser.parse_args()
     
     init_pool()
-    
+
+    # Seed email alert channel if not configured
+    try:
+        existing = fetch_one("SELECT id FROM ops_alert_config WHERE channel = 'email'")
+        if not existing:
+            execute(
+                "INSERT INTO ops_alert_config (channel, config, alert_types, enabled) VALUES (%s, %s, %s, TRUE)",
+                ("email", "{}",
+                 ["health_failure", "engagement_response", "state_growth", "daily_digest", "service_restart"]),
+            )
+            logger.info("Email alert channel seeded in ops_alert_config")
+        else:
+            execute(
+                "UPDATE ops_alert_config SET alert_types = %s, enabled = TRUE WHERE channel = 'email'",
+                (["health_failure", "engagement_response", "state_growth", "daily_digest", "service_restart"],),
+            )
+    except Exception as e:
+        logger.warning(f"Alert config seed skipped: {e}")
+
+    # Startup notification
+    try:
+        from app.ops.tools.alerter import send_alert
+        await send_alert("service_restart", "Worker started. Beginning first cycle.")
+    except Exception as e:
+        logger.warning(f"Worker startup alert failed: {e}")
+
+    CYCLE_TIMEOUT = 45 * 60  # 45 minutes max per scoring cycle
+
     try:
         if args.coin:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30) as client:
                 result = await score_stablecoin(client, args.coin)
                 print(result)
         elif args.loop:
             logger.info(f"Starting worker loop (interval: {args.interval} min)")
             gov_cycle_counter = 0
             while True:
-                await run_scoring_cycle()
+                try:
+                    await asyncio.wait_for(run_scoring_cycle(), timeout=CYCLE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.error(f"Scoring cycle exceeded {CYCLE_TIMEOUT}s timeout — aborting cycle")
                 
                 # Run governance crawl every 6 SII cycles (~6 hours)
                 gov_cycle_counter += 1

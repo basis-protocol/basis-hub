@@ -351,7 +351,10 @@ def promote_eligible_assets() -> int:
             try:
                 import asyncio
                 from app.services.cda_collector import discover_new_issuer
-                asyncio.run(discover_new_issuer(asset["symbol"], asset["coingecko_id"]))
+                loop = asyncio.get_running_loop()
+                loop.create_task(discover_new_issuer(asset["symbol"], asset["coingecko_id"]))
+            except RuntimeError:
+                logger.debug(f"CDA issuer discovery deferred for {asset['symbol']} (no event loop)")
             except Exception as cda_e:
                 logger.debug(f"CDA issuer discovery skipped for {asset['symbol']}: {cda_e}")
         except Exception as e:

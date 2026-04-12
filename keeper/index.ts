@@ -405,9 +405,68 @@ async function main(): Promise<void> {
 
   logger.info("Keeper wallet address", { address: walletBase.address });
 
+  // Startup notification — catches restart loops
+  await sendAlert(
+    `Keeper started. Interval: ${config.pollIntervalSeconds}s. Wallet: ${walletBase.address}`
+  );
+
   const intervalMs = config.pollIntervalSeconds * 1000;
 
-  // Run first cycle immediately, then on schedule
+  // Guard against restart-triggered duplicate cycles.
+  // Query the on-chain stateRootTimestamp to see when the last full cycle completed.
+  // If less than pollIntervalSeconds has elapsed, sleep the remainder.
+  try {
+    const guardOracle = new ethers.Contract(
+      config.chains.base.oracleAddress,
+      ["function stateRootTimestamp() external view returns (uint48)"],
+      providerBase
+    );
+    const lastTs = Number(await guardOracle.stateRootTimestamp());
+    if (lastTs > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      const elapsed = now - lastTs;
+      if (elapsed < config.pollIntervalSeconds) {
+        const waitSec = config.pollIntervalSeconds - elapsed;
+        logger.info("Recent cycle detected on-chain, deferring first run", {
+          lastStateRootAge: elapsed,
+          waitSeconds: waitSec,
+        });
+        await sleep(waitSec * 1000);
+      }
+    }
+  } catch (err) {
+    logger.warn("Startup guard check failed, proceeding immediately", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Check wallet balance and alert if low
+  async function checkWalletBalance(): Promise<void> {
+    try {
+      const [balBase, balArb] = await Promise.all([
+        providerBase.getBalance(walletBase.address),
+        providerArb.getBalance(walletArb.address),
+      ]);
+      const ethBase = Number(ethers.formatEther(balBase));
+      const ethArb = Number(ethers.formatEther(balArb));
+      logger.info("Wallet balances", { base: ethBase.toFixed(6), arbitrum: ethArb.toFixed(6) });
+      if (ethBase < 0.005) {
+        await sendAlert(`Keeper wallet balance LOW: ${ethBase.toFixed(6)} ETH on Base`);
+      }
+      if (ethArb < 0.005) {
+        await sendAlert(`Keeper wallet balance LOW: ${ethArb.toFixed(6)} ETH on Arbitrum`);
+      }
+    } catch (err) {
+      logger.warn("Wallet balance check failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Check balance at startup
+  await checkWalletBalance();
+
+  // Run first cycle immediately (unless deferred above), then on schedule
   while (true) {
     try {
       await runCycle(config, walletBase, walletArb, providerBase, providerArb);
@@ -416,6 +475,9 @@ async function main(): Promise<void> {
       logger.error(msg, { error: err instanceof Error ? err.message : String(err) });
       await sendAlert(msg, err);
     }
+
+    // Check balance after each cycle
+    await checkWalletBalance();
 
     logger.info(`Sleeping ${config.pollIntervalSeconds}s until next cycle`);
     await sleep(intervalMs);

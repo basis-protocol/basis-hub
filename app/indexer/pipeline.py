@@ -611,7 +611,7 @@ def get_reindex_status() -> dict:
     return status
 
 
-def run_pipeline_batch(batch_size: int = 500) -> dict:
+async def run_pipeline_batch(batch_size: int = 500) -> dict:
     """
     Incremental batch re-indexing: scan + score the oldest `batch_size` wallets.
 
@@ -758,9 +758,9 @@ def run_pipeline_batch(batch_size: int = 500) -> dict:
                     errors += 1
 
     try:
-        asyncio.run(_scan_and_score())
+        await _scan_and_score()
     except Exception as e:
-        msg = f"asyncio.run(_scan_and_score) crashed: {type(e).__name__}: {e}"
+        msg = f"_scan_and_score crashed: {type(e).__name__}: {e}"
         reindex_logger.error(msg, exc_info=True)
         _reindex_status["last_error"] = msg
         errors += 1
