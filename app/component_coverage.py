@@ -31,11 +31,11 @@ COVERAGE = {
         "slashing_history": "empty",
         "attestation_rate": "live",
         "slashing_insurance": "static",
-        # Distribution — needs Etherscan integration
-        "top_holder_concentration": "empty",
-        "holder_gini": "empty",
-        "defi_protocol_share": "empty",
-        "exchange_concentration": "empty",
+        # Distribution — Etherscan holder analysis (daily-gated)
+        "top_holder_concentration": "live",
+        "holder_gini": "live",
+        "defi_protocol_share": "live",
+        "exchange_concentration": "live",
         # Smart Contract — static config
         "audit_status": "static",
         "upgradeability_risk": "static",
@@ -79,7 +79,7 @@ COVERAGE = {
         "operator_geographic_diversity": "static",
         "validator_rotation": "static",
         "bridge_governance_mechanism": "static",
-        "token_holder_concentration": "empty",
+        "token_holder_concentration": "live",
         # Economic Security — static
         "cost_to_attack": "static",
         "slashing_mechanism": "static",
@@ -268,11 +268,11 @@ COVERAGE = {
         "prospectus_availability": "static",
         "jurisdiction_risk_tti": "static",
         "regulatory_change_risk": "static",
-        # Holder & Distribution — needs Etherscan
-        "tti_holder_count": "empty",
-        "tti_top10_concentration": "empty",
+        # Holder & Distribution — Etherscan holder analysis (daily-gated)
+        "tti_holder_count": "live",
+        "tti_top10_concentration": "live",
         "institutional_holder_pct": "static",
-        "defi_integration_count": "empty",
+        "defi_integration_count": "live",
         "geographic_distribution": "static",
         "holder_growth_rate": "empty",
         # Market & Trading — CoinGecko

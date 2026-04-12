@@ -238,9 +238,9 @@ BRI_V01_DEFINITION = {
 }
 
 BRIDGE_ENTITIES = [
-    {"slug": "wormhole", "name": "Wormhole", "defillama_id": "wormhole"},
-    {"slug": "layerzero", "name": "LayerZero", "defillama_id": "layerzero"},
-    {"slug": "axelar", "name": "Axelar", "defillama_id": "axelar"},
+    {"slug": "wormhole", "name": "Wormhole", "defillama_id": "wormhole", "token_contract": "0xB0fFa8000886e57F86dd5264b987B9a091e82984"},  # W token
+    {"slug": "layerzero", "name": "LayerZero", "defillama_id": "layerzero", "token_contract": "0x6985884C4392D348587B19cb9eAAf157F13271cd"},  # ZRO token
+    {"slug": "axelar", "name": "Axelar", "defillama_id": "axelar", "token_contract": "0x467719aD09025FcC6cF6F8311755809d45a5E5f3"},  # AXL token
     {"slug": "circle-cctp", "name": "Circle CCTP", "defillama_id": "circle-cctp"},
     {"slug": "across", "name": "Across Protocol", "defillama_id": "across"},
     {"slug": "stargate", "name": "Stargate", "defillama_id": "stargate"},

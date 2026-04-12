@@ -301,13 +301,15 @@ def fetch_rated_data(protocol_slug: str) -> dict:
 # Score and store
 # =============================================================================
 
-def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None) -> dict | None:
+def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
+              holder_cache: dict = None) -> dict | None:
     """Score a single LST entity. Returns scoring result dict.
 
     Args:
         entity: LST entity config dict
         eth_price: Pre-fetched ETH price (avoids per-entity API call)
         pool_cache: Pre-fetched DeFiLlama pools (avoids per-entity API call)
+        holder_cache: Pre-fetched holder analysis {contract_lower: result}
     """
     slug = entity["slug"]
     cg_id = entity["coingecko_id"]
@@ -337,6 +339,16 @@ def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None) ->
     # Static config components
     static = LST_STATIC_CONFIG.get(slug, {})
     raw_values.update(static)
+
+    # Holder distribution (Etherscan — daily-gated via 24h cache)
+    contract = entity.get("contract")
+    if contract and holder_cache is not None:
+        holder_data = holder_cache.get(contract.lower())
+        if holder_data:
+            raw_values["top_holder_concentration"] = holder_data["top_10_pct"]
+            raw_values["holder_gini"] = holder_data["gini"]
+            raw_values["defi_protocol_share"] = holder_data["defi_pct"]
+            raw_values["exchange_concentration"] = holder_data["exchange_pct"]
 
     if not raw_values:
         logger.warning(f"No data collected for LST {slug}")
@@ -397,10 +409,29 @@ def run_lsti_scoring() -> list[dict]:
     eth_price = fetch_eth_price() or 3000.0
     pool_cache = fetch_defillama_all_pools()
 
+    # Pre-fetch holder data for all entities (cached 24h — only hits Etherscan once/day)
+    holder_cache = {}
+    try:
+        from app.collectors.holder_analysis import analyze_holders_sync, get_cached_holders
+        for entity in LST_ENTITIES:
+            contract = entity.get("contract")
+            if contract:
+                cached = get_cached_holders(contract)
+                if cached:
+                    holder_cache[contract.lower()] = cached
+                else:
+                    # Fetch fresh — only runs once per 24h due to cache
+                    hdata = analyze_holders_sync(contract, decimals=18, market_cap=None)
+                    if hdata.get("balances_found", 0) > 0:
+                        holder_cache[contract.lower()] = hdata
+    except Exception as e:
+        logger.warning(f"LSTI holder analysis pre-fetch failed: {e}")
+
     results = []
     for entity in LST_ENTITIES:
         try:
-            result = score_lst(entity, eth_price=eth_price, pool_cache=pool_cache)
+            result = score_lst(entity, eth_price=eth_price, pool_cache=pool_cache,
+                               holder_cache=holder_cache)
             if result:
                 store_lst_score(result)
                 results.append(result)

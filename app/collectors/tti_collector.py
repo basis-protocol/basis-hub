@@ -195,7 +195,7 @@ def fetch_tti_market_data(coingecko_id: str) -> dict | None:
     return None
 
 
-def extract_tti_raw_values(entity: dict) -> dict:
+def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
     """Extract raw values from all sources."""
     slug = entity["slug"]
     raw = {}
@@ -243,7 +243,13 @@ def extract_tti_raw_values(entity: dict) -> dict:
     except Exception as e:
         logger.debug(f"DeFiLlama TTI fetch failed for {slug}: {e}")
 
-    # Etherscan holder data (if contract exists — skipped for now; uses config)
+    # Etherscan holder data (if contract and holder_cache provided)
+    if holder_data:
+        if holder_data.get("holder_count"):
+            raw["tti_holder_count"] = holder_data["holder_count"]
+        raw["tti_top10_concentration"] = holder_data.get("top_10_pct", 0)
+        raw["defi_integration_count"] = holder_data.get("defi_protocol_count", 0)
+
     # Static config (off-chain components — bulk of TTI data)
     static = TTI_STATIC_CONFIG.get(slug, {})
     raw.update(static)
@@ -255,12 +261,18 @@ def extract_tti_raw_values(entity: dict) -> dict:
 # Score and store
 # =============================================================================
 
-def score_tti(entity: dict) -> dict | None:
+def score_tti(entity: dict, holder_cache: dict = None) -> dict | None:
     """Score a single TTI entity."""
     slug = entity["slug"]
     logger.info(f"Scoring TTI: {slug}")
 
-    raw_values = extract_tti_raw_values(entity)
+    # Look up holder data from cache if contract known
+    holder_data = None
+    contract = entity.get("contract")
+    if contract and holder_cache:
+        holder_data = holder_cache.get(contract.lower())
+
+    raw_values = extract_tti_raw_values(entity, holder_data=holder_data)
     if not raw_values:
         logger.warning(f"No data collected for TTI {slug}")
         return None
@@ -310,10 +322,27 @@ def store_tti_score(result: dict) -> None:
 
 def run_tti_scoring() -> list[dict]:
     """Score all TTI entities. Called from worker."""
+    # Pre-fetch holder data for entities with contracts (cached 24h)
+    holder_cache = {}
+    try:
+        from app.collectors.holder_analysis import analyze_holders_sync, get_cached_holders
+        for entity in TTI_ENTITIES:
+            contract = entity.get("contract")
+            if contract:
+                cached = get_cached_holders(contract)
+                if cached:
+                    holder_cache[contract.lower()] = cached
+                else:
+                    hdata = analyze_holders_sync(contract, decimals=18)
+                    if hdata.get("balances_found", 0) > 0:
+                        holder_cache[contract.lower()] = hdata
+    except Exception as e:
+        logger.warning(f"TTI holder analysis pre-fetch failed: {e}")
+
     results = []
     for entity in TTI_ENTITIES:
         try:
-            result = score_tti(entity)
+            result = score_tti(entity, holder_cache=holder_cache)
             if result:
                 store_tti_score(result)
                 results.append(result)

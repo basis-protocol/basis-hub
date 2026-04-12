@@ -274,7 +274,7 @@ def extract_bridge_raw_values(entity: dict, bridges_data: list[dict]) -> dict:
 # Score and store
 # =============================================================================
 
-def score_bridge(entity: dict, bridges_data: list[dict]) -> dict | None:
+def score_bridge(entity: dict, bridges_data: list[dict], holder_cache: dict = None) -> dict | None:
     """Score a single bridge entity."""
     slug = entity["slug"]
     logger.info(f"Scoring bridge: {slug}")
@@ -283,6 +283,13 @@ def score_bridge(entity: dict, bridges_data: list[dict]) -> dict | None:
     if not raw_values:
         logger.warning(f"No data collected for bridge {slug}")
         return None
+
+    # Holder analysis for governance token (if available)
+    token_contract = entity.get("token_contract")
+    if token_contract and holder_cache:
+        hdata = holder_cache.get(token_contract.lower())
+        if hdata:
+            raw_values["token_holder_concentration"] = hdata["top_10_pct"]
 
     result = score_entity(BRI_V01_DEFINITION, raw_values)
     result["entity_slug"] = slug
@@ -332,10 +339,27 @@ def run_bri_scoring() -> list[dict]:
     bridges_data = fetch_bridge_data()
     time.sleep(1)
 
+    # Pre-fetch holder data for bridges with governance tokens (cached 24h)
+    holder_cache = {}
+    try:
+        from app.collectors.holder_analysis import analyze_holders_sync, get_cached_holders
+        for entity in BRIDGE_ENTITIES:
+            tc = entity.get("token_contract")
+            if tc:
+                cached = get_cached_holders(tc)
+                if cached:
+                    holder_cache[tc.lower()] = cached
+                else:
+                    hdata = analyze_holders_sync(tc, decimals=18)
+                    if hdata.get("balances_found", 0) > 0:
+                        holder_cache[tc.lower()] = hdata
+    except Exception as e:
+        logger.warning(f"BRI holder analysis pre-fetch failed: {e}")
+
     results = []
     for entity in BRIDGE_ENTITIES:
         try:
-            result = score_bridge(entity, bridges_data)
+            result = score_bridge(entity, bridges_data, holder_cache=holder_cache)
             if result:
                 store_bridge_score(result)
                 results.append(result)
