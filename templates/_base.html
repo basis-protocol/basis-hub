@@ -87,6 +87,22 @@
             padding: 0 24px 24px;
         }
 
+        .tab-header { border: 1.5px solid var(--ink); margin-top: 20px; margin-bottom: 24px; }
+        .tab-header-top { padding: 18px 24px 0; display: flex; justify-content: space-between; align-items: center; }
+        .tab-header-title { font-family: var(--sans); font-size: 28px; font-weight: 400; color: var(--ink); letter-spacing: -0.3px; }
+        .tab-header-form-id { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 2px; }
+        .tab-header-rule { height: 1px; background: var(--rule-mid); margin: 12px 24px; }
+        .tab-header-stats { display: flex; align-items: center; padding: 0 24px 14px; flex-wrap: wrap; }
+        .tab-header-stats span { font-family: var(--mono); font-size: 10px; color: var(--ink-light); text-transform: uppercase; letter-spacing: 1.5px; padding: 0 12px; }
+        .tab-header-divider { width: 1px; height: 12px; background: var(--rule-mid); flex-shrink: 0; }
+        .tab-header-formula { border-top: 1px solid var(--rule-mid); padding: 10px 24px; display: flex; justify-content: space-between; align-items: center; }
+        .tab-header-formula span { font-family: var(--mono); font-size: 11px; color: var(--ink); }
+        .tab-header-version { font-size: 10px !important; color: var(--ink-light) !important; text-transform: uppercase; letter-spacing: 1px; }
+        .tab-header-chain { border-top: 1px solid var(--rule-mid); padding: 8px 24px; display: flex; gap: 10px; }
+        .chain-pill { font-family: var(--mono); font-size: 10px; color: var(--ink-mid); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; background: var(--paper-warm); padding: 4px 12px; border-radius: 999px; }
+        .chain-pill:hover { color: var(--ink); border-bottom: none; }
+        .chain-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+
         /* Section labels */
         .section-label {
             font-family: var(--mono);
@@ -255,6 +271,13 @@
             .signal-grid { grid-template-columns: 1fr 1fr; }
             .page-footer { flex-direction: column; gap: 4px; padding: 8px 12px; }
             .metric-value { font-size: 16px; }
+            .tab-header-top { flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 12px 0; }
+            .tab-header-title { font-size: 20px; }
+            .tab-header-rule { margin: 12px 12px; }
+            .tab-header-stats span { font-size: 8px; padding: 2px 6px; }
+            .tab-header-divider { display: none; }
+            .tab-header-formula { flex-direction: column; gap: 4px; padding: 8px 12px; }
+            .tab-header-chain { padding: 8px 12px; }
         }
 
         {% block extra_styles %}{% endblock %}

@@ -81,4 +81,6 @@ def render(report_data: dict, lens_result: dict = None,
 
     return page(f"{name} — Compliance Report ({framework})", body,
                 f"Compliance classification for {name} under {framework}.",
-                f"{CANONICAL_BASE_URL}/report/stablecoin/{entity_id}?lens={lens_id}")
+                f"{CANONICAL_BASE_URL}/report/stablecoin/{entity_id}?lens={lens_id}",
+                form_id=f"FORM CMP-001 · {lens_id} · BASIS PROTOCOL",
+                stats=[f"Score {score:.1f}" if score else "Score —", f"{framework}", f"Lens {lens_id} v{lens_version}"])

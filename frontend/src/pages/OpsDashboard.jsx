@@ -818,21 +818,59 @@ function ContentFeed({ feed, onDecide, onAnalyze, busy }) {
 
 // ─── Section wrapper ──────────────────────────────────────────────────
 
-function Section({ title, actions, children }) {
-  const [collapsed, setCollapsed] = useState(false);
+function Section({ title, actions, children, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "6px 10px", background: T.ink, color: T.paper, cursor: "pointer",
-      }} onClick={() => setCollapsed(!collapsed)}>
-        <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 600, letterSpacing: 1 }}>
-          {collapsed ? "\u25B6" : "\u25BC"} {title}
+    <div style={{ marginTop: 24, border: `1px solid ${T.ruleMid}` }}>
+      <div style={{ padding: "10px 20px", borderBottom: open ? `1px solid ${T.ruleLight}` : "none",
+        display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer",
+      }} onClick={() => setOpen(!open)}>
+        <span style={{ fontFamily: T.mono, fontSize: 10, fontWeight: 600, color: T.inkLight,
+          textTransform: "uppercase", letterSpacing: 1.5 }}>
+          {open ? "\u25BC" : "\u25B6"} {title}
         </span>
         <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>{actions}</div>
       </div>
-      {!collapsed && (
-        <div style={{ border: `1px solid ${T.ruleMid}`, borderTop: "none", padding: "8px 0" }}>{children}</div>
+      {open && <div style={{ padding: "12px 20px" }}>{children}</div>}
+    </div>
+  );
+}
+
+// ─── TabHeader (copied from App.jsx) ────────────────────────────────
+
+function TabHeader({ title, formId, stats, accent, mobile, showOnChain = false }) {
+  return (
+    <div style={{ border: `1.5px solid ${T.ink}`, marginBottom: 0 }}>
+      <div style={{ padding: mobile ? "14px 12px 0" : "18px 24px 0" }}>
+        <div style={{ display: "flex", flexDirection: mobile ? "column" : "row", justifyContent: "space-between", alignItems: mobile ? "flex-start" : "center", gap: mobile ? 4 : 0 }}>
+          <h1 style={{ margin: 0, fontSize: mobile ? 20 : 28, fontFamily: T.sans, color: T.ink, fontWeight: 400, letterSpacing: -0.3 }}>
+            {title}
+          </h1>
+          <span style={{ fontFamily: T.mono, fontSize: mobile ? 9 : 10, color: T.inkFaint, textTransform: "uppercase", letterSpacing: 2 }}>
+            {formId}
+          </span>
+        </div>
+
+        {stats && stats.length > 0 && (
+          <>
+            <div style={{ height: 1, background: T.ruleMid, margin: "12px 0" }} />
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: mobile ? 4 : 0, paddingBottom: 14 }}>
+              {stats.map((s, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center" }}>
+                  <span style={{ fontFamily: T.mono, fontSize: mobile ? 8 : 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: mobile ? 0.5 : 1.5, padding: mobile ? "2px 6px" : "0 12px" }}>
+                    {s}
+                  </span>
+                  {!mobile && i < stats.length - 1 && (
+                    <div style={{ width: 1, height: 12, background: T.ruleMid }} />
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      {accent && (
+        <div style={{ height: 3, background: accent }} />
       )}
     </div>
   );
@@ -1144,6 +1182,132 @@ function SeedMetricsPanel() {
           )}
         </>
       )}
+    </>
+  );
+}
+
+// ─── Metrics Expansion Panels ────────────────────────────────────────
+
+function MetricsExpansionPanels() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    opsFetch("/api/ops/seed-metrics").then(setData).catch(() => {});
+  }, []);
+
+  if (!data || data.error) return null;
+
+  const statCard = (label, value, sub) => (
+    <div style={{ flex: 1, padding: "10px 12px", border: `1px solid ${T.ruleMid}`, background: T.paperWarm, minWidth: 140 }}>
+      <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontFamily: T.mono, fontSize: 22, fontWeight: 700, color: T.ink }}>{value ?? "—"}</div>
+      {sub && <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  const lensCard = (lens, lensData) => {
+    const age = lensData?.last_generated
+      ? `${Math.round((Date.now() - new Date(lensData.last_generated).getTime()) / 3600000)}h ago`
+      : "—";
+    return (
+      <div key={lens} style={{ flex: 1, padding: "10px 12px", border: `1px solid ${T.ruleMid}`, background: T.paperWarm, minWidth: 160 }}>
+        <div style={{ fontFamily: T.mono, fontSize: 11, fontWeight: 700, color: T.ink, marginBottom: 4 }}>{lens}</div>
+        <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkMid }}>Reports: {lensData?.total ?? 0}</div>
+        <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkMid }}>Entities: {lensData?.unique_entities ?? 0}</div>
+        <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint }}>Last: {age}</div>
+      </div>
+    );
+  };
+
+  const cm = data.compliance_metrics || {};
+  const x4 = data.x402_metrics || {};
+  const cov = data.coverage || {};
+  const att = data.attestation_metrics || {};
+  const rm = data.report_metrics || {};
+  const lenses = cm.by_lens || [];
+
+  return (
+    <>
+      <Section title="COMPLIANCE LENSES">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {["SCO60", "MICA67", "GENIUS"].map((lid) => {
+            const ld = lenses.find((l) => l.lens === lid) || {};
+            return lensCard(lid, ld);
+          })}
+        </div>
+        <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint }}>
+          Entities with all 3 lenses: <strong style={{ color: T.ink }}>{cm.entities_with_all_3_lenses ?? 0}</strong>
+          {" · "}Total compliance reports: <strong style={{ color: T.ink }}>{cm.total_compliance_reports ?? 0}</strong>
+        </div>
+      </Section>
+
+      <Section title="x402 PAYMENTS">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {statCard("Total Payments", x4.total_payments ?? 0)}
+          {statCard("Revenue (30d)", `$${(x4.revenue_30d_usd ?? 0).toFixed(4)}`)}
+          {statCard("Unique Payers", x4.unique_payers ?? 0)}
+          {statCard("Total Revenue", `$${(x4.total_revenue_usd ?? 0).toFixed(4)}`)}
+        </div>
+      </Section>
+
+      <Section title="COVERAGE">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {statCard("SII Scored", cov.sii_scored ?? 0, "stablecoins")}
+          {statCard("PSI Scored", cov.psi_scored ?? 0, "protocols")}
+          {statCard("CDA Issuers", cov.cda_issuers ?? 0, "assets")}
+          {statCard("State Domains", att.domains_active ?? 0, att.latest_state_root_age_hours != null ? `root: ${att.latest_state_root_age_hours}h ago` : "")}
+        </div>
+      </Section>
+
+      <Section title="REPORT ACTIVITY">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {statCard("Total Reports", rm.total_reports ?? 0)}
+          {statCard("Reports Today", rm.reports_today ?? 0)}
+          {statCard("State Attestations", att.total_state_attestations ?? 0)}
+        </div>
+
+        {(rm.templates_used || []).length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 6 }}>Templates Breakdown</div>
+            <table style={{ width: "100%", fontSize: 11, fontFamily: T.mono, borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.ruleMid}`, fontSize: 10, color: T.inkLight, textAlign: "left" }}>
+                  <th style={{ padding: "4px 0" }}>Template</th><th style={{ textAlign: "right" }}>Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rm.templates_used.map((t, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+                    <td style={{ padding: "3px 0" }}>{t.template}</td>
+                    <td style={{ textAlign: "right", fontWeight: 600 }}>{t.c}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {(rm.lenses_used || []).length > 0 && (
+          <div>
+            <div style={{ fontFamily: T.mono, fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: T.inkLight, marginBottom: 6 }}>Lenses Breakdown</div>
+            <table style={{ width: "100%", fontSize: 11, fontFamily: T.mono, borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.ruleMid}`, fontSize: 10, color: T.inkLight, textAlign: "left" }}>
+                  <th style={{ padding: "4px 0" }}>Lens</th><th style={{ textAlign: "right" }}>Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rm.lenses_used.map((l, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${T.ruleLight}` }}>
+                    <td style={{ padding: "3px 0" }}>{l.lens}</td>
+                    <td style={{ textAlign: "right", fontWeight: 600 }}>{l.c}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
     </>
   );
 }
@@ -3026,7 +3190,7 @@ export default function OpsDashboard() {
   const [targets, setTargets] = useState([]);
   const [feed, setFeed] = useState([]);
   const [contentItems, setContentItems] = useState([]);
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState("overview");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(null); // tracks header button in-flight
@@ -3115,149 +3279,166 @@ export default function OpsDashboard() {
     : "no data";
   const warnings = health.filter((h) => h.status !== "healthy");
 
+  const TAB_ITEMS = [
+    { id: "overview", label: "Overview" },
+    { id: "pipeline", label: "Pipeline" },
+    { id: "metrics", label: "Metrics" },
+    { id: "reports", label: "Reports" },
+    { id: "tools", label: "Tools" },
+  ];
+
   return (
     <div style={{ minHeight: "100vh", background: T.paper, fontFamily: T.sans }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-        * { box-sizing: border-box; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html { background: ${T.paper}; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
 
-      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "16px 20px" }}>
-        {/* Header */}
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "32px 24px 0" }}>
         <div style={{
-          display: "flex", justifyContent: "space-between", alignItems: "center",
-          marginBottom: 16, borderBottom: `3px solid ${T.ink}`, paddingBottom: 8,
+          border: `3px solid ${T.ink}`,
+          boxShadow: `6px 6px 0 0 ${T.ruleMid}`,
+          background: T.paper,
         }}>
-          <div>
-            <h1 style={{ fontFamily: T.mono, fontSize: 16, fontWeight: 700, letterSpacing: 1 }}>BASIS OPERATIONS HUB</h1>
-            <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, marginTop: 2 }}>
-              {new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-              {loading && " · loading..."}
-            </div>
+          {/* Nav */}
+          <div style={{ padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <nav style={{ display: "flex", gap: 16 }}>
+              {TAB_ITEMS.map((tb) => (
+                <button key={tb.id} onClick={() => setTab(tb.id)} style={{
+                  padding: "4px 0", border: "none", cursor: "pointer",
+                  fontSize: 12, fontWeight: tab === tb.id ? 600 : 400,
+                  fontFamily: T.sans, color: tab === tb.id ? T.ink : T.inkLight,
+                  background: "transparent",
+                  borderBottom: tab === tb.id ? `2px solid ${T.ink}` : "2px solid transparent",
+                }}>
+                  {tb.label}
+                </button>
+              ))}
+            </nav>
+            <a href="/" style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, textDecoration: "none" }}>SII Dashboard</a>
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <a href="/" style={{ ...btn(), textDecoration: "none", color: T.ink, display: "flex", alignItems: "center" }}>SII Dashboard</a>
-          </div>
-        </div>
+          <div style={{ borderTop: `1px solid ${T.ruleLight}` }} />
 
-        {error && (
-          <div style={{ padding: "8px 12px", background: "#e74c3c22", border: "1px solid #e74c3c44", fontSize: 12, marginBottom: 12, color: T.accent }}>
-            {error}
-            <button onClick={() => setError(null)} style={{ marginLeft: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 14 }}>&times;</button>
-          </div>
-        )}
-        <Flash flash={flash} />
-
-        {/* Tabs */}
-        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-          {["dashboard", "targets", "content", "metrics", "reports", "query", "graph", "backtest", "matrix", "abm"].map((tb) => (
-            <button key={tb} onClick={() => setTab(tb)} style={{
-              fontFamily: T.mono, fontSize: 11, padding: "4px 0", border: "none",
-              background: "transparent", cursor: "pointer", fontWeight: tab === tb ? 700 : 400,
-              color: tab === tb ? T.ink : T.inkLight,
-              borderBottom: tab === tb ? `2px solid ${T.ink}` : "2px solid transparent",
-            }}>
-              {tb.charAt(0).toUpperCase() + tb.slice(1)}
-            </button>
-          ))}
-        </div>
-
-        {/* Dashboard tab */}
-        {tab === "dashboard" && (
-          <>
-            <Section title="PIPELINE HEALTH" actions={
-              <button onClick={handleRunHealthCheck} disabled={busy === "health"} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: busy === "health" ? 0.5 : 1 }}>
-                {busy === "health" ? "Checking..." : "Run Check"}
-              </button>
-            }>
-              <div style={{ padding: "0 10px" }}>
-                <div style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMid, marginBottom: 8 }}>
-                  {healthSummary}
-                  {warnings.length > 0 && <span style={{ color: "#f39c12" }}> · {warnings.length} warning(s): {warnings.map((w) => w.system).join(", ")}</span>}
-                </div>
-                <HealthPanel health={health} />
+          {/* Content */}
+          <div style={{ padding: "0 24px 24px" }}>
+            {error && (
+              <div style={{ padding: "8px 12px", background: "#e74c3c22", border: "1px solid #e74c3c44", fontSize: 12, marginTop: 12, color: T.accent }}>
+                {error}
+                <button onClick={() => setError(null)} style={{ marginLeft: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 14 }}>&times;</button>
               </div>
-            </Section>
+            )}
+            <Flash flash={flash} />
 
-            <Section title={`ACTION QUEUE (${queue.length} items)`}>
-              <ActionQueue queue={queue} onDecide={handleDecide} decidingId={decidingId} />
-            </Section>
+            {/* ═══ OVERVIEW TAB ═══ */}
+            {tab === "overview" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <TabHeader
+                  title={<><span style={{ fontWeight: 700 }}>Operations</span> Hub</>}
+                  formId="FORM OPS-001 · BASIS PROTOCOL"
+                  stats={[healthSummary, loading ? "loading..." : new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })]}
+                  accent={warnings.length > 0 ? "#f39c12" : "#27ae60"}
+                  mobile={false}
+                  showOnChain={false}
+                />
 
-            <StateGrowthPanel />
-          </>
-        )}
-
-        {/* Targets tab */}
-        {tab === "targets" && (
-          <>
-            <Section title="TIER 1 — ACTIVE PURSUIT">
-              <TargetTracker targets={targets.filter((t) => t.tier === 1)} onUpdate={load} />
-            </Section>
-            <Section title="TIER 2 — MONITORING">
-              <TargetTracker targets={targets.filter((t) => t.tier === 2)} onUpdate={load} />
-            </Section>
-            <Section title="TIER 3 — WATCH LIST">
-              <TargetTracker targets={targets.filter((t) => t.tier === 3)} onUpdate={load} />
-            </Section>
-          </>
-        )}
-
-
-
-        {/* Content tab */}
-        {tab === "content" && (
-          <>
-            <Section title="CONTENT ITEMS">
-              <div style={{ padding: "0 10px" }}>
-                {contentItems.length === 0 ? (
-                  <div style={{ color: T.inkFaint, fontSize: 12, lineHeight: 1.6 }}>
-                    No scheduled content items yet. Content items track planned posts —
-                    forum comments, tweets, governance posts. Use the Signals tab to draft content,
-                    or create items via the API (<code style={{ fontFamily: T.mono, fontSize: 10 }}>POST /api/ops/content/items</code>).
+                <Section title="PIPELINE HEALTH" actions={
+                  <button onClick={handleRunHealthCheck} disabled={busy === "health"} style={btn({ opacity: busy === "health" ? 0.5 : 1 })}>
+                    {busy === "health" ? "Checking..." : "Run Check"}
+                  </button>
+                }>
+                  <div style={{ fontSize: 11, fontFamily: T.mono, color: T.inkMid, marginBottom: 8 }}>
+                    {healthSummary}
+                    {warnings.length > 0 && <span style={{ color: "#f39c12" }}> · {warnings.length} warning(s): {warnings.map((w) => w.system).join(", ")}</span>}
                   </div>
-                ) : (
-                  contentItems.map((item) => (
-                    <div key={item.id} style={{ fontSize: 11, padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, display: "flex", gap: 8 }}>
-                      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 60 }}>{item.type}</span>
-                      <span style={{ flex: 1 }}>{item.title || "(untitled)"}</span>
-                      <StageBadge stage={item.status} />
-                      {item.scheduled_for && <span style={{ fontSize: 10, color: T.inkFaint }}>{new Date(item.scheduled_for).toLocaleDateString()}</span>}
-                    </div>
-                  ))
-                )}
+                  <HealthPanel health={health} />
+                </Section>
+
+                <Section title={`ACTION QUEUE (${queue.length} items)`}>
+                  <ActionQueue queue={queue} onDecide={handleDecide} decidingId={decidingId} />
+                </Section>
+
+                <StateGrowthPanel />
               </div>
-            </Section>
-            <Section title="TARGET CONTENT FEED">
-              <div style={{ padding: "0 10px" }}><ContentFeed feed={feed} onDecide={handleDecide} onAnalyze={handleFeedAnalyze} busy={busy} /></div>
-            </Section>
-          </>
-        )}
+            )}
 
+            {/* ═══ PIPELINE TAB ═══ */}
+            {tab === "pipeline" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <Section title="TIER 1 — ACTIVE PURSUIT">
+                  <TargetTracker targets={targets.filter((t) => t.tier === 1)} onUpdate={load} />
+                </Section>
+                <Section title="TIER 2 — MONITORING">
+                  <TargetTracker targets={targets.filter((t) => t.tier === 2)} onUpdate={load} />
+                </Section>
+                <Section title="TIER 3 — WATCH LIST">
+                  <TargetTracker targets={targets.filter((t) => t.tier === 3)} onUpdate={load} />
+                </Section>
 
+                <Section title="CONTENT ITEMS">
+                  {contentItems.length === 0 ? (
+                    <div style={{ color: T.inkFaint, fontSize: 12, lineHeight: 1.6 }}>
+                      No scheduled content items yet. Content items track planned posts —
+                      forum comments, tweets, governance posts.
+                    </div>
+                  ) : (
+                    contentItems.map((item) => (
+                      <div key={item.id} style={{ fontSize: 11, padding: "4px 0", borderBottom: `1px solid ${T.ruleLight}`, display: "flex", gap: 8 }}>
+                        <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, minWidth: 60 }}>{item.type}</span>
+                        <span style={{ flex: 1 }}>{item.title || "(untitled)"}</span>
+                        <StageBadge stage={item.status} />
+                        {item.scheduled_for && <span style={{ fontSize: 10, color: T.inkFaint }}>{new Date(item.scheduled_for).toLocaleDateString()}</span>}
+                      </div>
+                    ))
+                  )}
+                </Section>
+                <Section title="TARGET CONTENT FEED">
+                  <ContentFeed feed={feed} onDecide={handleDecide} onAnalyze={handleFeedAnalyze} busy={busy} />
+                </Section>
+              </div>
+            )}
 
+            {/* ═══ METRICS TAB ═══ */}
+            {tab === "metrics" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <SeedMetricsPanel />
+                <MetricsExpansionPanels />
+              </div>
+            )}
 
+            {/* ═══ REPORTS TAB ═══ */}
+            {tab === "reports" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <ReportsPanel />
+                <CqiMatrixPanel />
+              </div>
+            )}
 
-        {/* Metrics tab */}
-        {tab === "metrics" && <SeedMetricsPanel />}
+            {/* ═══ TOOLS TAB ═══ */}
+            {tab === "tools" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <QueryPanel />
+                <GraphPanel />
+                <BacktestPanel />
+                <ABMPanel />
+              </div>
+            )}
+          </div>
 
-        {tab === "reports" && <ReportsPanel />}
-
-        {tab === "query" && <QueryPanel />}
-        {tab === "graph" && <GraphPanel />}
-        {tab === "backtest" && <BacktestPanel />}
-        {tab === "matrix" && <CqiMatrixPanel />}
-
-        {tab === "abm" && <ABMPanel />}
-
-        <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, textAlign: "center", marginTop: 24, paddingBottom: 16 }}>
-          Basis Protocol · Operations Hub · Internal Use Only
+          {/* Footer */}
+          <div style={{
+            padding: "10px 24px", borderTop: `1px solid ${T.ruleLight}`,
+            display: "flex", justifyContent: "space-between",
+            fontFamily: T.mono, fontSize: 10, color: T.inkFaint,
+          }}>
+            <span>Basis Protocol · Operations Hub · Internal Use Only</span>
+            <span>
+              <a href="https://plausible.io/docs/excluding" style={{ color: T.inkLight, textDecoration: "none" }} target="_blank" rel="noopener">Exclude analytics</a>
+            </span>
+          </div>
         </div>
-        <div style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint, textAlign: "center", paddingBottom: 16, lineHeight: 1.6 }}>
-          Plausible: To exclude your traffic, install the{" "}
-          <a href="https://plausible.io/docs/excluding" style={{ color: T.inkLight }} target="_blank" rel="noopener">Plausible exclusion extension</a>,
-          {" "}or run in console: <code style={{ fontSize: 8, background: T.paperWarm, padding: "1px 3px" }}>localStorage.setItem('plausible_ignore','true')</code>
-        </div>
+        <div style={{ height: 32 }} />
       </div>
     </div>
   );
