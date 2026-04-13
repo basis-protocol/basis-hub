@@ -990,6 +990,189 @@ function StateGrowthPanel() {
             </tbody>
           </table>
         )}
+
+        {/* ── Universal Data Layer Live Stats ── */}
+        {data?.data_layer && !data.data_layer.error && (() => {
+          const dl = data.data_layer;
+          const dlSummary = dl.storage || {};
+          const wg = dl.wallet_graph || {};
+          const ec = dl.entity_coverage || {};
+          const dq = dl.data_quality || {};
+          const prov = dl.provenance?.sources || {};
+          const cats = dl.by_category || {};
+          const apiUtil = dl.api_utilization || {};
+
+          return (
+            <div style={{ marginTop: 16, borderTop: `1px solid ${T.ruleMid}`, paddingTop: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.5, marginBottom: 8 }}>UNIVERSAL DATA LAYER</div>
+
+              {/* Key metrics bar */}
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12, padding: "8px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                <div>
+                  <Lbl>Tables Tracked</Lbl>
+                  <div style={{ fontSize: 18, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>{dlSummary.tables_tracked || 0}</div>
+                </div>
+                <div>
+                  <Lbl>Total Rows</Lbl>
+                  <div style={{ fontSize: 18, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>{fmtNum(dlSummary.total_rows)}</div>
+                </div>
+                <div>
+                  <Lbl>Rows +24h</Lbl>
+                  <div style={{ fontSize: 18, fontFamily: T.mono, fontWeight: 700, color: "#27ae60" }}>+{fmtNum(dlSummary.rows_added_24h)}</div>
+                </div>
+                <div>
+                  <Lbl>DB Size</Lbl>
+                  <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 600, color: T.inkMid }}>{dlSummary.actual_db_size_mb ? `${dlSummary.actual_db_size_mb} MB` : dlSummary.estimated_total_mb ? `~${dlSummary.estimated_total_mb} MB` : "—"}</div>
+                </div>
+              </div>
+
+              {/* Wallet graph */}
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                <div>
+                  <Lbl>Wallet Graph</Lbl>
+                  <div style={{ fontSize: 16, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>{fmtNum(wg.total_wallets)}</div>
+                </div>
+                <div>
+                  <Lbl>+24h</Lbl>
+                  <div style={{ fontSize: 14, fontFamily: T.mono, color: "#27ae60" }}>+{fmtNum(wg.wallets_added_24h)}</div>
+                </div>
+                <div>
+                  <Lbl>With Scores</Lbl>
+                  <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{fmtNum(wg.wallets_with_risk_scores)}</div>
+                </div>
+                <div>
+                  <Lbl>With Edges</Lbl>
+                  <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{fmtNum(wg.wallets_with_edges)}</div>
+                </div>
+                <div>
+                  <Lbl>Enriched</Lbl>
+                  <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{wg.fully_enriched_pct != null ? `${wg.fully_enriched_pct}%` : "—"}</div>
+                </div>
+                {wg.days_to_target && (
+                  <div>
+                    <Lbl>500K Target</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{wg.days_to_target}d</div>
+                  </div>
+                )}
+              </div>
+
+              {/* Entities */}
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                <div>
+                  <Lbl>Scored Entities</Lbl>
+                  <div style={{ fontSize: 16, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>{ec.total_scored_entities || 0}</div>
+                </div>
+                <div>
+                  <Lbl>SII</Lbl>
+                  <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{ec.sii?.scored || 0}/{ec.sii?.total_enabled || 0}</div>
+                </div>
+                <div>
+                  <Lbl>PSI</Lbl>
+                  <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{ec.psi?.scored || 0}</div>
+                </div>
+                {ec.circle7 && Object.entries(ec.circle7).map(([idx, cnt]) => (
+                  <div key={idx}>
+                    <Lbl>{idx.toUpperCase()}</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{cnt}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* API utilization */}
+              {Object.keys(apiUtil).length > 0 && (
+                <div style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, marginBottom: 4 }}>API UTILIZATION</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "2px 10px", fontSize: 11, fontFamily: T.mono }}>
+                    {Object.entries(apiUtil).map(([prov, info]) => {
+                      const pct = info.daily_utilization_pct;
+                      const barColor = pct > 90 ? "#e74c3c" : pct > 60 ? "#f39c12" : "#27ae60";
+                      return (
+                        <div key={prov} style={{ display: "contents" }}>
+                          <span style={{ color: T.inkMid }}>{prov}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            {pct != null && (
+                              <div style={{ height: 6, borderRadius: 3, background: `${T.paper}22`, flex: 1, maxWidth: 100 }}>
+                                <div style={{ height: 6, borderRadius: 3, background: barColor, width: `${Math.min(100, pct)}%` }} />
+                              </div>
+                            )}
+                          </div>
+                          <span style={{ textAlign: "right", color: T.inkMid }}>{fmtNum(info.calls_today)}</span>
+                          <span style={{ textAlign: "right", color: pct > 90 ? "#e74c3c" : T.inkFaint }}>{pct != null ? `${pct}%` : "free"}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Provenance */}
+              {prov.total > 0 && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div>
+                    <Lbl>Provenance</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 600, color: prov.coverage_pct >= 100 ? "#27ae60" : "#f39c12" }}>{prov.coverage_pct}%</div>
+                  </div>
+                  <div>
+                    <Lbl>Sources</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{prov.proven + prov.attested}/{prov.total}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Data quality */}
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                <div>
+                  <Lbl>Coherence Flags 24h</Lbl>
+                  <div style={{ fontSize: 14, fontFamily: T.mono, color: dq.coherence_flags_24h > 0 ? "#f39c12" : "#27ae60" }}>{dq.coherence_flags_24h || 0}</div>
+                </div>
+                <div>
+                  <Lbl>Unreviewed</Lbl>
+                  <div style={{ fontSize: 14, fontFamily: T.mono, color: dq.unreviewed_flags > 0 ? "#e74c3c" : T.inkFaint }}>{dq.unreviewed_flags || 0}</div>
+                </div>
+                <div>
+                  <Lbl>Stale Types</Lbl>
+                  <div style={{ fontSize: 14, fontFamily: T.mono, color: dq.stale_count > 0 ? "#e74c3c" : "#27ae60" }}>{dq.stale_count || 0}</div>
+                </div>
+              </div>
+
+              {/* Per-category table breakdown */}
+              <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, marginBottom: 4 }}>BY CATEGORY</div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto auto auto auto", gap: "2px 12px", fontSize: 11, fontFamily: T.mono, marginBottom: 8 }}>
+                <span style={{ fontWeight: 600, color: T.inkLight, fontSize: 10 }}>Category</span>
+                <span style={{ fontWeight: 600, color: T.inkLight, fontSize: 10, textAlign: "right" }}>Tables</span>
+                <span style={{ fontWeight: 600, color: T.inkLight, fontSize: 10, textAlign: "right" }}>Rows</span>
+                <span style={{ fontWeight: 600, color: T.inkLight, fontSize: 10, textAlign: "right" }}>+24h</span>
+                {Object.entries(cats).sort((a,b) => b[1].rows - a[1].rows).map(([cat, info]) => (
+                  <div key={cat} style={{ display: "contents" }}>
+                    <span style={{ color: T.inkMid }}>{cat.replace(/_/g, " ")}</span>
+                    <span style={{ textAlign: "right" }}>{info.tables}</span>
+                    <span style={{ textAlign: "right" }}>{fmtNum(info.rows)}</span>
+                    <span style={{ textAlign: "right", color: info.rows_24h > 0 ? "#27ae60" : T.inkFaint }}>{info.rows_24h > 0 ? `+${fmtNum(info.rows_24h)}` : "0"}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Per-table details (collapsible) */}
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ fontSize: 10, color: T.inkFaint, cursor: "pointer" }}>All {Object.keys(dl.tables || {}).length} tables</summary>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: "1px 10px", fontSize: 10, fontFamily: T.mono, marginTop: 4 }}>
+                  <span style={{ fontWeight: 600, color: T.inkLight }}>Table</span>
+                  <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Rows</span>
+                  <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>+24h</span>
+                  <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>+7d</span>
+                  {Object.entries(dl.tables || {}).sort((a,b) => b[1].row_count - a[1].row_count).map(([tbl, info]) => (
+                    <div key={tbl} style={{ display: "contents" }}>
+                      <span style={{ color: T.inkMid, overflow: "hidden", textOverflow: "ellipsis" }}>{tbl}</span>
+                      <span style={{ textAlign: "right" }}>{fmtNum(info.row_count)}</span>
+                      <span style={{ textAlign: "right", color: info.rows_24h > 0 ? "#27ae60" : T.inkFaint }}>{info.rows_24h > 0 ? `+${fmtNum(info.rows_24h)}` : "0"}</span>
+                      <span style={{ textAlign: "right", color: info.rows_7d > 0 ? "#27ae60" : T.inkFaint }}>{info.rows_7d > 0 ? `+${fmtNum(info.rows_7d)}` : "0"}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            </div>
+          );
+        })()}
       </div>
     </Section>
   );
