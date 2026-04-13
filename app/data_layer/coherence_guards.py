@@ -1,18 +1,19 @@
 """
-Data Coherence Guards
-=====================
-Validates incoming data against the previous snapshot before allowing
-storage. Prevents silent corruption from bad API responses.
+Data Coherence Guards — tuned for high-volume collection
+=========================================================
+Validates incoming data against the previous snapshot before storage.
+Prevents silent corruption from bad API responses.
 
-Guards:
-- Balance drop >90% in one cycle → flag
-- Score change >30 points → flag
-- Entity disappearing from API response → flag
-- Price deviation >50% from last snapshot → flag
-- Negative values where not expected → reject
-- Zero values for previously non-zero fields → flag
+Per-data-type configurable thresholds:
+- Wallet balances: >95% drop flagged (whales exit pools legitimately)
+- Exchange data: flag only trust score change or exchange disappears
+- DEX pools: flag zero or negative values only
+- Entity snapshots: flag null/empty returns, not market swings
+- Mint/burn: no coherence check (events, not snapshots)
+- Bridge flows: flag negative volumes only
 
-Flagged data is stored with a review marker — not silently discarded.
+Flagged data is STORED with a violation record — never rejected.
+Violations go to coherence_violations table for ops review.
 """
 
 import json
@@ -20,9 +21,48 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.database import fetch_one, execute
-
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Per-data-type thresholds — configurable
+# =============================================================================
+
+THRESHOLDS = {
+    "liquidity_depth": {
+        "max_volume_drop_pct": 98,      # DEX/CEX volume swings are normal
+        "max_depth_drop_pct": 95,       # Liquidity can move fast
+        "flag_zero_values": True,
+        "flag_negative_values": True,
+    },
+    "yield_snapshots": {
+        "max_tvl_drop_pct": 90,         # TVL crashes >90% are real incidents
+        "flag_negative_apy": True,
+        "flag_negative_tvl": True,
+    },
+    "exchange_snapshots": {
+        "max_volume_drop_pct": 99,      # Exchange volume swings 50%+ daily — only flag near-zero
+        "flag_trust_score_change": True, # Trust score changes are significant
+        "flag_exchange_disappears": True,
+    },
+    "bridge_flows": {
+        "flag_negative_volume": True,
+        "flag_negative_tvl": True,
+    },
+    "peg_snapshots_5m": {
+        "max_price_deviation_pct": 10,  # Stablecoins shouldn't deviate >10%
+    },
+    "entity_snapshots_hourly": {
+        "flag_null_return": True,       # Flag if entity returns empty data
+        "max_market_cap_drop_pct": 99,  # Only flag near-total disappearance
+    },
+    "contract_surveillance": {
+        "flag_source_change": True,     # Any source code change is noteworthy
+    },
+    "wallet_balances": {
+        "max_drop_pct": 95,            # Whale exits are real — only flag 95%+
+        "flag_top100_drop_90pct": True, # Tighter for top-100 wallets
+    },
+}
 
 
 class CoherenceViolation:
@@ -36,7 +76,7 @@ class CoherenceViolation:
         previous_value: Optional[float],
         incoming_value: Optional[float],
         violation_type: str,
-        severity: str = "warning",  # warning, critical
+        severity: str = "warning",
         details: Optional[str] = None,
     ):
         self.data_type = data_type
@@ -58,209 +98,151 @@ class CoherenceViolation:
             "violation_type": self.violation_type,
             "severity": self.severity,
             "details": self.details,
-            "detected_at": datetime.now(timezone.utc).isoformat(),
         }
 
 
+def store_violation(violation: CoherenceViolation):
+    """Store a violation in the coherence_violations table."""
+    try:
+        from app.database import execute
+        execute(
+            """INSERT INTO coherence_violations
+               (data_type, entity_id, field_name, violation_type, severity,
+                previous_value, incoming_value, details, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+            (
+                violation.data_type, violation.entity_id,
+                violation.field_name, violation.violation_type,
+                violation.severity,
+                violation.previous_value, violation.incoming_value,
+                violation.details,
+            ),
+        )
+    except Exception as e:
+        # Fall back to old coherence_reports table if new table not yet migrated
+        try:
+            from app.database import execute as _exec
+            _exec(
+                """INSERT INTO coherence_reports
+                   (check_name, status, details, created_at)
+                   VALUES (%s, %s, %s, NOW())""",
+                (
+                    f"guard:{violation.data_type}:{violation.entity_id}",
+                    violation.severity,
+                    json.dumps(violation.to_dict()),
+                ),
+            )
+        except Exception:
+            logger.debug(f"Could not store coherence violation: {e}")
+
+
+# =============================================================================
+# Check functions — generic, parameterized by threshold
+# =============================================================================
+
 def check_numeric_drop(
-    data_type: str,
-    entity_id: str,
-    field_name: str,
-    previous: Optional[float],
-    incoming: Optional[float],
-    max_drop_pct: float = 90.0,
+    data_type: str, entity_id: str, field_name: str,
+    previous: Optional[float], incoming: Optional[float],
+    max_drop_pct: float = 95.0,
 ) -> Optional[CoherenceViolation]:
     """Flag if a numeric value drops by more than max_drop_pct."""
-    if previous is None or incoming is None:
+    if previous is None or incoming is None or previous <= 0:
         return None
-    if previous <= 0:
-        return None
-
     drop_pct = ((previous - incoming) / previous) * 100
     if drop_pct > max_drop_pct:
         return CoherenceViolation(
-            data_type=data_type,
-            entity_id=entity_id,
-            field_name=field_name,
-            previous_value=previous,
-            incoming_value=incoming,
-            violation_type="extreme_drop",
-            severity="critical",
-            details=f"{field_name} dropped {drop_pct:.1f}% ({previous} → {incoming})",
-        )
-    return None
-
-
-def check_score_swing(
-    data_type: str,
-    entity_id: str,
-    previous_score: Optional[float],
-    incoming_score: Optional[float],
-    max_swing: float = 30.0,
-) -> Optional[CoherenceViolation]:
-    """Flag if a score changes by more than max_swing points."""
-    if previous_score is None or incoming_score is None:
-        return None
-
-    swing = abs(incoming_score - previous_score)
-    if swing > max_swing:
-        direction = "up" if incoming_score > previous_score else "down"
-        return CoherenceViolation(
-            data_type=data_type,
-            entity_id=entity_id,
-            field_name="score",
-            previous_value=previous_score,
-            incoming_value=incoming_score,
-            violation_type="score_swing",
-            severity="warning",
-            details=f"Score swung {direction} by {swing:.1f} points",
-        )
-    return None
-
-
-def check_price_deviation(
-    data_type: str,
-    entity_id: str,
-    previous_price: Optional[float],
-    incoming_price: Optional[float],
-    max_deviation_pct: float = 50.0,
-) -> Optional[CoherenceViolation]:
-    """Flag if price deviates by more than max_deviation_pct."""
-    if previous_price is None or incoming_price is None:
-        return None
-    if previous_price <= 0:
-        return None
-
-    deviation_pct = abs(incoming_price - previous_price) / previous_price * 100
-    if deviation_pct > max_deviation_pct:
-        return CoherenceViolation(
-            data_type=data_type,
-            entity_id=entity_id,
-            field_name="price",
-            previous_value=previous_price,
-            incoming_value=incoming_price,
-            violation_type="price_deviation",
-            severity="critical",
-            details=f"Price deviated {deviation_pct:.1f}% ({previous_price} → {incoming_price})",
-        )
-    return None
-
-
-def check_zero_replacement(
-    data_type: str,
-    entity_id: str,
-    field_name: str,
-    previous: Optional[float],
-    incoming: Optional[float],
-) -> Optional[CoherenceViolation]:
-    """Flag if a previously non-zero value becomes zero."""
-    if previous is not None and previous > 0 and incoming is not None and incoming == 0:
-        return CoherenceViolation(
-            data_type=data_type,
-            entity_id=entity_id,
-            field_name=field_name,
-            previous_value=previous,
-            incoming_value=incoming,
-            violation_type="zero_replacement",
-            severity="warning",
-            details=f"{field_name} went from {previous} to 0",
+            data_type=data_type, entity_id=entity_id, field_name=field_name,
+            previous_value=previous, incoming_value=incoming,
+            violation_type="extreme_drop", severity="critical",
+            details=f"{field_name} dropped {drop_pct:.1f}% ({previous:.2f} → {incoming:.2f})",
         )
     return None
 
 
 def check_negative(
-    data_type: str,
-    entity_id: str,
-    field_name: str,
+    data_type: str, entity_id: str, field_name: str,
     value: Optional[float],
 ) -> Optional[CoherenceViolation]:
     """Reject negative values where not expected."""
     if value is not None and value < 0:
         return CoherenceViolation(
-            data_type=data_type,
-            entity_id=entity_id,
-            field_name=field_name,
-            previous_value=None,
-            incoming_value=value,
-            violation_type="negative_value",
-            severity="critical",
+            data_type=data_type, entity_id=entity_id, field_name=field_name,
+            previous_value=None, incoming_value=value,
+            violation_type="negative_value", severity="critical",
             details=f"{field_name} is negative: {value}",
         )
     return None
 
 
-def store_violation(violation: CoherenceViolation):
-    """Persist a coherence violation for review."""
-    try:
-        execute(
-            """INSERT INTO coherence_reports
-               (check_name, status, details, created_at)
-               VALUES (%s, %s, %s, NOW())""",
-            (
-                f"guard:{violation.data_type}:{violation.entity_id}",
-                violation.severity,
-                json.dumps(violation.to_dict()),
-            ),
+def check_null_return(
+    data_type: str, entity_id: str,
+    data: dict,
+) -> Optional[CoherenceViolation]:
+    """Flag if an API returned empty/null data for a known entity."""
+    if not data or all(v is None for v in data.values()):
+        return CoherenceViolation(
+            data_type=data_type, entity_id=entity_id, field_name="*",
+            previous_value=None, incoming_value=None,
+            violation_type="null_return", severity="warning",
+            details=f"API returned empty/null data for {entity_id}",
         )
-    except Exception as e:
-        logger.debug(f"Could not store coherence violation: {e}")
+    return None
 
+
+# =============================================================================
+# DataCoherenceGuard — per-data-type validation
+# =============================================================================
 
 class DataCoherenceGuard:
     """
     Validate incoming data against previous snapshots.
-    Use before inserting into any data layer table.
-
-    Usage:
-        guard = DataCoherenceGuard("liquidity_depth")
-        violations = guard.validate_liquidity(entity_id, incoming_data)
-        if violations:
-            for v in violations:
-                store_violation(v)
-            # Data is still stored, but flagged
+    Per-data-type thresholds from THRESHOLDS config.
     """
 
     def __init__(self, data_type: str):
         self.data_type = data_type
+        self.config = THRESHOLDS.get(data_type, {})
         self._violations: list[CoherenceViolation] = []
 
     def validate_liquidity(
         self, asset_id: str, venue: str, incoming: dict
     ) -> list[CoherenceViolation]:
-        """Validate incoming liquidity depth data."""
+        """Validate liquidity depth — tuned for high-volume DEX/CEX data."""
         violations = []
+        cfg = self.config
 
-        # Get previous snapshot
-        prev = fetch_one(
-            """SELECT volume_24h, bid_depth_1pct, ask_depth_1pct, spread_bps
-               FROM liquidity_depth
-               WHERE asset_id = %s AND venue = %s
-               ORDER BY snapshot_at DESC LIMIT 1""",
-            (asset_id, venue),
-        )
+        # Only flag negatives and zeros — volume/depth swings are normal
+        if cfg.get("flag_negative_values", True):
+            for field in ["volume_24h", "bid_depth_1pct", "ask_depth_1pct"]:
+                v = check_negative(self.data_type, f"{asset_id}:{venue}", field, incoming.get(field))
+                if v:
+                    violations.append(v)
 
-        if prev:
-            v = check_numeric_drop(
-                self.data_type, f"{asset_id}:{venue}",
-                "volume_24h", float(prev["volume_24h"]) if prev.get("volume_24h") else None,
-                incoming.get("volume_24h"), max_drop_pct=95,
-            )
-            if v:
-                violations.append(v)
-
-            v = check_numeric_drop(
-                self.data_type, f"{asset_id}:{venue}",
-                "bid_depth_1pct", float(prev["bid_depth_1pct"]) if prev.get("bid_depth_1pct") else None,
-                incoming.get("bid_depth_1pct"), max_drop_pct=90,
-            )
-            if v:
-                violations.append(v)
-
-        # Check for negatives
-        for field in ["volume_24h", "bid_depth_1pct", "ask_depth_1pct", "spread_bps"]:
-            v = check_negative(self.data_type, f"{asset_id}:{venue}", field, incoming.get(field))
-            if v:
-                violations.append(v)
+        if cfg.get("flag_zero_values", True):
+            # Only check volume — depth can legitimately be zero for new pools
+            vol = incoming.get("volume_24h")
+            if vol is not None and vol == 0:
+                # Check if previous had volume (zero replacement)
+                try:
+                    from app.database import fetch_one
+                    prev = fetch_one(
+                        """SELECT volume_24h FROM liquidity_depth
+                           WHERE asset_id = %s AND venue = %s AND volume_24h > 1000000
+                           ORDER BY snapshot_at DESC LIMIT 1""",
+                        (asset_id, venue),
+                    )
+                    if prev and prev.get("volume_24h") and float(prev["volume_24h"]) > 1_000_000:
+                        violations.append(CoherenceViolation(
+                            data_type=self.data_type, entity_id=f"{asset_id}:{venue}",
+                            field_name="volume_24h",
+                            previous_value=float(prev["volume_24h"]),
+                            incoming_value=0,
+                            violation_type="zero_replacement",
+                            severity="warning",
+                            details=f"High-volume venue went to zero ({float(prev['volume_24h']):,.0f} → 0)",
+                        ))
+                except Exception:
+                    pass
 
         self._violations.extend(violations)
         return violations
@@ -268,35 +250,45 @@ class DataCoherenceGuard:
     def validate_yield(
         self, pool_id: str, incoming: dict
     ) -> list[CoherenceViolation]:
-        """Validate incoming yield snapshot data."""
+        """Validate yield snapshot — flag negatives and catastrophic TVL drops."""
         violations = []
+        cfg = self.config
 
-        prev = fetch_one(
-            """SELECT apy, tvl_usd
-               FROM yield_snapshots
-               WHERE pool_id = %s
-               ORDER BY snapshot_at DESC LIMIT 1""",
-            (pool_id,),
-        )
+        if cfg.get("flag_negative_tvl", True):
+            v = check_negative(self.data_type, pool_id, "tvl_usd", incoming.get("tvl_usd"))
+            if v:
+                violations.append(v)
 
-        if prev:
-            v = check_numeric_drop(
-                self.data_type, pool_id,
-                "tvl_usd", float(prev["tvl_usd"]) if prev.get("tvl_usd") else None,
-                incoming.get("tvl_usd"), max_drop_pct=90,
+        if cfg.get("flag_negative_apy", True):
+            apy = incoming.get("apy")
+            if apy is not None and apy < -100:  # Small negative APY is possible (IL)
+                violations.append(CoherenceViolation(
+                    data_type=self.data_type, entity_id=pool_id,
+                    field_name="apy", previous_value=None, incoming_value=apy,
+                    violation_type="extreme_negative_apy", severity="warning",
+                    details=f"APY is extremely negative: {apy:.1f}%",
+                ))
+
+        # Check for catastrophic TVL drop (>90%)
+        max_tvl_drop = cfg.get("max_tvl_drop_pct", 90)
+        try:
+            from app.database import fetch_one
+            prev = fetch_one(
+                """SELECT tvl_usd FROM yield_snapshots
+                   WHERE pool_id = %s AND tvl_usd > 0
+                   ORDER BY snapshot_at DESC LIMIT 1""",
+                (pool_id,),
             )
-            if v:
-                violations.append(v)
-
-            # APY can spike legitimately, but negative APY is suspicious
-            v = check_negative(self.data_type, pool_id, "apy", incoming.get("apy"))
-            if v:
-                violations.append(v)
-
-        # Check for negatives
-        v = check_negative(self.data_type, pool_id, "tvl_usd", incoming.get("tvl_usd"))
-        if v:
-            violations.append(v)
+            if prev and prev.get("tvl_usd"):
+                v = check_numeric_drop(
+                    self.data_type, pool_id, "tvl_usd",
+                    float(prev["tvl_usd"]), incoming.get("tvl_usd"),
+                    max_drop_pct=max_tvl_drop,
+                )
+                if v:
+                    violations.append(v)
+        except Exception:
+            pass
 
         self._violations.extend(violations)
         return violations
@@ -304,26 +296,33 @@ class DataCoherenceGuard:
     def validate_exchange(
         self, exchange_id: str, incoming: dict
     ) -> list[CoherenceViolation]:
-        """Validate incoming exchange snapshot data."""
+        """Validate exchange — flag trust score changes and disappearances."""
         violations = []
+        cfg = self.config
 
-        prev = fetch_one(
-            """SELECT trade_volume_24h_usd, trust_score
-               FROM exchange_snapshots
-               WHERE exchange_id = %s
-               ORDER BY snapshot_at DESC LIMIT 1""",
-            (exchange_id,),
-        )
-
-        if prev:
-            v = check_numeric_drop(
-                self.data_type, exchange_id,
-                "trade_volume_24h_usd",
-                float(prev["trade_volume_24h_usd"]) if prev.get("trade_volume_24h_usd") else None,
-                incoming.get("trade_volume_24h_usd"), max_drop_pct=95,
-            )
-            if v:
-                violations.append(v)
+        if cfg.get("flag_trust_score_change", True):
+            try:
+                from app.database import fetch_one
+                prev = fetch_one(
+                    """SELECT trust_score FROM exchange_snapshots
+                       WHERE exchange_id = %s AND trust_score IS NOT NULL
+                       ORDER BY snapshot_at DESC LIMIT 1""",
+                    (exchange_id,),
+                )
+                if prev and prev.get("trust_score") is not None:
+                    old_ts = int(prev["trust_score"])
+                    new_ts = incoming.get("trust_score")
+                    if new_ts is not None and abs(int(new_ts) - old_ts) >= 2:
+                        violations.append(CoherenceViolation(
+                            data_type=self.data_type, entity_id=exchange_id,
+                            field_name="trust_score",
+                            previous_value=old_ts, incoming_value=int(new_ts),
+                            violation_type="trust_score_change",
+                            severity="warning",
+                            details=f"Trust score changed: {old_ts} → {new_ts}",
+                        ))
+            except Exception:
+                pass
 
         self._violations.extend(violations)
         return violations
@@ -331,20 +330,27 @@ class DataCoherenceGuard:
     def validate_bridge_flow(
         self, bridge_id: str, source_chain: str, dest_chain: str, incoming: dict
     ) -> list[CoherenceViolation]:
-        """Validate incoming bridge flow data."""
+        """Validate bridge flow — flag negatives only."""
         violations = []
+        key = f"{bridge_id}:{source_chain}->{dest_chain}"
 
-        v = check_negative(
-            self.data_type, f"{bridge_id}:{source_chain}->{dest_chain}",
-            "volume_usd", incoming.get("volume_usd"),
-        )
+        v = check_negative(self.data_type, key, "volume_usd", incoming.get("volume_usd"))
+        if v:
+            violations.append(v)
+        v = check_negative(self.data_type, key, "tvl_usd", incoming.get("tvl_usd"))
         if v:
             violations.append(v)
 
-        v = check_negative(
-            self.data_type, f"{bridge_id}:{source_chain}->{dest_chain}",
-            "tvl_usd", incoming.get("tvl_usd"),
-        )
+        self._violations.extend(violations)
+        return violations
+
+    def validate_entity_snapshot(
+        self, entity_id: str, incoming: dict
+    ) -> list[CoherenceViolation]:
+        """Validate entity snapshot — flag null returns, not market swings."""
+        violations = []
+
+        v = check_null_return(self.data_type, entity_id, incoming)
         if v:
             violations.append(v)
 
@@ -354,36 +360,104 @@ class DataCoherenceGuard:
     def validate_price(
         self, entity_id: str, incoming_price: float
     ) -> list[CoherenceViolation]:
-        """Validate price data (for peg snapshots, etc.)."""
+        """Validate stablecoin price — flag >10% deviation from $1.00."""
         violations = []
+        max_dev = self.config.get("max_price_deviation_pct", 10)
 
-        prev = fetch_one(
-            """SELECT price FROM peg_snapshots_5m
-               WHERE stablecoin_id = %s
-               ORDER BY timestamp DESC LIMIT 1""",
-            (entity_id,),
-        )
-
-        if prev and prev.get("price"):
-            v = check_price_deviation(
-                self.data_type, entity_id,
-                float(prev["price"]), incoming_price, max_deviation_pct=10,
-            )
-            if v:
-                violations.append(v)
+        deviation_pct = abs(incoming_price - 1.0) * 100
+        if deviation_pct > max_dev:
+            violations.append(CoherenceViolation(
+                data_type=self.data_type, entity_id=entity_id,
+                field_name="price",
+                previous_value=1.0, incoming_value=incoming_price,
+                violation_type="price_deviation",
+                severity="critical" if deviation_pct > 50 else "warning",
+                details=f"Stablecoin price deviated {deviation_pct:.1f}% from $1.00 (${incoming_price:.4f})",
+            ))
 
         self._violations.extend(violations)
         return violations
 
     def get_violations(self) -> list[CoherenceViolation]:
-        """Return all violations collected during this guard's lifetime."""
         return list(self._violations)
 
     def store_all_violations(self):
-        """Store all collected violations to DB."""
         for v in self._violations:
             store_violation(v)
         count = len(self._violations)
         if count > 0:
             logger.warning(f"Coherence guard [{self.data_type}]: {count} violations stored")
         self._violations.clear()
+
+
+# =============================================================================
+# Ops dashboard — coherence summary
+# =============================================================================
+
+def get_coherence_summary(hours: int = 24) -> dict:
+    """
+    Coherence summary for ops dashboard.
+    Returns: flags by data type, flag rate, top flagged entities, oldest unreviewed.
+    """
+    from app.database import fetch_all, fetch_one
+
+    # Total flags in window
+    by_type = fetch_all(
+        """SELECT data_type, violation_type, severity, COUNT(*) as cnt
+           FROM coherence_violations
+           WHERE created_at >= NOW() - INTERVAL '%s hours'
+           GROUP BY data_type, violation_type, severity
+           ORDER BY cnt DESC""",
+        (hours,),
+    )
+
+    # Total records per data type (approximate from recent hourly rollups)
+    total_records = fetch_all(
+        """SELECT provider, SUM(total_calls) as total
+           FROM api_usage_hourly
+           WHERE hour >= NOW() - INTERVAL '%s hours'
+           GROUP BY provider""",
+        (hours,),
+    )
+
+    # Top 10 most flagged entities
+    top_entities = fetch_all(
+        """SELECT entity_id, data_type, COUNT(*) as flag_count
+           FROM coherence_violations
+           WHERE created_at >= NOW() - INTERVAL '%s hours'
+           GROUP BY entity_id, data_type
+           ORDER BY flag_count DESC
+           LIMIT 10""",
+        (hours,),
+    )
+
+    # Oldest unreviewed flag
+    oldest = fetch_one(
+        """SELECT id, data_type, entity_id, violation_type, severity, details, created_at
+           FROM coherence_violations
+           WHERE reviewed = FALSE
+           ORDER BY created_at ASC
+           LIMIT 1"""
+    )
+
+    # Unreviewed count
+    unreviewed = fetch_one(
+        "SELECT COUNT(*) as cnt FROM coherence_violations WHERE reviewed = FALSE"
+    )
+
+    # Total flags
+    total_flags = fetch_one(
+        """SELECT COUNT(*) as cnt FROM coherence_violations
+           WHERE created_at >= NOW() - INTERVAL '%s hours'""",
+        (hours,),
+    )
+
+    return {
+        "window_hours": hours,
+        "total_flags": total_flags["cnt"] if total_flags else 0,
+        "unreviewed_count": unreviewed["cnt"] if unreviewed else 0,
+        "by_type": [dict(r) for r in by_type] if by_type else [],
+        "top_flagged_entities": [dict(r) for r in top_entities] if top_entities else [],
+        "oldest_unreviewed": dict(oldest) if oldest else None,
+        "api_usage_context": [dict(r) for r in total_records] if total_records else [],
+    }

@@ -2821,6 +2821,18 @@ async def enrichment_status(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.get("/state-growth")
+async def state_growth(request: Request):
+    """Comprehensive state accumulation dashboard: tables, wallets, entities, API usage, provenance, quality."""
+    _check_admin_key(request)
+    try:
+        from app.data_layer.state_growth import get_state_growth
+        return get_state_growth()
+    except Exception as e:
+        logger.warning(f"State growth dashboard failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.get("/storage-evaluation")
 async def storage_evaluation(request: Request):
     """Time-series storage evaluation: row projections, partitioning, cost estimates."""
@@ -2854,6 +2866,18 @@ async def provenance_coverage(request: Request):
         return get_coverage_report()
     except Exception as e:
         logger.warning(f"Provenance coverage failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/coherence-summary")
+async def coherence_summary(request: Request, hours: int = 24):
+    """Coherence guard summary: flags by type, top flagged entities, flag rate."""
+    _check_admin_key(request)
+    try:
+        from app.data_layer.coherence_guards import get_coherence_summary
+        return get_coherence_summary(hours=hours)
+    except Exception as e:
+        logger.warning(f"Coherence summary failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

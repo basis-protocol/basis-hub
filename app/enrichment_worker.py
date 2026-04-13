@@ -633,6 +633,36 @@ async def run_enrichment_pipeline() -> dict:
         ),
     ))
 
+    # ---- GeckoTerminal OHLCV (pool-level candlestick data) ----
+
+    async def _run_ohlcv():
+        from app.data_layer.ohlcv_collector import run_ohlcv_collection
+        return await run_ohlcv_collection()
+
+    pipeline.add(EnrichmentTask(
+        name="dex_pool_ohlcv", func=_run_ohlcv,
+        timeout_seconds=900, group="data_layer", priority=3,
+        gate_check=make_db_gate(
+            "SELECT MAX(timestamp) AS latest FROM dex_pool_ohlcv",
+            min_hours=3,
+        ),
+    ))
+
+    # ---- Market chart historical backfill + volatility surfaces ----
+
+    async def _run_market_chart_backfill():
+        from app.data_layer.market_chart_backfill import run_market_chart_backfill
+        return await run_market_chart_backfill(backfill_days=90)
+
+    pipeline.add(EnrichmentTask(
+        name="market_chart_backfill", func=_run_market_chart_backfill,
+        timeout_seconds=600, group="data_layer", priority=3,
+        gate_check=make_db_gate(
+            "SELECT MAX(timestamp) AS latest FROM market_chart_history",
+            min_hours=20,
+        ),
+    ))
+
     # =========================================================================
     # Wave 4: Depth + precision collectors
     # =========================================================================

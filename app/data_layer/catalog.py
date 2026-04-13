@@ -153,6 +153,26 @@ DATA_TYPES = [
         "staleness_threshold_hours": 48,
         "used_by_indices": [],
     },
+    {
+        "data_type": "dex_pool_ohlcv",
+        "description": "Pool-level candlestick data: open/high/low/close/volume per DEX pool.",
+        "source_table": "dex_pool_ohlcv",
+        "update_frequency": "3h",
+        "providers": ["coingecko"],
+        "integrity_domain": "liquidity",
+        "staleness_threshold_hours": 6,
+        "used_by_indices": ["sii"],
+    },
+    {
+        "data_type": "market_chart_history",
+        "description": "Historical price/mcap/volume at 5min/hourly/daily granularity for temporal reconstruction.",
+        "source_table": "market_chart_history",
+        "update_frequency": "daily",
+        "providers": ["coingecko"],
+        "integrity_domain": "temporal",
+        "staleness_threshold_hours": 26,
+        "used_by_indices": ["sii"],
+    },
 ]
 
 
