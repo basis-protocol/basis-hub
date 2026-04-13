@@ -344,11 +344,10 @@ function useAllHistory(coinIds) {
   useEffect(() => {
     if (!coinIds || coinIds.length === 0) return;
     let cancelled = false;
-    const BATCH = 3;
     (async () => {
-      for (let i = 0; i < coinIds.length; i += BATCH) {
+      for (let i = 0; i < coinIds.length; i += 3) {
         if (cancelled) return;
-        const batch = coinIds.slice(i, i + BATCH);
+        const batch = coinIds.slice(i, i + 3);
         const results = await Promise.allSettled(
           batch.map(id =>
             apiFetch(`${API}/api/scores/${id}/history?days=21`)
@@ -359,7 +358,7 @@ function useAllHistory(coinIds) {
         if (cancelled) return;
         setHistMap(prev => {
           const next = { ...prev };
-          results.forEach(r => { if (r.status === 'fulfilled') next[r.value.id] = r.value.history; });
+          results.forEach(r => { if (r.status === "fulfilled") next[r.value.id] = r.value.history; });
           return next;
         });
       }
@@ -408,13 +407,13 @@ function usePulse() {
 function useIntegrity() {
   const [data, setData] = useState(null);
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const t = setTimeout(() => {
       apiFetch(`${API}/api/integrity`)
         .then(r => r.ok ? r.json() : null)
         .then(d => setData(d))
         .catch(() => {});
     }, 3000);
-    return () => clearTimeout(timer);
+    return () => clearTimeout(t);
   }, []);
   return data;
 }
@@ -3132,13 +3131,13 @@ export default function App() {
   const mobile = useIsMobile();
   const integrity = useIntegrity();
 
-  if (error) {
+  if (error && !scores) {
     return (
-      <div style={{ minHeight: '100vh', background: '#f5f2ec', fontFamily: "'IBM Plex Mono', monospace", display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ textAlign: 'center', color: '#3a3a3a' }}>
+      <div style={{ minHeight: "100vh", background: T.paper, fontFamily: T.mono, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center", color: T.inkMid, padding: 24 }}>
           <div style={{ fontSize: 14, marginBottom: 4 }}>Basis Protocol</div>
-          <div style={{ fontSize: 11, color: '#9a9a9a', marginBottom: 12 }}>{error}</div>
-          <button onClick={() => window.location.reload()} style={{ padding: '6px 16px', border: '1px solid #3a3a3a', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12 }}>Retry</button>
+          <div style={{ fontSize: 11, color: T.inkFaint, marginBottom: 12 }}>{error}</div>
+          <button onClick={() => window.location.reload()} style={{ padding: "6px 16px", border: `1px solid ${T.ink}`, background: "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>Retry</button>
         </div>
       </div>
     );
@@ -3165,7 +3164,6 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: T.paper, color: T.ink, fontFamily: T.sans }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html { background: ${T.paper}; }
         body { background: ${T.paper}; overflow-x: hidden; }
