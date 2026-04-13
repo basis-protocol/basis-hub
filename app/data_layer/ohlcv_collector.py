@@ -2,15 +2,18 @@
 GeckoTerminal OHLCV Collector
 ==============================
 Pool-level candlestick data for market microstructure analysis.
-Feeds Tier 1 liquidity depth with open/high/low/close/volume per pool.
+
+Tiered resolution:
+- Top 10 pools by TVL: 15-minute candles (micro-depeg detection)
+- All other pools: hourly candles
 
 CoinGecko Pro endpoint:
-  GET /onchain/simple/networks/{network}/dex/{dex}/pools/{pool}/ohlcv/{timeframe}
-  Alternative: GET /onchain/networks/{network}/pools/{pool}/ohlcv/{timeframe}
+  GET /onchain/networks/{network}/pools/{pool}/ohlcv/{timeframe}
 
-Timeframes: day, hour, minute (1m, 5m, 15m)
-
-Estimated calls: ~200 pools × 8 cycles/day = 1,600 calls/day (~10% CG budget)
+Estimated calls/day:
+  Top 10 pools × 8 cycles × 15min = ~960/day
+  Remaining pools × 8 cycles × hourly = ~1,600/day
+  Total: ~2,560/day
 
 Schedule: Every slow cycle (3h)
 """
@@ -33,6 +36,14 @@ CHAIN_MAP = {
     "base": "base",
     "arbitrum": "arbitrum-one",
 }
+
+# Top stablecoin DEX pools by TVL — get 15-minute resolution
+# These are the pools where micro-depegs and liquidity shifts show up first
+TOP_POOL_KEYWORDS = {
+    "uniswap", "curve", "aerodrome", "velodrome", "pancakeswap",
+}
+TOP_POOL_ASSETS = {"usdc", "usdt"}
+TOP_POOL_COUNT = 10
 
 
 def _headers() -> dict:
@@ -62,7 +73,7 @@ async def _fetch_pool_ohlcv(
     try:
         resp = await client.get(url, params=params, headers=_headers(), timeout=15)
         latency = int((time.time() - start) * 1000)
-        track_api_call("coingecko", f"/onchain/pools/{pool_address[:10]}/ohlcv",
+        track_api_call("coingecko", f"/onchain/pools/ohlcv/{timeframe}",
                        caller="ohlcv_collector", status=resp.status_code, latency_ms=latency)
 
         if resp.status_code == 429:
@@ -73,13 +84,12 @@ async def _fetch_pool_ohlcv(
         rate_limiter.report_success("coingecko")
         data = resp.json()
 
-        # GeckoTerminal OHLCV format: data.attributes.ohlcv_list
         attrs = data.get("data", {}).get("attributes", {})
         ohlcv_list = attrs.get("ohlcv_list", [])
         return ohlcv_list
     except Exception as e:
         latency = int((time.time() - start) * 1000)
-        track_api_call("coingecko", f"/onchain/pools/{pool_address[:10]}/ohlcv",
+        track_api_call("coingecko", f"/onchain/pools/ohlcv/{timeframe}",
                        caller="ohlcv_collector", status=500, latency_ms=latency)
         logger.debug(f"OHLCV fetch failed for {pool_address[:10]}… on {network}: {e}")
         return []
@@ -104,8 +114,7 @@ def _store_ohlcv_records(records: list[dict]):
                        close = EXCLUDED.close""",
                 (
                     rec["pool_address"], rec["chain"], rec.get("dex"),
-                    rec.get("asset_id"),
-                    rec["timestamp"],
+                    rec.get("asset_id"), rec["timestamp"],
                     rec.get("open"), rec.get("high"),
                     rec.get("low"), rec.get("close"),
                     rec.get("volume"), rec.get("trades_count"),
@@ -113,39 +122,94 @@ def _store_ohlcv_records(records: list[dict]):
             )
 
 
-def _get_tracked_pools() -> list[dict]:
-    """Get pools we're already tracking in liquidity_depth."""
+def _get_tracked_pools_tiered() -> tuple[list[dict], list[dict]]:
+    """
+    Get tracked pools split into two tiers:
+    - top_pools: highest TVL stablecoin pairs → 15-min resolution
+    - other_pools: everything else → hourly resolution
+    """
     from app.database import fetch_all
 
     rows = fetch_all(
-        """SELECT DISTINCT asset_id, venue, chain, pool_address
+        """SELECT DISTINCT ON (pool_address)
+                  asset_id, venue, chain, pool_address, volume_24h
            FROM liquidity_depth
            WHERE venue_type = 'dex'
              AND pool_address IS NOT NULL
              AND pool_address != ''
              AND snapshot_at > NOW() - INTERVAL '24 hours'
-           ORDER BY asset_id"""
+           ORDER BY pool_address, snapshot_at DESC"""
     )
-    return [dict(r) for r in rows] if rows else []
+    if not rows:
+        return [], []
+
+    pools = [dict(r) for r in rows]
+
+    # Classify: top pools are USDC/USDT on major DEXes
+    top_candidates = []
+    other = []
+    for pool in pools:
+        asset = (pool.get("asset_id") or "").lower()
+        venue = (pool.get("venue") or "").lower()
+        is_top_asset = any(a in asset for a in TOP_POOL_ASSETS)
+        is_top_venue = any(v in venue for v in TOP_POOL_KEYWORDS)
+        if is_top_asset and is_top_venue:
+            top_candidates.append(pool)
+        else:
+            other.append(pool)
+
+    # Sort top candidates by volume, take top N
+    top_candidates.sort(key=lambda p: float(p.get("volume_24h") or 0), reverse=True)
+    top_pools = top_candidates[:TOP_POOL_COUNT]
+    other.extend(top_candidates[TOP_POOL_COUNT:])
+
+    return top_pools, other
 
 
 async def run_ohlcv_collection() -> dict:
     """
-    Fetch OHLCV data for all tracked DEX pools.
+    Fetch OHLCV data for all tracked DEX pools with tiered resolution:
+    - Top 10 by TVL: 15-minute candles (96 per day)
+    - All others: hourly candles (24 per day)
     """
-    pools = _get_tracked_pools()
-    if not pools:
+    top_pools, other_pools = _get_tracked_pools_tiered()
+    all_pools = len(top_pools) + len(other_pools)
+
+    if all_pools == 0:
         return {"pools_found": 0, "records_stored": 0}
 
     total_records = 0
     pools_processed = 0
+    top_processed = 0
 
     async with httpx.AsyncClient(timeout=30) as client:
-        for pool in pools:
+        # Top pools: 15-minute resolution
+        for pool in top_pools:
             chain = pool.get("chain", "ethereum")
             network = CHAIN_MAP.get(chain)
             pool_address = pool.get("pool_address")
+            if not network or not pool_address:
+                continue
 
+            try:
+                ohlcv_list = await _fetch_pool_ohlcv(
+                    client, network, pool_address, timeframe="minute", limit=96
+                )
+                if ohlcv_list:
+                    records = _parse_ohlcv(ohlcv_list, pool)
+                    if records:
+                        _store_ohlcv_records(records)
+                        total_records += len(records)
+                        pools_processed += 1
+                        top_processed += 1
+            except Exception as e:
+                logger.debug(f"15min OHLCV failed for {pool_address[:10]}…: {e}")
+
+        # Other pools: hourly resolution
+        for pool in other_pools:
+            chain = pool.get("chain", "ethereum")
+            network = CHAIN_MAP.get(chain)
+            pool_address = pool.get("pool_address")
             if not network or not pool_address:
                 continue
 
@@ -153,38 +217,14 @@ async def run_ohlcv_collection() -> dict:
                 ohlcv_list = await _fetch_pool_ohlcv(
                     client, network, pool_address, timeframe="hour", limit=24
                 )
-
-                if not ohlcv_list:
-                    continue
-
-                records = []
-                for candle in ohlcv_list:
-                    # GeckoTerminal format: [timestamp, open, high, low, close, volume]
-                    if not isinstance(candle, list) or len(candle) < 6:
-                        continue
-
-                    ts = datetime.fromtimestamp(candle[0], tz=timezone.utc)
-                    records.append({
-                        "pool_address": pool_address.lower(),
-                        "chain": chain,
-                        "dex": pool.get("venue"),
-                        "asset_id": pool.get("asset_id"),
-                        "timestamp": ts,
-                        "open": candle[1],
-                        "high": candle[2],
-                        "low": candle[3],
-                        "close": candle[4],
-                        "volume": candle[5],
-                        "trades_count": candle[6] if len(candle) > 6 else None,
-                    })
-
-                if records:
-                    _store_ohlcv_records(records)
-                    total_records += len(records)
-                    pools_processed += 1
-
+                if ohlcv_list:
+                    records = _parse_ohlcv(ohlcv_list, pool)
+                    if records:
+                        _store_ohlcv_records(records)
+                        total_records += len(records)
+                        pools_processed += 1
             except Exception as e:
-                logger.debug(f"OHLCV collection failed for {pool_address[:10]}…: {e}")
+                logger.debug(f"Hourly OHLCV failed for {pool_address[:10]}…: {e}")
 
     # Provenance
     try:
@@ -197,11 +237,36 @@ async def run_ohlcv_collection() -> dict:
 
     logger.info(
         f"OHLCV collection complete: {total_records} candles from "
-        f"{pools_processed}/{len(pools)} pools"
+        f"{pools_processed}/{all_pools} pools ({top_processed} at 15-min resolution)"
     )
 
     return {
-        "pools_found": len(pools),
+        "pools_found": all_pools,
         "pools_processed": pools_processed,
+        "top_pools_15min": top_processed,
+        "other_pools_hourly": pools_processed - top_processed,
         "records_stored": total_records,
     }
+
+
+def _parse_ohlcv(ohlcv_list: list, pool: dict) -> list[dict]:
+    """Parse OHLCV list into storage records."""
+    records = []
+    for candle in ohlcv_list:
+        if not isinstance(candle, list) or len(candle) < 6:
+            continue
+        ts = datetime.fromtimestamp(candle[0], tz=timezone.utc)
+        records.append({
+            "pool_address": pool.get("pool_address", "").lower(),
+            "chain": pool.get("chain", "ethereum"),
+            "dex": pool.get("venue"),
+            "asset_id": pool.get("asset_id"),
+            "timestamp": ts,
+            "open": candle[1],
+            "high": candle[2],
+            "low": candle[3],
+            "close": candle[4],
+            "volume": candle[5],
+            "trades_count": candle[6] if len(candle) > 6 else None,
+        })
+    return records

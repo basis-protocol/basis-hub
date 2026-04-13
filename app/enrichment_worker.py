@@ -663,6 +663,21 @@ async def run_enrichment_pipeline() -> dict:
         ),
     ))
 
+    # ---- Extended 5-min pulls for Circle 7 entities ----
+
+    async def _run_extended_5min():
+        from app.data_layer.markets_collector import run_extended_5min_pulls
+        return await run_extended_5min_pulls()
+
+    pipeline.add(EnrichmentTask(
+        name="circle7_5min_pulls", func=_run_extended_5min,
+        timeout_seconds=600, group="data_layer", priority=3,
+        gate_check=make_db_gate(
+            "SELECT MAX(timestamp) AS latest FROM market_chart_history WHERE granularity = '5min' AND coin_id NOT IN (SELECT coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE)",
+            min_hours=20,
+        ),
+    ))
+
     # =========================================================================
     # Wave 4: Depth + precision collectors
     # =========================================================================

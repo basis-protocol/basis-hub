@@ -618,6 +618,30 @@ async def run_fast_cycle():
     except Exception as e:
         logger.warning(f"Exchange data collection failed: {e}")
 
+    # Bulk markets query — 1 call for all ~90 scored entities (4x/day via 6h gate)
+    try:
+        _run_markets = True
+        try:
+            from app.database import fetch_one as _mf
+            last_markets = _mf(
+                "SELECT MAX(snapshot_at) AS latest FROM entity_snapshots_hourly WHERE entity_type = 'markets_bulk'"
+            )
+            if last_markets and last_markets.get("latest"):
+                _lt = last_markets["latest"]
+                if _lt.tzinfo is None:
+                    _lt = _lt.replace(tzinfo=timezone.utc)
+                _run_markets = (datetime.now(timezone.utc) - _lt).total_seconds() / 3600 >= 6
+        except Exception:
+            pass
+
+        if _run_markets:
+            from app.data_layer.markets_collector import run_bulk_markets
+            logger.info("Running bulk markets query...")
+            mkts_result = await run_bulk_markets()
+            logger.info(f"Bulk markets: {mkts_result.get('entities_returned', 0)} entities")
+    except Exception as e:
+        logger.warning(f"Bulk markets query failed: {e}")
+
     try:
         from app.data_layer.liquidity_collector import run_liquidity_collection
         logger.info("Running hourly liquidity depth collection...")
