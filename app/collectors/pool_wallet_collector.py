@@ -2,12 +2,10 @@
 Pool Wallet Collector
 ======================
 Discovers wallets supplying stablecoins into scored protocol pools by querying
-top holders of receipt tokens (aTokens, cTokens, etc.).
+top holders of receipt tokens (aTokens, cTokens, Comet contracts, vault shares).
 
-For each protocol-stablecoin pair in the RECEIPT_TOKEN_REGISTRY, fetches holder
-addresses and stores them in protocol_pool_wallets.  Also seeds new addresses
-into wallet_graph.wallets so the edge builder and risk scorer pick them up on
-next cycle.
+Uses the protocol_adapters module for the full receipt token registry covering
+all 13 PSI-scored protocols across Ethereum, Base, and Arbitrum.
 
 Follows the same patterns as app/indexer/expander.py:
   - Uses fetch_top_holders() from scanner.py
@@ -27,36 +25,62 @@ from app.indexer.scanner import fetch_top_holders
 
 logger = logging.getLogger(__name__)
 
-# =============================================================================
-# Receipt Token Registry — hardcoded, easy to extend
-# =============================================================================
-# Key: (protocol_slug, stablecoin_symbol, chain)
-# Value: dict with contract address and label
-#
-# Addresses verified against bgd-labs/aave-address-book (2024-06-23)
-# and on-chain UNDERLYING_ASSET_ADDRESS() calls.
-
-RECEIPT_TOKEN_REGISTRY = {
-    # Aave V3 Ethereum
-    ("aave", "USDC", "ethereum"): {
-        "contract": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c",
-        "label": "Aave V3 aEthUSDC",
-    },
-    ("aave", "USDT", "ethereum"): {
-        "contract": "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a",
-        "label": "Aave V3 aEthUSDT",
-    },
-}
-
 # Zero address — skip mints/burns
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+# Etherscan V2 chain IDs for multi-chain support
+CHAIN_IDS = {"ethereum": 1, "base": 8453, "arbitrum": 42161}
+
+
+async def _fetch_top_holders_multichain(
+    client: httpx.AsyncClient,
+    contract: str,
+    api_key: str,
+    chain: str = "ethereum",
+    page: int = 1,
+    offset: int = 100,
+) -> list[str]:
+    """
+    Fetch top token holders via Etherscan V2 with multi-chain support.
+    Falls back to the default fetch_top_holders for Ethereum.
+    """
+    if chain == "ethereum":
+        return await fetch_top_holders(client, contract, api_key, page=page, offset=offset)
+
+    # Multi-chain: use Etherscan V2 with chainid parameter
+    chain_id = CHAIN_IDS.get(chain, 1)
+    try:
+        resp = await client.get(
+            "https://api.etherscan.io/v2/api",
+            params={
+                "chainid": chain_id,
+                "module": "token",
+                "action": "tokenholderlist",
+                "contractaddress": contract,
+                "page": page,
+                "offset": offset,
+                "apikey": api_key,
+            },
+            timeout=15.0,
+        )
+        data = resp.json()
+        if data.get("status") == "1" and isinstance(data.get("result"), list):
+            return [
+                (h.get("TokenHolderAddress") or h.get("address", "")).lower()
+                for h in data["result"]
+                if h.get("TokenHolderAddress") or h.get("address")
+            ]
+        return []
+    except Exception as e:
+        logger.debug(f"Multi-chain holder fetch error for {contract[:10]}… on {chain}: {e}")
+        return []
 
 
 async def run_pool_wallet_collection(max_pages_per_pool: int = 5) -> dict:
     """
-    Discover wallets holding receipt tokens for each registry entry.
+    Discover wallets holding receipt tokens for all protocol adapters.
 
-    For each (protocol, stablecoin, chain) tuple:
+    For each (protocol, stablecoin, chain) tuple in the full registry:
       1. Fetch top holders of the receipt token contract
       2. Upsert into protocol_pool_wallets
       3. Seed into wallet_graph.wallets for graph expansion
@@ -72,6 +96,16 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 5) -> dict:
         logger.warning("No ETHERSCAN_API_KEY — skipping pool wallet collection")
         return {"pools_processed": 0, "wallets_discovered": 0, "wallets_seeded": 0}
 
+    # Load full receipt token registry from protocol adapters
+    from app.collectors.protocol_adapters import get_all_receipt_tokens
+    registry = get_all_receipt_tokens()
+
+    if not registry:
+        logger.warning("Empty receipt token registry")
+        return {"pools_processed": 0, "wallets_discovered": 0, "wallets_seeded": 0}
+
+    logger.info(f"Pool wallet collection: {len(registry)} receipt tokens across all protocols")
+
     # Pre-fetch existing wallet addresses to avoid redundant inserts
     existing_rows = fetch_all("SELECT address FROM wallet_graph.wallets")
     existing_addrs = {row["address"].lower() for row in existing_rows}
@@ -79,11 +113,12 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 5) -> dict:
     total_discovered = 0
     total_seeded = 0
     pools_processed = 0
+    by_protocol = {}
 
     async with httpx.AsyncClient() as client:
-        for (protocol_slug, symbol, chain), entry in RECEIPT_TOKEN_REGISTRY.items():
-            contract = entry["contract"]
-            label = entry["label"]
+        for (protocol_slug, symbol, chain), receipt_token in registry.items():
+            contract = receipt_token.contract
+            label = receipt_token.label
 
             logger.info(f"Pool wallet discovery: {protocol_slug}/{symbol}/{chain} ({label})")
 
@@ -91,9 +126,9 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 5) -> dict:
             pool_seeded = 0
 
             for page in range(1, max_pages_per_pool + 1):
-                holders = await fetch_top_holders(
+                holders = await _fetch_top_holders_multichain(
                     client, contract, api_key,
-                    page=page, offset=100,
+                    chain=chain, page=page, offset=100,
                 )
                 await asyncio.sleep(EXPLORER_RATE_LIMIT_DELAY)
 
@@ -150,10 +185,14 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 5) -> dict:
             total_discovered += pool_discovered
             total_seeded += pool_seeded
             pools_processed += 1
+            by_protocol.setdefault(protocol_slug, {"pools": 0, "wallets": 0})
+            by_protocol[protocol_slug]["pools"] += 1
+            by_protocol[protocol_slug]["wallets"] += pool_discovered
 
     logger.info(
-        f"Pool wallet collection complete: {pools_processed} pools, "
-        f"{total_discovered} holders stored, {total_seeded} new wallets seeded"
+        f"Pool wallet collection complete: {pools_processed} pools across "
+        f"{len(by_protocol)} protocols, {total_discovered} holders stored, "
+        f"{total_seeded} new wallets seeded"
     )
 
     # Attest state
@@ -164,6 +203,7 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 5) -> dict:
                 "pools": pools_processed,
                 "discovered": total_discovered,
                 "seeded": total_seeded,
+                "protocols": list(by_protocol.keys()),
             }])
     except Exception as e:
         logger.debug(f"Pool wallet attestation skipped: {e}")
@@ -172,4 +212,5 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 5) -> dict:
         "pools_processed": pools_processed,
         "wallets_discovered": total_discovered,
         "wallets_seeded": total_seeded,
+        "by_protocol": by_protocol,
     }
