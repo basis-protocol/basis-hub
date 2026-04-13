@@ -77,37 +77,47 @@ async def _fetch_coin_data(
 def _store_snapshots(snapshots: list[dict]):
     """Store entity snapshots to database."""
     if not snapshots:
+        logger.warning("_store_snapshots called with empty list")
         return
 
     from app.database import get_cursor
 
-    with get_cursor() as cur:
-        for snap in snapshots:
-            cur.execute(
-                """INSERT INTO entity_snapshots_hourly
-                   (entity_id, entity_type, market_cap, total_volume,
-                    price_usd, price_change_24h, circulating_supply,
-                    total_supply, exchange_tickers_count,
-                    developer_data, community_data, raw_data, snapshot_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                   ON CONFLICT (entity_id, entity_type, snapshot_at)
-                   DO UPDATE SET
-                       market_cap = EXCLUDED.market_cap,
-                       total_volume = EXCLUDED.total_volume,
-                       price_usd = EXCLUDED.price_usd""",
-                (
-                    snap["entity_id"], snap["entity_type"],
-                    snap.get("market_cap"), snap.get("total_volume"),
-                    snap.get("price_usd"), snap.get("price_change_24h"),
-                    snap.get("circulating_supply"), snap.get("total_supply"),
-                    snap.get("exchange_tickers_count"),
-                    json.dumps(snap.get("developer_data")) if snap.get("developer_data") else None,
-                    json.dumps(snap.get("community_data")) if snap.get("community_data") else None,
-                    json.dumps(snap.get("raw_data")) if snap.get("raw_data") else None,
-                ),
-            )
+    logger.info(f"_store_snapshots: attempting to store {len(snapshots)} snapshots")
 
-    logger.info(f"Stored {len(snapshots)} entity snapshots")
+    stored = 0
+    try:
+        with get_cursor() as cur:
+            for snap in snapshots:
+                cur.execute(
+                    """INSERT INTO entity_snapshots_hourly
+                       (entity_id, entity_type, market_cap, total_volume,
+                        price_usd, price_change_24h, circulating_supply,
+                        total_supply, exchange_tickers_count,
+                        developer_data, community_data, raw_data, snapshot_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                       ON CONFLICT (entity_id, entity_type, snapshot_at)
+                       DO UPDATE SET
+                           market_cap = EXCLUDED.market_cap,
+                           total_volume = EXCLUDED.total_volume,
+                           price_usd = EXCLUDED.price_usd""",
+                    (
+                        snap["entity_id"], snap["entity_type"],
+                        snap.get("market_cap"), snap.get("total_volume"),
+                        snap.get("price_usd"), snap.get("price_change_24h"),
+                        snap.get("circulating_supply"), snap.get("total_supply"),
+                        snap.get("exchange_tickers_count"),
+                        json.dumps(snap.get("developer_data")) if snap.get("developer_data") else None,
+                        json.dumps(snap.get("community_data")) if snap.get("community_data") else None,
+                        json.dumps(snap.get("raw_data")) if snap.get("raw_data") else None,
+                    ),
+                )
+                stored += 1
+
+        logger.info(f"_store_snapshots: COMMITTED {stored} rows to entity_snapshots_hourly")
+    except Exception as e:
+        logger.error(f"_store_snapshots FAILED after {stored} rows: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 async def run_entity_snapshots() -> dict:
