@@ -129,7 +129,7 @@ class SharedRateLimiter:
     # Burst = rate * window to allow short spikes
     PROVIDER_CONFIGS = {
         "coingecko": (7.5, 30),      # 500/min ≈ 8.3/s, use 7.5 for higher throughput
-        "etherscan": (4.8, 12),       # 5/s limit, use 4.8 for ~96% of limit
+        "etherscan": (4.9, 12),       # 5/s limit, use 4.9 — pipeline eliminates dead time
         "blockscout": (4.0, 12),      # 4.5/s limit, use 4.0 for higher throughput
         "defillama": (5.0, 20),       # generous, no hard limit
         "snapshot": (2.0, 10),        # no hard limit but be respectful
