@@ -2821,6 +2821,30 @@ async def enrichment_status(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.get("/storage-evaluation")
+async def storage_evaluation(request: Request):
+    """Time-series storage evaluation: row projections, partitioning, cost estimates."""
+    _check_admin_key(request)
+    try:
+        from app.data_layer.storage_evaluation import get_storage_evaluation
+        return get_storage_evaluation()
+    except Exception as e:
+        logger.warning(f"Storage evaluation failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/provenance-registry")
+async def provenance_registry(request: Request):
+    """Provenance source registry with proof status for all data types."""
+    _check_admin_key(request)
+    try:
+        from app.data_layer.provenance_scaling import get_provenance_registry
+        return {"sources": get_provenance_registry()}
+    except Exception as e:
+        logger.warning(f"Provenance registry failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.get("/data-catalog")
 async def data_catalog_endpoint(request: Request):
     """

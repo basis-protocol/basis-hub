@@ -636,6 +636,145 @@ async def run_enrichment_pipeline() -> dict:
         ),
     ))
 
+    # =========================================================================
+    # Wave 4: Depth + precision collectors
+    # =========================================================================
+
+    # ---- Mint/burn event capture ----
+
+    async def _run_mint_burn():
+        from app.data_layer.mint_burn_collector import run_mint_burn_collection
+        return await run_mint_burn_collection()
+
+    pipeline.add(EnrichmentTask(
+        name="mint_burn_events", func=_run_mint_burn,
+        timeout_seconds=600, group="data_layer", priority=3,
+        gate_check=make_db_gate(
+            "SELECT MAX(collected_at) AS latest FROM mint_burn_events",
+            min_hours=24,
+        ),
+    ))
+
+    # ---- Contract surveillance (weekly) ----
+
+    async def _run_contract_surveillance():
+        from app.data_layer.contract_surveillance import run_contract_surveillance
+        return await run_contract_surveillance()
+
+    pipeline.add(EnrichmentTask(
+        name="contract_surveillance", func=_run_contract_surveillance,
+        timeout_seconds=600, group="data_layer", priority=5,
+        gate_check=make_db_gate(
+            "SELECT MAX(scanned_at) AS latest FROM contract_surveillance",
+            min_hours=168,  # weekly
+        ),
+    ))
+
+    # ---- Hourly entity snapshots ----
+
+    async def _run_entity_snapshots():
+        from app.data_layer.entity_snapshots import run_entity_snapshots
+        return await run_entity_snapshots()
+
+    pipeline.add(EnrichmentTask(
+        name="entity_snapshots", func=_run_entity_snapshots,
+        timeout_seconds=600, group="data_layer", priority=3,
+        gate_check=make_db_gate(
+            "SELECT MAX(snapshot_at) AS latest FROM entity_snapshots_hourly",
+            min_hours=1,
+        ),
+    ))
+
+    # ---- Behavioral wallet classification ----
+
+    async def _run_wallet_behavior():
+        from app.data_layer.wallet_behavior import run_behavioral_classification
+        return run_behavioral_classification(batch_size=2000)
+
+    pipeline.add(EnrichmentTask(
+        name="wallet_behavior", func=_run_wallet_behavior,
+        timeout_seconds=900, group="computed", priority=5,
+        gate_check=make_db_gate(
+            "SELECT MAX(computed_at) AS latest FROM wallet_behavior_tags",
+            min_hours=24,
+        ),
+    ))
+
+    # =========================================================================
+    # Wave 3 gaps: Growth engine
+    # =========================================================================
+
+    # ---- Autonomous wallet graph expansion ----
+
+    async def _run_wallet_graph_expansion():
+        from app.data_layer.wallet_expansion import run_wallet_graph_expansion
+        return await run_wallet_graph_expansion(target_new_wallets=500, max_etherscan_calls=2000)
+
+    pipeline.add(EnrichmentTask(
+        name="wallet_graph_expansion", func=_run_wallet_graph_expansion,
+        timeout_seconds=900, group="growth", priority=4,
+        gate_check=make_db_gate(
+            "SELECT MAX(created_at) AS latest FROM wallet_graph.wallets WHERE source = 'graph_expansion'",
+            min_hours=24,
+        ),
+    ))
+
+    # ---- Entity auto-discovery (weekly) ----
+
+    async def _run_entity_discovery():
+        from app.data_layer.entity_discovery import run_entity_discovery
+        return await run_entity_discovery()
+
+    pipeline.add(EnrichmentTask(
+        name="entity_discovery", func=_run_entity_discovery,
+        timeout_seconds=300, group="growth", priority=5,
+        gate_check=make_db_gate(
+            "SELECT MAX(created_at) AS latest FROM discovery_signals WHERE signal_type = 'entity_discovery'",
+            min_hours=168,  # weekly
+        ),
+    ))
+
+    # =========================================================================
+    # Wave 5: Computed surfaces
+    # =========================================================================
+
+    # ---- Incident auto-detection ----
+
+    async def _run_incident_detection():
+        from app.data_layer.incident_detector import run_incident_detection
+        return run_incident_detection()
+
+    pipeline.add(EnrichmentTask(
+        name="incident_detection", func=_run_incident_detection,
+        timeout_seconds=120, group="computed", priority=4,
+        gate_check=make_db_gate(
+            "SELECT MAX(created_at) AS latest FROM incident_events WHERE detection_method = 'automated'",
+            min_hours=12,
+        ),
+    ))
+
+    # ---- Materialized compositions ----
+
+    async def _run_materialized():
+        from app.data_layer.materialized_compositions import run_materialized_compositions
+        return run_materialized_compositions()
+
+    pipeline.add(EnrichmentTask(
+        name="materialized_compositions", func=_run_materialized,
+        timeout_seconds=120, group="computed", priority=4,
+    ))
+
+    # ---- Provenance catalog update ----
+
+    async def _run_provenance_update():
+        from app.data_layer.provenance_scaling import update_catalog_provenance
+        return update_catalog_provenance()
+
+    pipeline.add(EnrichmentTask(
+        name="provenance_update", func=_run_provenance_update,
+        timeout_seconds=60, group="housekeeping", priority=10,
+    ))
+
     # ---- Data catalog update (end of pipeline) ----
 
     async def _run_catalog_update():
