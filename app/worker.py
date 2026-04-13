@@ -1352,13 +1352,115 @@ async def run_slow_cycle():
 
 
 # =============================================================================
+# Orchestrator: Parallel slow cycle via enrichment worker
+# =============================================================================
+
+async def run_slow_cycle_parallel():
+    """
+    Parallel slow cycle using the enrichment worker.
+    All enrichment tasks run concurrently with shared rate limiting.
+    This replaces the sequential run_slow_cycle when enabled.
+    """
+    start = time.time()
+    logger.info("=== Parallel slow cycle start ===")
+
+    try:
+        from app.enrichment_worker import run_enrichment_pipeline
+        result = await run_enrichment_pipeline()
+        logger.info(
+            f"Enrichment pipeline: {result.get('succeeded', 0)}/{result.get('total_tasks', 0)} "
+            f"tasks succeeded in {result.get('total_elapsed_s', 0)}s"
+        )
+    except Exception as e:
+        logger.error(f"Enrichment pipeline failed, falling back to sequential: {e}")
+        await run_slow_cycle()
+        return
+
+    # Post-pipeline tasks that depend on enrichment results
+    # These run sequentially after the parallel pipeline
+
+    # Health sweep + alerting
+    try:
+        from app.ops.tools.health_checker import run_all_checks
+        logger.info("Running health sweep...")
+        health_results = run_all_checks()
+        healthy_count = sum(1 for r in health_results if r.get("status") == "healthy")
+        logger.info(f"Health sweep: {healthy_count}/{len(health_results)} healthy")
+
+        failures = [r for r in health_results if r.get("status") in ("degraded", "down")]
+        if failures:
+            try:
+                from app.ops.tools.alerter import check_and_alert_health
+                await check_and_alert_health(health_results)
+            except Exception as alert_err:
+                logger.warning(f"Health alert dispatch failed: {alert_err}")
+    except Exception as e:
+        logger.warning(f"Health sweep failed: {e}")
+
+    # Integrity checks
+    try:
+        from app.integrity import check_all_and_store
+        integrity_result = check_all_and_store()
+        logger.info(f"Integrity: {integrity_result['status']} across {len(integrity_result['domains'])} domains")
+    except Exception as e:
+        logger.warning(f"Integrity check failed: {e}")
+
+    # Actor classification
+    try:
+        from app.actor_classification import classify_all_active
+        actor_result = classify_all_active()
+        logger.info(f"Actor classification: {actor_result.get('classified', 0)} classified")
+    except Exception as e:
+        logger.warning(f"Actor classification failed: {e}")
+
+    # Discovery cycle
+    try:
+        from app.discovery import run_discovery_cycle
+        run_discovery_cycle()
+    except Exception as e:
+        logger.warning(f"Discovery cycle failed: {e}")
+
+    # Coherence sweep
+    try:
+        last_coherence = fetch_one(
+            "SELECT MAX(created_at) AS latest FROM coherence_reports"
+        )
+        coherence_age_hours = 25
+        if last_coherence and last_coherence.get("latest"):
+            _coh_ts = last_coherence["latest"]
+            if _coh_ts.tzinfo is None:
+                _coh_ts = _coh_ts.replace(tzinfo=timezone.utc)
+            coherence_age_hours = (datetime.now(timezone.utc) - _coh_ts).total_seconds() / 3600
+
+        if coherence_age_hours >= 24:
+            from app.coherence import run_coherence_sweep
+            coh_report = run_coherence_sweep()
+            logger.info(
+                f"Coherence sweep: {coh_report['domains_checked']} domains, "
+                f"{coh_report['issues_found']} issues"
+            )
+    except Exception as e:
+        logger.warning(f"Coherence sweep failed: {e}")
+
+    # Flush API usage tracker
+    try:
+        from app.api_usage_tracker import flush
+        flush()
+    except Exception:
+        pass
+
+    elapsed = time.time() - start
+    logger.info(f"=== Parallel slow cycle complete in {elapsed:.0f}s ===")
+
+
+# =============================================================================
 # Orchestrator: Full cycle wrapper (backward compat)
 # =============================================================================
 
 async def run_scoring_cycle():
     """Full cycle — used for single-run mode and backward compat."""
     result = await run_fast_cycle()
-    await run_slow_cycle()
+    await run_slow_cycle_parallel()
     return result
 
 
@@ -1420,11 +1522,11 @@ async def main():
                     logger.error("Fast cycle exceeded 15-minute timeout")
 
                 # Slow cycle — runs every 3rd cycle (every ~3 hours)
-                # This prevents slow tasks from delaying scoring
+                # Uses parallel enrichment worker for concurrent execution
                 cycle_counter += 1
                 if cycle_counter % 3 == 0:
                     try:
-                        await asyncio.wait_for(run_slow_cycle(), timeout=SLOW_CYCLE_TIMEOUT)
+                        await asyncio.wait_for(run_slow_cycle_parallel(), timeout=SLOW_CYCLE_TIMEOUT)
                     except asyncio.TimeoutError:
                         logger.error("Slow cycle exceeded 60-minute timeout")
 

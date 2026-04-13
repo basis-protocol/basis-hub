@@ -290,3 +290,235 @@ async def get_treasury_events(wallet_address: str = None, event_type: str = None
         raise
     finally:
         _log_mcp_tool_call("get_treasury_events", {"wallet": wallet_address, "type": event_type, "days": days}, int((time.time() - _start) * 1000), _success)
+
+
+# =============================================================================
+# Universal Data Layer MCP Tools
+# =============================================================================
+
+@mcp.tool()
+async def basis_liquidity_depth(asset_id: str) -> str:
+    """Per-asset, per-venue liquidity profile for any stablecoin.
+
+    Returns DEX pool depth (Uniswap, Curve, etc.) and CEX ticker data
+    (Binance, Coinbase, etc.) with bid/ask depth, spread, volume, and
+    trade counts. Use before any large stablecoin transaction to check
+    venue liquidity.
+
+    Parameters:
+        asset_id: Stablecoin ID (e.g. "usdc", "usdt", "dai")
+    """
+    _start = time.time()
+    _success = True
+    try:
+        data = await _api_get(f"/api/data/liquidity/{asset_id.lower()}")
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_liquidity_depth", {"asset_id": asset_id}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_yield_data(protocol: str = None) -> str:
+    """Pool-level yield, TVL, and utilization for any DeFi protocol.
+
+    Returns APY, base APY, reward APY, TVL, and pool metadata for all
+    tracked lending/vault pools. Use to evaluate yield sustainability
+    and protocol health.
+
+    Parameters:
+        protocol: Protocol slug (e.g. "aave-v3", "compound-v3"). Omit for all protocols.
+    """
+    _start = time.time()
+    _success = True
+    try:
+        path = f"/api/data/yields?protocol={protocol}" if protocol else "/api/data/yields"
+        data = await _api_get(path)
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_yield_data", {"protocol": protocol}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_governance_activity(protocol: str, days: int = 90) -> str:
+    """Governance proposal counts, voter participation, and pass rates.
+
+    Returns full proposal history with vote counts, quorum status, and
+    voter concentration data. Use to assess DAO health and governance quality.
+
+    Parameters:
+        protocol: Protocol name (e.g. "aavedao", "comp-vote", "lido-snapshot")
+        days: Lookback period in days (default 90)
+    """
+    _start = time.time()
+    _success = True
+    try:
+        data = await _api_get(f"/api/data/governance/{protocol.lower()}?days={days}")
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_governance_activity", {"protocol": protocol, "days": days}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_bridge_flows(bridge_id: str = None) -> str:
+    """Directional bridge volume per chain pair.
+
+    Shows where capital is flowing: "$50M Ethereum → Arbitrum, $12M back."
+    Use to assess cross-chain liquidity routing and chain health.
+
+    Parameters:
+        bridge_id: Specific bridge ID (optional). Omit for aggregate flows.
+    """
+    _start = time.time()
+    _success = True
+    try:
+        path = f"/api/data/bridge-flows?bridge_id={bridge_id}" if bridge_id else "/api/data/bridge-flows"
+        data = await _api_get(path)
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_bridge_flows", {"bridge_id": bridge_id}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_exchange_health(exchange_id: str = None) -> str:
+    """Exchange trust score, volume, and reserve status.
+
+    Returns CoinGecko trust scores, 24h volume, year established, and
+    stablecoin-specific trading pair data for top exchanges.
+
+    Parameters:
+        exchange_id: CoinGecko exchange ID (e.g. "binance", "coinbase-exchange"). Omit for all.
+    """
+    _start = time.time()
+    _success = True
+    try:
+        path = f"/api/data/exchanges?exchange_id={exchange_id}" if exchange_id else "/api/data/exchanges"
+        data = await _api_get(path)
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_exchange_health", {"exchange_id": exchange_id}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_correlation(matrix_type: str = "sii_30d") -> str:
+    """Cross-entity correlation matrix.
+
+    Shows which assets move together. When USDC depegs, which protocols
+    lose TVL in sync? Use for portfolio construction and systemic risk assessment.
+
+    Parameters:
+        matrix_type: "sii_30d", "sii_90d", or "cross_90d"
+    """
+    _start = time.time()
+    _success = True
+    try:
+        data = await _api_get(f"/api/data/correlations?matrix_type={matrix_type}")
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_correlation", {"matrix_type": matrix_type}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_volatility(asset_id: str) -> str:
+    """Realized volatility, drawdown, and recovery time for any asset.
+
+    Returns 1d/7d/30d/90d realized vol, max drawdown, and correlation
+    with BTC/ETH. Use for risk-adjusted position sizing.
+
+    Parameters:
+        asset_id: Asset ID (e.g. "usdc", "usdt")
+    """
+    _start = time.time()
+    _success = True
+    try:
+        data = await _api_get(f"/api/data/volatility/{asset_id.lower()}")
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_volatility", {"asset_id": asset_id}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_incidents(entity_id: str = None) -> str:
+    """Structured event history: exploits, depegs, oracle failures.
+
+    Returns timeline of incidents with severity, affected entities, and
+    resolution status. Use for due diligence and insurance risk assessment.
+
+    Parameters:
+        entity_id: Entity ID to filter by (optional). Omit for all recent incidents.
+    """
+    _start = time.time()
+    _success = True
+    try:
+        path = f"/api/data/incidents?entity_id={entity_id}" if entity_id else "/api/data/incidents"
+        data = await _api_get(path)
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_incidents", {"entity_id": entity_id}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_peg_monitor(stablecoin_id: str, hours: int = 24) -> str:
+    """5-minute peg resolution data for micro-depeg detection.
+
+    Returns 5-minute price snapshots and deviation from $1.00. Catches
+    micro-depegs that are invisible at hourly resolution. Early warning
+    signal for peg instability.
+
+    Parameters:
+        stablecoin_id: Stablecoin ID (e.g. "usdc", "usdt")
+        hours: Lookback period in hours (default 24)
+    """
+    _start = time.time()
+    _success = True
+    try:
+        data = await _api_get(f"/api/data/peg-5m/{stablecoin_id.lower()}?hours={hours}")
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_peg_monitor", {"stablecoin_id": stablecoin_id, "hours": hours}, int((time.time() - _start) * 1000), _success)
+
+
+@mcp.tool()
+async def basis_data_catalog() -> str:
+    """Every data type available in the universal data layer.
+
+    Returns per data type: description, freshness, history depth, update
+    frequency, provenance status, row count. Use to discover what data
+    is available for building custom risk indices.
+    """
+    _start = time.time()
+    _success = True
+    try:
+        data = await _api_get("/api/data/catalog")
+        return json.dumps(data, indent=2)
+    except Exception:
+        _success = False
+        raise
+    finally:
+        _log_mcp_tool_call("basis_data_catalog", {}, int((time.time() - _start) * 1000), _success)

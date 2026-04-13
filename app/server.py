@@ -6518,6 +6518,210 @@ async def acknowledge_discovery_signal(signal_id: int, key: str = Query(default=
 
 
 # =============================================================================
+# Universal Data Layer API endpoints
+# =============================================================================
+
+@app.get("/api/data/liquidity/{asset_id}")
+async def get_liquidity_depth(asset_id: str):
+    """Per-asset, per-venue liquidity profile (DEX + CEX)."""
+    try:
+        from app.data_layer.liquidity_collector import get_liquidity_profile
+        return get_liquidity_profile(asset_id)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/yields")
+async def get_yield_data(protocol: str = Query(default=None)):
+    """Pool-level yield, TVL, utilization for any protocol."""
+    try:
+        from app.data_layer.yield_collector import get_yield_summary
+        return get_yield_summary(protocol)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/governance/{protocol}")
+async def get_governance_data(protocol: str, days: int = Query(default=90)):
+    """Governance proposals and voter participation for a protocol."""
+    try:
+        rows = fetch_all(
+            """SELECT proposal_id, title, state, author, created_at,
+                      votes_for, votes_against, votes_abstain, voter_count,
+                      quorum_reached, source
+               FROM governance_proposals
+               WHERE protocol = %s AND created_at >= NOW() - INTERVAL '%s days'
+               ORDER BY created_at DESC""",
+            (protocol, days),
+        )
+        return {"protocol": protocol, "proposals": rows or [], "count": len(rows or [])}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/bridge-flows")
+async def get_bridge_flows(bridge_id: str = Query(default=None)):
+    """Directional bridge flow volumes."""
+    try:
+        if bridge_id:
+            rows = fetch_all(
+                """SELECT bridge_name, source_chain, dest_chain, volume_usd,
+                          tvl_usd, period, snapshot_at
+                   FROM bridge_flows
+                   WHERE bridge_id = %s
+                     AND snapshot_at > NOW() - INTERVAL '48 hours'
+                   ORDER BY snapshot_at DESC""",
+                (bridge_id,),
+            )
+        else:
+            rows = fetch_all(
+                """SELECT bridge_id, bridge_name, source_chain, dest_chain,
+                          SUM(volume_usd) as total_volume
+                   FROM bridge_flows
+                   WHERE snapshot_at > NOW() - INTERVAL '24 hours'
+                   GROUP BY bridge_id, bridge_name, source_chain, dest_chain
+                   ORDER BY total_volume DESC NULLS LAST
+                   LIMIT 100"""
+            )
+        return {"flows": rows or []}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/exchanges")
+async def get_exchange_data(exchange_id: str = Query(default=None)):
+    """Exchange trust scores, volumes, and stablecoin pair data."""
+    try:
+        if exchange_id:
+            row = fetch_one(
+                """SELECT * FROM exchange_snapshots
+                   WHERE exchange_id = %s
+                   ORDER BY snapshot_at DESC LIMIT 1""",
+                (exchange_id,),
+            )
+            return row or {"error": "not_found"}
+        else:
+            rows = fetch_all(
+                """SELECT exchange_id, name, trust_score, trade_volume_24h_usd,
+                          year_established, trading_pairs, snapshot_at
+                   FROM exchange_snapshots
+                   WHERE snapshot_at > NOW() - INTERVAL '3 hours'
+                   ORDER BY trade_volume_24h_usd DESC NULLS LAST"""
+            )
+            return {"exchanges": rows or []}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/correlations")
+async def get_correlations(matrix_type: str = Query(default="sii_30d")):
+    """Cross-entity correlation matrices."""
+    try:
+        row = fetch_one(
+            """SELECT matrix_type, window_days, entity_ids, matrix_data, computed_at
+               FROM correlation_matrices
+               WHERE matrix_type = %s
+               ORDER BY computed_at DESC LIMIT 1""",
+            (matrix_type,),
+        )
+        return row or {"error": "not_found"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/volatility/{asset_id}")
+async def get_volatility(asset_id: str):
+    """Realized volatility and drawdown metrics for an asset."""
+    try:
+        row = fetch_one(
+            """SELECT * FROM volatility_surfaces
+               WHERE asset_id = %s
+               ORDER BY computed_at DESC LIMIT 1""",
+            (asset_id,),
+        )
+        return row or {"error": "not_found"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/peg-5m/{stablecoin_id}")
+async def get_peg_5m(stablecoin_id: str, hours: int = Query(default=24)):
+    """5-minute peg resolution data for a stablecoin."""
+    try:
+        rows = fetch_all(
+            """SELECT price, timestamp, deviation_bps
+               FROM peg_snapshots_5m
+               WHERE stablecoin_id = %s
+                 AND timestamp >= NOW() - INTERVAL '%s hours'
+               ORDER BY timestamp DESC""",
+            (stablecoin_id, hours),
+        )
+        return {"stablecoin_id": stablecoin_id, "snapshots": rows or [], "count": len(rows or [])}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/catalog")
+async def get_data_catalog():
+    """Every data type in the universal data layer with freshness and coverage."""
+    try:
+        rows = fetch_all("SELECT * FROM data_catalog ORDER BY data_type")
+        return {"catalog": [dict(r) for r in rows] if rows else []}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/indices/simulate")
+async def simulate_index(request: Request):
+    """
+    Accept a JSON index definition, run it against the last 30 days of data.
+    Returns simulated scores for all qualifying entities + data coverage report.
+    """
+    try:
+        body = await request.json()
+        from app.data_layer.index_simulator import simulate_index as _simulate
+        return _simulate(body)
+    except Exception as e:
+        import traceback
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": traceback.format_exc()})
+
+
+@app.get("/api/indices/coverage-matrix")
+async def indices_coverage_matrix():
+    """
+    For each index definition, show component-level data availability:
+    which components have live data, which are stale, which have no data source.
+    """
+    try:
+        from app.data_layer.index_simulator import get_coverage_matrix
+        return get_coverage_matrix()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/data/incidents")
+async def get_incidents(entity_id: str = Query(default=None), limit: int = Query(default=50)):
+    """Structured incident history."""
+    try:
+        if entity_id:
+            rows = fetch_all(
+                """SELECT * FROM incident_events
+                   WHERE entity_id = %s
+                   ORDER BY started_at DESC LIMIT %s""",
+                (entity_id, limit),
+            )
+        else:
+            rows = fetch_all(
+                """SELECT * FROM incident_events
+                   ORDER BY created_at DESC LIMIT %s""",
+                (limit,),
+            )
+        return {"incidents": [dict(r) for r in rows] if rows else []}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# =============================================================================
 # Analysis — Drift Exploit aggregation endpoint
 # =============================================================================
 

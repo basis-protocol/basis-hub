@@ -2753,6 +2753,93 @@ async def keeper_cycles_list():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# =============================================================================
+# API Usage Dashboard (Phase 3G)
+# =============================================================================
+
+@router.get("/api-usage")
+async def api_usage_dashboard(request: Request):
+    """
+    Per-API calls today, calls this month, remaining budget, utilization %,
+    projected monthly usage at current rate.
+    """
+    _check_admin_key(request)
+    try:
+        from app.api_usage_tracker import get_usage_summary
+        return get_usage_summary()
+    except Exception as e:
+        logger.warning(f"API usage dashboard failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/api-usage/{provider}")
+async def api_usage_provider(provider: str, request: Request, hours: int = 24):
+    """Hourly usage history for a specific provider."""
+    _check_admin_key(request)
+    try:
+        from app.api_usage_tracker import get_usage_history, get_realtime_counters
+        history = get_usage_history(provider, hours=hours)
+        realtime = get_realtime_counters().get(provider, {})
+        return {
+            "provider": provider,
+            "realtime": realtime,
+            "history": history,
+        }
+    except Exception as e:
+        logger.warning(f"API usage provider detail failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/rate-limits")
+async def rate_limits_dashboard(request: Request):
+    """Current state of all shared rate limiter buckets."""
+    _check_admin_key(request)
+    try:
+        from app.shared_rate_limiter import rate_limiter
+        state = rate_limiter.get_state()
+        return {"rate_limiters": state}
+    except Exception as e:
+        logger.warning(f"Rate limits dashboard failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/enrichment-status")
+async def enrichment_status(request: Request):
+    """Last enrichment pipeline run results."""
+    _check_admin_key(request)
+    try:
+        rows = fetch_all(
+            """SELECT * FROM api_usage_hourly
+               WHERE hour >= NOW() - INTERVAL '24 hours'
+               ORDER BY provider, hour DESC"""
+        )
+        return {
+            "hourly_usage": [dict(r) for r in (rows or [])],
+        }
+    except Exception as e:
+        logger.warning(f"Enrichment status failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/data-catalog")
+async def data_catalog_endpoint(request: Request):
+    """
+    Every data type available in the universal data layer.
+    Per data type: description, freshness, history depth, update frequency,
+    provenance status, row count, schema, which indices use it.
+    """
+    _check_admin_key(request)
+    try:
+        rows = fetch_all("SELECT * FROM data_catalog ORDER BY data_type")
+        if not rows:
+            # Return a default catalog based on known tables
+            return {"catalog": [], "note": "Data catalog not yet populated. Run a scoring cycle first."}
+        return {"catalog": [dict(r) for r in rows]}
+    except Exception as e:
+        logger.warning(f"Data catalog failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 def register_ops_routes(app):
     """Register the ops router with the main FastAPI app."""
     app.include_router(router)
