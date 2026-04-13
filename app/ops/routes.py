@@ -2845,6 +2845,18 @@ async def provenance_registry(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.get("/provenance-coverage")
+async def provenance_coverage(request: Request):
+    """Coverage report: how many data sources are proven out of total?"""
+    _check_admin_key(request)
+    try:
+        from app.data_layer.provenance_scaling import get_coverage_report
+        return get_coverage_report()
+    except Exception as e:
+        logger.warning(f"Provenance coverage failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.get("/data-catalog")
 async def data_catalog_endpoint(request: Request):
     """

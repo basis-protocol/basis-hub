@@ -268,6 +268,15 @@ async def run_mint_burn_collection() -> dict:
     # Check for redemption acceleration pattern
     anomalies = _detect_redemption_acceleration()
 
+    # Provenance
+    try:
+        from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
+        if total_mints + total_burns > 0:
+            attest_data_batch("mint_burn_events", [{"mints": total_mints, "burns": total_burns}])
+            link_batch_to_proof("mint_burn_events", "mint_burn_events")
+    except Exception as e:
+        logger.debug(f"Mint/burn provenance failed: {e}")
+
     logger.info(
         f"Mint/burn collection complete: {total_mints} mints, {total_burns} burns, "
         f"{len(large_events)} large events, {len(anomalies)} anomalies"

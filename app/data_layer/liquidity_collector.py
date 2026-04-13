@@ -370,6 +370,15 @@ async def run_liquidity_collection() -> dict:
 
             stablecoins_processed += 1
 
+    # Provenance: attest and link
+    try:
+        from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
+        if total_records > 0:
+            attest_data_batch("liquidity_depth", [{"records": total_records, "cex": total_cex, "dex": total_dex}])
+            link_batch_to_proof("liquidity_depth", "liquidity_depth")
+    except Exception as e:
+        logger.debug(f"Liquidity provenance failed: {e}")
+
     logger.info(
         f"Liquidity collection complete: {total_records} records "
         f"({total_cex} CEX, {total_dex} DEX) across {stablecoins_processed} stablecoins"

@@ -255,6 +255,15 @@ async def run_entity_snapshots() -> dict:
         _store_snapshots(snapshots)
         total_snapshots = len(snapshots)
 
+    # Provenance
+    try:
+        from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
+        if total_snapshots > 0:
+            attest_data_batch("entity_snapshots_hourly", [{"entities": total_snapshots}])
+            link_batch_to_proof("entity_snapshots_hourly", "entity_snapshots_hourly")
+    except Exception as e:
+        logger.debug(f"Entity snapshot provenance failed: {e}")
+
     logger.info(f"Entity snapshots complete: {total_snapshots}/{len(entities)} entities")
 
     return {

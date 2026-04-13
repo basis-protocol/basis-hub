@@ -761,10 +761,11 @@ async def run_enrichment_pipeline() -> dict:
         timeout_seconds=120, group="computed", priority=4,
     ))
 
-    # ---- Provenance catalog update ----
+    # ---- Provenance linking + catalog update ----
 
     async def _run_provenance_update():
-        from app.data_layer.provenance_scaling import update_catalog_provenance
+        from app.data_layer.provenance_scaling import update_catalog_provenance, run_provenance_linking
+        run_provenance_linking()
         return update_catalog_provenance()
 
     pipeline.add(EnrichmentTask(

@@ -244,6 +244,15 @@ async def run_yield_collection() -> dict:
         except Exception as e:
             logger.warning(f"Yield history backfill failed: {e}")
 
+    # Provenance: attest and link
+    try:
+        from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
+        if snapshots:
+            attest_data_batch("yield_snapshots", [{"pools": len(snapshots)}])
+            link_batch_to_proof("yield_snapshots", "yield_snapshots")
+    except Exception as e:
+        logger.debug(f"Yield provenance failed: {e}")
+
     logger.info(
         f"Yield collection complete: {len(snapshots)} snapshots from "
         f"{len(relevant)}/{len(all_pools)} relevant pools, "

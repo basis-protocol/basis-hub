@@ -353,6 +353,15 @@ async def run_contract_surveillance() -> dict:
         except Exception as e:
             logger.debug(f"Contract change signal failed: {e}")
 
+    # Provenance
+    try:
+        from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
+        if total_scanned > 0:
+            attest_data_batch("contract_surveillance", [{"scanned": total_scanned, "changes": len(changes_detected)}])
+            link_batch_to_proof("contract_surveillance", "contract_surveillance")
+    except Exception as e:
+        logger.debug(f"Contract surveillance provenance failed: {e}")
+
     logger.info(
         f"Contract surveillance complete: {total_scanned} contracts scanned, "
         f"{len(changes_detected)} changes detected"

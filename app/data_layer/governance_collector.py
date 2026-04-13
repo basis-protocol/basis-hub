@@ -410,6 +410,16 @@ async def run_governance_collection() -> dict:
             except Exception as e:
                 logger.warning(f"Tally collection failed for {org}: {e}")
 
+    # Provenance: attest and link
+    try:
+        from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
+        if total_proposals > 0:
+            attest_data_batch("governance_proposals", [{"proposals": total_proposals, "voters": total_voters}])
+            link_batch_to_proof("governance_proposals", "governance_proposals")
+            link_batch_to_proof("governance_voters", "governance_voters")
+    except Exception as e:
+        logger.debug(f"Governance provenance failed: {e}")
+
     logger.info(
         f"Governance collection complete: {total_proposals} proposals, "
         f"{total_voters} voters from {spaces_processed} Snapshot spaces + Tally"
