@@ -226,7 +226,7 @@ function useScores() {
     const load = async () => {
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
+        const timeout = setTimeout(() => controller.abort(), 20000);
         const r = await apiFetch(`${API}/api/scores`, { signal: controller.signal });
         clearTimeout(timeout);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -3131,6 +3131,18 @@ export default function App() {
   const { data: scores, loading, error, ts, meta } = useScores();
   const mobile = useIsMobile();
   const integrity = useIntegrity();
+
+  if (error) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#f5f2ec', fontFamily: "'IBM Plex Mono', monospace", display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center', color: '#3a3a3a' }}>
+          <div style={{ fontSize: 14, marginBottom: 4 }}>Basis Protocol</div>
+          <div style={{ fontSize: 11, color: '#9a9a9a', marginBottom: 12 }}>{error}</div>
+          <button onClick={() => window.location.reload()} style={{ padding: '6px 16px', border: '1px solid #3a3a3a', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12 }}>Retry</button>
+        </div>
+      </div>
+    );
+  }
 
   const handleSelect = useCallback((coinId) => {
     setSelectedCoin(coinId);
