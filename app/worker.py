@@ -600,55 +600,31 @@ async def run_fast_cycle():
 
     # -------------------------------------------------------------------------
     # Hourly data layer collectors — run every fast cycle for high-frequency data
-    # Uses CoinGecko budget: ~90 entities/cycle + ~50 exchanges/cycle
     # -------------------------------------------------------------------------
+    logger.error("=== DATA LAYER COLLECTORS START (worker.py fast cycle) ===")
+
     try:
         from app.data_layer.entity_snapshots import run_entity_snapshots
-        logger.info("Running hourly entity snapshots...")
         snap_result = await run_entity_snapshots()
-        logger.info(f"Entity snapshots: {snap_result.get('snapshots_stored', 0)} stored")
+        logger.error(f"=== entity_snapshots COMPLETE: {snap_result} ===")
     except Exception as e:
-        logger.warning(f"Entity snapshots failed: {e}")
+        logger.error(f"=== entity_snapshots FAILED: {type(e).__name__}: {e} ===")
 
     try:
         from app.data_layer.exchange_collector import run_exchange_collection
-        logger.info("Running hourly exchange data collection...")
         exch_result = await run_exchange_collection()
-        logger.info(f"Exchange data: {exch_result.get('exchanges_processed', 0)} exchanges")
+        logger.error(f"=== exchange_snapshots COMPLETE: {exch_result} ===")
     except Exception as e:
-        logger.warning(f"Exchange data collection failed: {e}")
-
-    # Bulk markets query — 1 call for all ~90 scored entities (4x/day via 6h gate)
-    try:
-        _run_markets = True
-        try:
-            from app.database import fetch_one as _mf
-            last_markets = _mf(
-                "SELECT MAX(snapshot_at) AS latest FROM entity_snapshots_hourly WHERE entity_type = 'markets_bulk'"
-            )
-            if last_markets and last_markets.get("latest"):
-                _lt = last_markets["latest"]
-                if _lt.tzinfo is None:
-                    _lt = _lt.replace(tzinfo=timezone.utc)
-                _run_markets = (datetime.now(timezone.utc) - _lt).total_seconds() / 3600 >= 6
-        except Exception:
-            pass
-
-        if _run_markets:
-            from app.data_layer.markets_collector import run_bulk_markets
-            logger.info("Running bulk markets query...")
-            mkts_result = await run_bulk_markets()
-            logger.info(f"Bulk markets: {mkts_result.get('entities_returned', 0)} entities")
-    except Exception as e:
-        logger.warning(f"Bulk markets query failed: {e}")
+        logger.error(f"=== exchange_snapshots FAILED: {type(e).__name__}: {e} ===")
 
     try:
         from app.data_layer.liquidity_collector import run_liquidity_collection
-        logger.info("Running hourly liquidity depth collection...")
         liq_result = await run_liquidity_collection()
-        logger.info(f"Liquidity depth: {liq_result.get('total_records', 0)} records")
+        logger.error(f"=== liquidity_depth COMPLETE: {liq_result} ===")
     except Exception as e:
-        logger.warning(f"Liquidity depth collection failed: {e}")
+        logger.error(f"=== liquidity_depth FAILED: {type(e).__name__}: {e} ===")
+
+    logger.error("=== DATA LAYER COLLECTORS END ===")
 
     # Flush API usage tracker after data layer calls
     try:
@@ -1426,12 +1402,14 @@ async def run_slow_cycle_parallel():
     try:
         from app.enrichment_worker import run_enrichment_pipeline
         result = await run_enrichment_pipeline()
-        logger.info(
-            f"Enrichment pipeline: {result.get('succeeded', 0)}/{result.get('total_tasks', 0)} "
-            f"tasks succeeded in {result.get('total_elapsed_s', 0)}s"
+        logger.error(
+            f"=== ENRICHMENT PIPELINE COMPLETE: {result.get('succeeded', 0)}/{result.get('total_tasks', 0)} "
+            f"tasks in {result.get('total_elapsed_s', 0)}s ==="
         )
     except Exception as e:
-        logger.error(f"Enrichment pipeline failed, falling back to sequential: {e}")
+        logger.error(f"=== ENRICHMENT PIPELINE FAILED: {type(e).__name__}: {e} ===")
+        import traceback as _tb
+        logger.error(_tb.format_exc())
         await run_slow_cycle()
         return
 
@@ -1541,7 +1519,9 @@ async def run_slow_cycle_parallel():
 async def run_scoring_cycle():
     """Full cycle — used for single-run mode and backward compat."""
     result = await run_fast_cycle()
+    logger.error("=== FAST CYCLE RETURNED, STARTING SLOW CYCLE ===")
     await run_slow_cycle_parallel()
+    logger.error("=== SLOW CYCLE RETURNED, SCORING CYCLE COMPLETE ===")
     return result
 
 
