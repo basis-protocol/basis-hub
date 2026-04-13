@@ -603,6 +603,35 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     logger.error("=== DATA LAYER COLLECTORS START (worker.py fast cycle) ===")
 
+    # --- DIAGNOSTIC: test raw write path before running collectors ---
+    try:
+        from app.database import get_cursor as _diag_gc, fetch_one as _diag_fo
+        # 1. Check schema
+        schema_rows = _diag_fo(
+            "SELECT string_agg(column_name, ', ' ORDER BY ordinal_position) as cols "
+            "FROM information_schema.columns WHERE table_name = 'entity_snapshots_hourly'"
+        )
+        logger.error(f"=== DIAG entity_snapshots_hourly SCHEMA: {schema_rows} ===")
+
+        # 2. Test write
+        with _diag_gc() as _dc:
+            _dc.execute(
+                "INSERT INTO entity_snapshots_hourly "
+                "(entity_id, entity_type, price_usd, snapshot_at) "
+                "VALUES ('__diag__', 'diag', 1.0, NOW())"
+            )
+        count = _diag_fo("SELECT COUNT(*) as cnt FROM entity_snapshots_hourly")
+        logger.error(f"=== DIAG WRITE TEST: rows after insert = {count} ===")
+        # cleanup
+        with _diag_gc() as _dc:
+            _dc.execute("DELETE FROM entity_snapshots_hourly WHERE entity_id = '__diag__'")
+        logger.error("=== DIAG WRITE TEST: SUCCESS — table is writable ===")
+    except Exception as _diag_e:
+        logger.error(f"=== DIAG WRITE TEST FAILED: {type(_diag_e).__name__}: {_diag_e} ===")
+        import traceback as _diag_tb
+        logger.error(_diag_tb.format_exc())
+    # --- END DIAGNOSTIC ---
+
     try:
         from app.data_layer.entity_snapshots import run_entity_snapshots
         snap_result = await run_entity_snapshots()
