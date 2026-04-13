@@ -75,27 +75,30 @@ async def _fetch_coin_data(
 
 
 def _store_snapshots(snapshots: list[dict]):
-    """Store entity snapshots to database."""
+    """Store entity snapshots to database. Per-row error handling — one bad row doesn't kill the batch."""
     if not snapshots:
-        logger.error("_store_snapshots: called with EMPTY list — nothing to store")
         return
 
     from app.database import get_cursor
-
-    # Log first row data for debugging
-    first = snapshots[0]
-    logger.error(
-        f"_store_snapshots: {len(snapshots)} snapshots to store. "
-        f"First row: entity_id={first.get('entity_id')}, "
-        f"entity_type={first.get('entity_type')}, "
-        f"price_usd={first.get('price_usd')}, "
-        f"market_cap={first.get('market_cap')}"
-    )
+    import math
 
     stored = 0
-    try:
-        with get_cursor() as cur:
-            for snap in snapshots:
+    errors = 0
+    for snap in snapshots:
+        try:
+            # Sanitize numeric values — psycopg2 can't serialize NaN/Infinity to NUMERIC
+            def _safe_num(v):
+                if v is None:
+                    return None
+                try:
+                    f = float(v)
+                    if math.isnan(f) or math.isinf(f):
+                        return None
+                    return f
+                except (TypeError, ValueError):
+                    return None
+
+            with get_cursor() as cur:
                 cur.execute(
                     """INSERT INTO entity_snapshots_hourly
                        (entity_id, entity_type, market_cap, total_volume,
@@ -109,23 +112,27 @@ def _store_snapshots(snapshots: list[dict]):
                            total_volume = EXCLUDED.total_volume,
                            price_usd = EXCLUDED.price_usd""",
                     (
-                        snap["entity_id"], snap["entity_type"],
-                        snap.get("market_cap"), snap.get("total_volume"),
-                        snap.get("price_usd"), snap.get("price_change_24h"),
-                        snap.get("circulating_supply"), snap.get("total_supply"),
-                        snap.get("exchange_tickers_count"),
-                        json.dumps(snap.get("developer_data")) if snap.get("developer_data") else None,
-                        json.dumps(snap.get("community_data")) if snap.get("community_data") else None,
-                        json.dumps(snap.get("raw_data")) if snap.get("raw_data") else None,
+                        str(snap.get("entity_id", "")),
+                        str(snap.get("entity_type", "")),
+                        _safe_num(snap.get("market_cap")),
+                        _safe_num(snap.get("total_volume")),
+                        _safe_num(snap.get("price_usd")),
+                        _safe_num(snap.get("price_change_24h")),
+                        _safe_num(snap.get("circulating_supply")),
+                        _safe_num(snap.get("total_supply")),
+                        int(snap["exchange_tickers_count"]) if snap.get("exchange_tickers_count") is not None else None,
+                        json.dumps(snap["developer_data"]) if snap.get("developer_data") else None,
+                        json.dumps(snap["community_data"]) if snap.get("community_data") else None,
+                        json.dumps(snap["raw_data"]) if snap.get("raw_data") else None,
                     ),
                 )
-                stored += 1
+            stored += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 3:
+                logger.error(f"_store_snapshots row FAILED: entity_id={snap.get('entity_id')}: {type(e).__name__}: {e}")
 
-        logger.error(f"_store_snapshots: COMMITTED {stored} rows to entity_snapshots_hourly")
-    except Exception as e:
-        logger.error(f"_store_snapshots FAILED after {stored}/{len(snapshots)} rows: {type(e).__name__}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    logger.error(f"_store_snapshots: {stored} stored, {errors} errors out of {len(snapshots)}")
 
 
 async def run_entity_snapshots() -> dict:

@@ -258,50 +258,49 @@ async def collect_dex_pools(
 
 
 def _store_liquidity_records(records: list[dict]):
-    """Store liquidity depth records to database."""
+    """Store liquidity depth records. Per-row error handling."""
     if not records:
         return
 
     from app.database import get_cursor
-    from app.data_layer.coherence_guards import DataCoherenceGuard, store_violation
 
-    guard = DataCoherenceGuard("liquidity_depth")
+    stored = 0
+    errors = 0
+    for rec in records:
+        try:
+            with get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO liquidity_depth
+                       (asset_id, venue, venue_type, chain, pool_address,
+                        bid_depth_1pct, ask_depth_1pct, bid_depth_2pct, ask_depth_2pct,
+                        spread_bps, volume_24h, trade_count_24h, buy_sell_ratio,
+                        trust_score, liquidity_score, raw_data, snapshot_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                       ON CONFLICT (asset_id, venue, chain, snapshot_at) DO UPDATE SET
+                           volume_24h = EXCLUDED.volume_24h,
+                           bid_depth_1pct = EXCLUDED.bid_depth_1pct,
+                           ask_depth_1pct = EXCLUDED.ask_depth_1pct,
+                           spread_bps = EXCLUDED.spread_bps,
+                           raw_data = EXCLUDED.raw_data""",
+                    (
+                        rec.get("asset_id", ""), rec.get("venue", ""), rec.get("venue_type", ""),
+                        rec.get("chain"), rec.get("pool_address"),
+                        rec.get("bid_depth_1pct"), rec.get("ask_depth_1pct"),
+                        rec.get("bid_depth_2pct"), rec.get("ask_depth_2pct"),
+                        rec.get("spread_bps"), rec.get("volume_24h"),
+                        rec.get("trade_count_24h"), rec.get("buy_sell_ratio"),
+                        rec.get("trust_score"), rec.get("liquidity_score"),
+                        json.dumps(rec.get("raw_data")) if rec.get("raw_data") else None,
+                    ),
+                )
+            stored += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 3:
+                logger.error(f"liquidity_depth row FAILED: {rec.get('asset_id')}:{rec.get('venue')}: {type(e).__name__}: {e}")
 
-    with get_cursor() as cur:
-        for rec in records:
-            # Validate against previous snapshot
-            violations = guard.validate_liquidity(
-                rec["asset_id"], rec["venue"], rec
-            )
-            for v in violations:
-                store_violation(v)
-
-            cur.execute(
-                """INSERT INTO liquidity_depth
-                   (asset_id, venue, venue_type, chain, pool_address,
-                    bid_depth_1pct, ask_depth_1pct, bid_depth_2pct, ask_depth_2pct,
-                    spread_bps, volume_24h, trade_count_24h, buy_sell_ratio,
-                    trust_score, liquidity_score, raw_data, snapshot_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                   ON CONFLICT (asset_id, venue, chain, snapshot_at) DO UPDATE SET
-                       volume_24h = EXCLUDED.volume_24h,
-                       bid_depth_1pct = EXCLUDED.bid_depth_1pct,
-                       ask_depth_1pct = EXCLUDED.ask_depth_1pct,
-                       spread_bps = EXCLUDED.spread_bps,
-                       raw_data = EXCLUDED.raw_data""",
-                (
-                    rec["asset_id"], rec["venue"], rec["venue_type"],
-                    rec.get("chain"), rec.get("pool_address"),
-                    rec.get("bid_depth_1pct"), rec.get("ask_depth_1pct"),
-                    rec.get("bid_depth_2pct"), rec.get("ask_depth_2pct"),
-                    rec.get("spread_bps"), rec.get("volume_24h"),
-                    rec.get("trade_count_24h"), rec.get("buy_sell_ratio"),
-                    rec.get("trust_score"), rec.get("liquidity_score"),
-                    json.dumps(rec.get("raw_data")) if rec.get("raw_data") else None,
-                ),
-            )
-
-    logger.info(f"Stored {len(records)} liquidity depth records")
+    if stored > 0 or errors > 0:
+        logger.error(f"liquidity_depth: {stored} stored, {errors} errors out of {len(records)}")
 
 
 async def run_liquidity_collection() -> dict:

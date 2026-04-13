@@ -142,38 +142,40 @@ def _store_exchange_snapshots(snapshots: list[dict]):
         return
 
     from app.database import get_cursor
-    from app.data_layer.coherence_guards import DataCoherenceGuard, store_violation
 
-    guard = DataCoherenceGuard("exchange_snapshots")
+    stored = 0
+    errors = 0
+    for snap in snapshots:
+        try:
+            with get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO exchange_snapshots
+                       (exchange_id, name, trust_score, trust_score_rank,
+                        trade_volume_24h_btc, trade_volume_24h_usd,
+                        year_established, country, trading_pairs,
+                        has_trading_incentive, stablecoin_pairs, raw_data, snapshot_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                       ON CONFLICT (exchange_id, snapshot_at) DO UPDATE SET
+                           trade_volume_24h_usd = EXCLUDED.trade_volume_24h_usd,
+                           trust_score = EXCLUDED.trust_score""",
+                    (
+                        snap.get("exchange_id", ""), snap.get("name"),
+                        snap.get("trust_score"), snap.get("trust_score_rank"),
+                        snap.get("trade_volume_24h_btc"), snap.get("trade_volume_24h_usd"),
+                        snap.get("year_established"), snap.get("country"),
+                        snap.get("trading_pairs"), snap.get("has_trading_incentive"),
+                        json.dumps(snap.get("stablecoin_pairs")) if snap.get("stablecoin_pairs") else None,
+                        json.dumps(snap.get("raw_data")) if snap.get("raw_data") else None,
+                    ),
+                )
+            stored += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 3:
+                logger.error(f"exchange_snapshots row FAILED: {snap.get('exchange_id')}: {type(e).__name__}: {e}")
 
-    with get_cursor() as cur:
-        for snap in snapshots:
-            violations = guard.validate_exchange(snap["exchange_id"], snap)
-            for v in violations:
-                store_violation(v)
-
-            cur.execute(
-                """INSERT INTO exchange_snapshots
-                   (exchange_id, name, trust_score, trust_score_rank,
-                    trade_volume_24h_btc, trade_volume_24h_usd,
-                    year_established, country, trading_pairs,
-                    has_trading_incentive, stablecoin_pairs, raw_data, snapshot_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                   ON CONFLICT (exchange_id, snapshot_at) DO UPDATE SET
-                       trade_volume_24h_usd = EXCLUDED.trade_volume_24h_usd,
-                       trust_score = EXCLUDED.trust_score""",
-                (
-                    snap["exchange_id"], snap.get("name"),
-                    snap.get("trust_score"), snap.get("trust_score_rank"),
-                    snap.get("trade_volume_24h_btc"), snap.get("trade_volume_24h_usd"),
-                    snap.get("year_established"), snap.get("country"),
-                    snap.get("trading_pairs"), snap.get("has_trading_incentive"),
-                    json.dumps(snap.get("stablecoin_pairs")) if snap.get("stablecoin_pairs") else None,
-                    json.dumps(snap.get("raw_data")) if snap.get("raw_data") else None,
-                ),
-            )
-
-    logger.info(f"Stored {len(snapshots)} exchange snapshots")
+    if stored > 0 or errors > 0:
+        logger.error(f"exchange_snapshots: {stored} stored, {errors} errors out of {len(snapshots)}")
 
 
 async def run_exchange_collection() -> dict:

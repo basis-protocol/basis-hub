@@ -603,19 +603,12 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     logger.error("=== DATA LAYER COLLECTORS START (worker.py fast cycle) ===")
 
-    # --- HARDCODED INSERT: 3 test rows, no fetch, no collector logic ---
+    # Clean up old test rows
     try:
-        from app.database import get_cursor as _hc_gc, fetch_one as _hc_fo
-        with _hc_gc() as _hc_cur:
-            _hc_cur.execute("INSERT INTO entity_snapshots_hourly (entity_id, entity_type, market_cap, price_usd, snapshot_at) VALUES ('__hc_usdc__', 'test', 32000000000, 1.0001, NOW())")
-            _hc_cur.execute("INSERT INTO entity_snapshots_hourly (entity_id, entity_type, market_cap, price_usd, snapshot_at) VALUES ('__hc_usdt__', 'test', 83000000000, 0.9999, NOW())")
-            _hc_cur.execute("INSERT INTO entity_snapshots_hourly (entity_id, entity_type, market_cap, price_usd, snapshot_at) VALUES ('__hc_dai__', 'test', 5300000000, 1.0000, NOW())")
-        count = _hc_fo("SELECT COUNT(*) as cnt FROM entity_snapshots_hourly")
-        logger.error(f"=== HARDCODED INSERT DONE: table has {count} rows ===")
-    except Exception as _hc_e:
-        logger.error(f"=== HARDCODED INSERT FAILED: {type(_hc_e).__name__}: {_hc_e} ===")
-
-    # --- Now run the actual collector ---
+        from app.database import execute as _cleanup_exec
+        _cleanup_exec("DELETE FROM entity_snapshots_hourly WHERE entity_id LIKE '__hc_%' OR entity_id = '__diag__'")
+    except Exception:
+        pass
     try:
         from app.data_layer.entity_snapshots import run_entity_snapshots
         snap_result = await run_entity_snapshots()
