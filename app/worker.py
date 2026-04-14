@@ -616,6 +616,22 @@ async def run_fast_cycle():
     except Exception as e:
         logger.error(f"=== entity_snapshots FAILED: {type(e).__name__}: {e} ===")
 
+    # Raw DB check — bypass dashboard, query table directly
+    try:
+        import psycopg2 as _pg2
+        _raw_conn = _pg2.connect(os.environ.get("DATABASE_URL", ""))
+        _raw_cur = _raw_conn.cursor()
+        _raw_cur.execute("SELECT COUNT(*) FROM entity_snapshots_hourly")
+        _raw_count = _raw_cur.fetchone()[0]
+        logger.error(f"=== RAW DB CHECK: entity_snapshots_hourly has {_raw_count} rows ===")
+        if _raw_count > 0:
+            _raw_cur.execute("SELECT entity_id, entity_type, snapshot_at FROM entity_snapshots_hourly ORDER BY snapshot_at DESC LIMIT 3")
+            for _row in _raw_cur.fetchall():
+                logger.error(f"=== SAMPLE ROW: {_row} ===")
+        _raw_conn.close()
+    except Exception as _raw_e:
+        logger.error(f"=== RAW DB CHECK FAILED: {_raw_e} ===")
+
     try:
         from app.data_layer.exchange_collector import run_exchange_collection
         exch_result = await run_exchange_collection()
