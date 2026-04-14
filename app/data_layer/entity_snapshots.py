@@ -302,5 +302,5 @@ async def run_entity_snapshots() -> dict:
     return {
         "entities_targeted": len(entities),
         "snapshots_stored": total_snapshots,
-        "_raw_snapshots": snapshots[:5],  # Return first 5 for bypass INSERT
+        "_raw_snapshots": snapshots,  # Return ALL for worker.py direct store
     }

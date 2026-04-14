@@ -603,48 +603,62 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     logger.error("=== DATA LAYER COLLECTORS START (worker.py fast cycle) ===")
 
-    logger.error("=== WRITING ONE ROW DIRECTLY ===")
-    try:
-        from app.database import get_cursor as _wr_gc
-        with _wr_gc() as _wr_cur:
-            _wr_cur.execute("""
-                INSERT INTO entity_snapshots_hourly
-                (entity_id, entity_type, price_usd, snapshot_at)
-                VALUES ('direct_test', 'stablecoin', 1.0, NOW())
-            """)
-        logger.error("=== ONE ROW WRITTEN ===")
-    except Exception as _wr_e:
-        logger.error(f"=== ONE ROW FAILED: {_wr_e} ===")
-
-    # Clean up old test rows
-    try:
-        from app.database import execute as _cleanup_exec
-        _cleanup_exec("DELETE FROM entity_snapshots_hourly WHERE entity_id LIKE '__hc_%' OR entity_id = '__diag__'")
-    except Exception:
-        pass
+    # ---- Entity snapshots: fetch via collector, store directly in worker.py ----
     try:
         from app.data_layer.entity_snapshots import run_entity_snapshots
         snap_result = await run_entity_snapshots()
-        logger.error(f"=== entity_snapshots COMPLETE: {snap_result} ===")
+        raw_snaps = snap_result.get("_raw_snapshots", []) if isinstance(snap_result, dict) else []
+        logger.error(f"=== entity_snapshots returned {len(raw_snaps)} raw snapshots ===")
+
+        if raw_snaps:
+            import json as _sj
+            import math as _sm
+            from app.database import get_cursor as _s_gc
+
+            def _sn(v):
+                if v is None: return None
+                try:
+                    f = float(v)
+                    return None if (_sm.isnan(f) or _sm.isinf(f)) else f
+                except (TypeError, ValueError): return None
+
+            stored = 0
+            errors = 0
+            for snap in raw_snaps:
+                try:
+                    with _s_gc() as _sc:
+                        _sc.execute(
+                            """INSERT INTO entity_snapshots_hourly
+                               (entity_id, entity_type, market_cap, total_volume,
+                                price_usd, price_change_24h, circulating_supply,
+                                total_supply, exchange_tickers_count,
+                                developer_data, community_data, raw_data, snapshot_at)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                            (
+                                str(snap.get("entity_id", "")),
+                                str(snap.get("entity_type", "")),
+                                _sn(snap.get("market_cap")),
+                                _sn(snap.get("total_volume")),
+                                _sn(snap.get("price_usd")),
+                                _sn(snap.get("price_change_24h")),
+                                _sn(snap.get("circulating_supply")),
+                                _sn(snap.get("total_supply")),
+                                int(snap["exchange_tickers_count"]) if snap.get("exchange_tickers_count") is not None else None,
+                                _sj.dumps(snap["developer_data"]) if snap.get("developer_data") else None,
+                                _sj.dumps(snap["community_data"]) if snap.get("community_data") else None,
+                                _sj.dumps(snap["raw_data"]) if snap.get("raw_data") else None,
+                            ),
+                        )
+                    stored += 1
+                except Exception as _se:
+                    errors += 1
+                    if errors <= 3:
+                        logger.error(f"=== DIRECT STORE ROW FAILED: {snap.get('entity_id')}: {_se} ===")
+            logger.error(f"=== DIRECT STORE: {stored} stored, {errors} errors ===")
     except Exception as e:
         logger.error(f"=== entity_snapshots FAILED: {type(e).__name__}: {e} ===")
 
-    # Raw DB check — bypass dashboard, query table directly
-    try:
-        import psycopg2 as _pg2
-        _raw_conn = _pg2.connect(os.environ.get("DATABASE_URL", ""))
-        _raw_cur = _raw_conn.cursor()
-        _raw_cur.execute("SELECT COUNT(*) FROM entity_snapshots_hourly")
-        _raw_count = _raw_cur.fetchone()[0]
-        logger.error(f"=== RAW DB CHECK: entity_snapshots_hourly has {_raw_count} rows ===")
-        if _raw_count > 0:
-            _raw_cur.execute("SELECT entity_id, entity_type, snapshot_at FROM entity_snapshots_hourly ORDER BY snapshot_at DESC LIMIT 3")
-            for _row in _raw_cur.fetchall():
-                logger.error(f"=== SAMPLE ROW: {_row} ===")
-        _raw_conn.close()
-    except Exception as _raw_e:
-        logger.error(f"=== RAW DB CHECK FAILED: {_raw_e} ===")
-
+    # ---- Exchange snapshots: fetch via collector, store directly ----
     try:
         from app.data_layer.exchange_collector import run_exchange_collection
         exch_result = await run_exchange_collection()
@@ -652,6 +666,7 @@ async def run_fast_cycle():
     except Exception as e:
         logger.error(f"=== exchange_snapshots FAILED: {type(e).__name__}: {e} ===")
 
+    # ---- Liquidity depth: fetch via collector, store directly ----
     try:
         from app.data_layer.liquidity_collector import run_liquidity_collection
         liq_result = await run_liquidity_collection()
@@ -661,41 +676,24 @@ async def run_fast_cycle():
 
     logger.error("=== DATA LAYER COLLECTORS END ===")
 
-    # DB count summary + sleep for log flush
+    # DB count summary
     try:
         import psycopg2 as _summary_pg
         _sc = _summary_pg.connect(os.environ.get("DATABASE_URL", ""))
         _scur = _sc.cursor()
-        _tables = [
-            "entity_snapshots_hourly", "liquidity_depth", "exchange_snapshots",
-            "yield_snapshots", "bridge_flows", "peg_snapshots_5m",
-            "mint_burn_events", "market_chart_history", "dex_pool_ohlcv",
-            "volatility_surfaces", "correlation_matrices", "governance_proposals",
-            "contract_surveillance", "wallet_behavior_tags", "incident_events",
-            "coherence_violations",
-        ]
-        _counts = {}
-        for _t in _tables:
+        for _t in ["entity_snapshots_hourly", "liquidity_depth", "exchange_snapshots"]:
             try:
                 _scur.execute(f"SELECT COUNT(*) FROM {_t}")
-                _counts[_t] = _scur.fetchone()[0]
+                logger.error(f"=== {_t}: {_scur.fetchone()[0]} rows ===")
             except Exception:
                 _sc.rollback()
-                _counts[_t] = "ERR"
         _sc.close()
-        logger.error(f"=== DB ROW COUNTS: {_counts} ===")
     except Exception as _se:
-        logger.error(f"=== DB COUNT CHECK FAILED: {_se} ===")
+        logger.error(f"=== DB COUNT FAILED: {_se} ===")
 
-    # Sleep 10s to let Railway log buffer flush
+    # Sleep for log flush
     logger.error("=== SLEEPING 10s FOR LOG FLUSH ===")
     await asyncio.sleep(10)
-
-    try:
-        from app.api_usage_tracker import flush
-        flush()
-    except Exception:
-        pass
 
     # -------------------------------------------------------------------------
     # Verification agent cycle — every cycle
