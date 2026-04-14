@@ -648,6 +648,36 @@ async def run_fast_cycle():
 
     logger.error("=== DATA LAYER COLLECTORS END ===")
 
+    # DB count summary + sleep for log flush
+    try:
+        import psycopg2 as _summary_pg
+        _sc = _summary_pg.connect(os.environ.get("DATABASE_URL", ""))
+        _scur = _sc.cursor()
+        _tables = [
+            "entity_snapshots_hourly", "liquidity_depth", "exchange_snapshots",
+            "yield_snapshots", "bridge_flows", "peg_snapshots_5m",
+            "mint_burn_events", "market_chart_history", "dex_pool_ohlcv",
+            "volatility_surfaces", "correlation_matrices", "governance_proposals",
+            "contract_surveillance", "wallet_behavior_tags", "incident_events",
+            "coherence_violations",
+        ]
+        _counts = {}
+        for _t in _tables:
+            try:
+                _scur.execute(f"SELECT COUNT(*) FROM {_t}")
+                _counts[_t] = _scur.fetchone()[0]
+            except Exception:
+                _sc.rollback()
+                _counts[_t] = "ERR"
+        _sc.close()
+        logger.error(f"=== DB ROW COUNTS: {_counts} ===")
+    except Exception as _se:
+        logger.error(f"=== DB COUNT CHECK FAILED: {_se} ===")
+
+    # Sleep 10s to let Railway log buffer flush
+    logger.error("=== SLEEPING 10s FOR LOG FLUSH ===")
+    await asyncio.sleep(10)
+
     try:
         from app.api_usage_tracker import flush
         flush()
