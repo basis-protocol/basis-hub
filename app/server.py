@@ -7434,6 +7434,54 @@ async def provenance_health_alert(request: Request):
     return {"status": "recorded"}
 
 
+@app.post("/api/provenance/sources/health")
+async def provenance_source_health_update(request: Request):
+    """Prover writes health state for a source after each notarization attempt."""
+    data = await request.json()
+    source_id = data.get("source_id")
+    status = data.get("status")  # "success", "failure", "auto_heal", "re_enable"
+    if not source_id or not status:
+        raise HTTPException(status_code=400, detail="source_id and status required")
+
+    from app.data_layer.prover_source_registry import (
+        record_success, record_failure, record_auto_heal, record_re_enable,
+    )
+
+    if status == "success":
+        record_success(source_id)
+    elif status == "failure":
+        error = data.get("error", "unknown error")
+        was_disabled = record_failure(source_id, error)
+        return {"status": "recorded", "auto_disabled": was_disabled}
+    elif status == "auto_heal":
+        old_url = data.get("old_url", "")
+        new_url = data.get("new_url", "")
+        if not new_url:
+            raise HTTPException(status_code=400, detail="new_url required for auto_heal")
+        record_auto_heal(source_id, old_url, new_url)
+    elif status == "re_enable":
+        record_re_enable(source_id)
+    else:
+        raise HTTPException(status_code=400,
+                            detail=f"Invalid status: {status}. "
+                                   f"Use success/failure/auto_heal/re_enable")
+
+    return {"status": "recorded"}
+
+
+@app.get("/api/provenance/sources/cycle")
+async def provenance_sources_for_cycle():
+    """Return sources the prover should notarize this cycle (schedule-aware)."""
+    from app.data_layer.prover_source_registry import get_cycle_sources, get_source_counts
+    sources = get_cycle_sources()
+    counts = get_source_counts()
+    return {
+        "sources": sources,
+        "count": len(sources),
+        "registry_counts": counts,
+    }
+
+
 @app.get("/api/provenance/health")
 async def provenance_health():
     """Current provenance source health — active/disabled counts + recent alerts."""
