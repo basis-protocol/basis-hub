@@ -603,93 +603,41 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     logger.error("=== DATA LAYER COLLECTORS START (worker.py fast cycle) ===")
 
-    # ---- Entity snapshots: fetch via collector, store directly in worker.py ----
+    # ---- MANUAL FETCH+STORE: no collector module, no imported store function ----
+    import json as _mj
+    logger.error("=== MANUAL FETCH+STORE START ===")
     try:
-        from app.data_layer.entity_snapshots import run_entity_snapshots
-        snap_result = await run_entity_snapshots()
-        raw_snaps = snap_result.get("_raw_snapshots", []) if isinstance(snap_result, dict) else []
-        logger.error(f"=== entity_snapshots returned {len(raw_snaps)} raw snapshots ===")
+        async with httpx.AsyncClient(timeout=30) as _mc:
+            _mr = await _mc.get(
+                "https://pro-api.coingecko.com/api/v3/coins/usd-coin",
+                params={"localization": "false", "tickers": "false",
+                        "market_data": "true", "community_data": "false",
+                        "developer_data": "false"},
+                headers={"x-cg-pro-api-key": os.environ.get("COINGECKO_API_KEY", "")},
+            )
+            _md = _mr.json().get("market_data", {})
 
-        if raw_snaps:
-            import json as _sj
-            import math as _sm
-            from app.database import get_cursor as _s_gc
+        from app.database import get_cursor as _m_gc
+        with _m_gc() as _mcur:
+            _mcur.execute("""
+                INSERT INTO entity_snapshots_hourly
+                (entity_id, entity_type, price_usd, market_cap, total_volume, snapshot_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+            """, (
+                "usd-coin", "stablecoin",
+                _md.get("current_price", {}).get("usd"),
+                _md.get("market_cap", {}).get("usd"),
+                _md.get("total_volume", {}).get("usd"),
+            ))
 
-            def _sn(v):
-                if v is None: return None
-                try:
-                    f = float(v)
-                    return None if (_sm.isnan(f) or _sm.isinf(f)) else f
-                except (TypeError, ValueError): return None
-
-            stored = 0
-            errors = 0
-            for snap in raw_snaps:
-                try:
-                    with _s_gc() as _sc:
-                        _sc.execute(
-                            """INSERT INTO entity_snapshots_hourly
-                               (entity_id, entity_type, market_cap, total_volume,
-                                price_usd, price_change_24h, circulating_supply,
-                                total_supply, exchange_tickers_count,
-                                developer_data, community_data, raw_data, snapshot_at)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
-                            (
-                                str(snap.get("entity_id", "")),
-                                str(snap.get("entity_type", "")),
-                                _sn(snap.get("market_cap")),
-                                _sn(snap.get("total_volume")),
-                                _sn(snap.get("price_usd")),
-                                _sn(snap.get("price_change_24h")),
-                                _sn(snap.get("circulating_supply")),
-                                _sn(snap.get("total_supply")),
-                                int(snap["exchange_tickers_count"]) if snap.get("exchange_tickers_count") is not None else None,
-                                _sj.dumps(snap["developer_data"]) if snap.get("developer_data") else None,
-                                _sj.dumps(snap["community_data"]) if snap.get("community_data") else None,
-                                _sj.dumps(snap["raw_data"]) if snap.get("raw_data") else None,
-                            ),
-                        )
-                    stored += 1
-                except Exception as _se:
-                    errors += 1
-                    if errors <= 3:
-                        logger.error(f"=== DIRECT STORE ROW FAILED: {snap.get('entity_id')}: {_se} ===")
-            logger.error(f"=== DIRECT STORE: {stored} stored, {errors} errors ===")
-    except Exception as e:
-        logger.error(f"=== entity_snapshots FAILED: {type(e).__name__}: {e} ===")
-
-    # ---- Exchange snapshots: fetch via collector, store directly ----
-    try:
-        from app.data_layer.exchange_collector import run_exchange_collection
-        exch_result = await run_exchange_collection()
-        logger.error(f"=== exchange_snapshots COMPLETE: {exch_result} ===")
-    except Exception as e:
-        logger.error(f"=== exchange_snapshots FAILED: {type(e).__name__}: {e} ===")
-
-    # ---- Liquidity depth: fetch via collector, store directly ----
-    try:
-        from app.data_layer.liquidity_collector import run_liquidity_collection
-        liq_result = await run_liquidity_collection()
-        logger.error(f"=== liquidity_depth COMPLETE: {liq_result} ===")
-    except Exception as e:
-        logger.error(f"=== liquidity_depth FAILED: {type(e).__name__}: {e} ===")
+        with _m_gc() as _mcur:
+            _mcur.execute("SELECT COUNT(*) FROM entity_snapshots_hourly")
+            _mcnt = _mcur.fetchone()[0]
+        logger.error(f"=== MANUAL FETCH+STORE DONE: {_mcnt} rows in entity_snapshots_hourly ===")
+    except Exception as _me:
+        logger.error(f"=== MANUAL FETCH+STORE FAILED: {type(_me).__name__}: {_me} ===")
 
     logger.error("=== DATA LAYER COLLECTORS END ===")
-
-    # DB count summary
-    try:
-        import psycopg2 as _summary_pg
-        _sc = _summary_pg.connect(os.environ.get("DATABASE_URL", ""))
-        _scur = _sc.cursor()
-        for _t in ["entity_snapshots_hourly", "liquidity_depth", "exchange_snapshots"]:
-            try:
-                _scur.execute(f"SELECT COUNT(*) FROM {_t}")
-                logger.error(f"=== {_t}: {_scur.fetchone()[0]} rows ===")
-            except Exception:
-                _sc.rollback()
-        _sc.close()
-    except Exception as _se:
-        logger.error(f"=== DB COUNT FAILED: {_se} ===")
 
     # Sleep for log flush
     logger.error("=== SLEEPING 10s FOR LOG FLUSH ===")
