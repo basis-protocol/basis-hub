@@ -45,8 +45,8 @@ def _run_contagion_traversal(
     if source_entity_type == "stablecoin":
         rows = fetch_all(
             """SELECT DISTINCT wallet_address FROM wallet_graph.wallet_holdings
-               WHERE LOWER(asset_symbol) = LOWER(%s)
-               ORDER BY balance DESC NULLS LAST LIMIT 50""",
+               WHERE UPPER(symbol) = UPPER(%s)
+               ORDER BY value_usd DESC NULLS LAST LIMIT 50""",
             (source_entity_id,),
         )
         seed_addrs = [r["wallet_address"] for r in (rows or [])]

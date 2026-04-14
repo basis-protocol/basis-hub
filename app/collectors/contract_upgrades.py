@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from app.database import fetch_all, fetch_one, execute, get_cursor
+from app.database import fetch_all, fetch_one, execute
 
 logger = logging.getLogger(__name__)
 
@@ -160,10 +160,10 @@ def _build_contract_targets() -> list[dict]:
     # Stablecoin token contracts from DB
     try:
         rows = fetch_all(
-            "SELECT id, symbol, contract_address FROM stablecoins WHERE contract_address IS NOT NULL"
+            "SELECT id, symbol, contract FROM stablecoins WHERE contract IS NOT NULL AND contract != ''"
         )
         for row in rows or []:
-            addr = row.get("contract_address", "")
+            addr = row.get("contract", "")
             if addr and len(addr) >= 40:
                 targets.append({
                     "entity_type": "stablecoin",
@@ -218,6 +218,117 @@ def _build_contract_targets() -> list[dict]:
 # Main collector
 # ---------------------------------------------------------------------------
 
+def _detect_change(last_snapshot: dict, current_hash: str, impl_address: str | None, impl_bytecode_hash: str | None) -> bool:
+    """
+    Determine whether a contract has changed since last snapshot.
+
+    For proxy contracts (USDC, etc.): the proxy bytecode itself is a thin
+    delegatecall stub that NEVER changes on upgrade.  What changes is the
+    implementation address and/or the implementation bytecode.  So we must
+    compare implementation_address and impl bytecode hash, not just the
+    proxy bytecode hash.
+
+    For non-proxy contracts: compare the direct bytecode hash.
+    """
+    prev_hash = last_snapshot.get("bytecode_hash")
+    prev_impl = last_snapshot.get("implementation_address")
+
+    # Direct bytecode change (covers non-proxy contracts, or rare proxy stub changes)
+    if prev_hash != current_hash:
+        return True
+
+    # Proxy-specific: implementation address changed (the core upgrade signal)
+    if impl_address and prev_impl and impl_address.lower() != prev_impl.lower():
+        return True
+
+    # Proxy-specific: previously not a proxy, now resolves to implementation
+    if impl_address and not prev_impl:
+        return True
+
+    return False
+
+
+def _record_upgrade(
+    target: dict,
+    address: str,
+    chain: str,
+    last_snapshot: dict,
+    current_hash: str,
+    impl_address: str | None,
+    impl_bytecode_hash: str | None,
+    is_proxy: bool,
+) -> None:
+    """Insert new snapshot + upgrade record + attestation."""
+    now = datetime.now(timezone.utc)
+
+    # For proxy contracts, the "meaningful" hash is the implementation bytecode.
+    # Store impl hash as current_bytecode_hash so the upgrade record captures
+    # the actual code change, not the unchanging proxy stub.
+    effective_hash = impl_bytecode_hash if (is_proxy and impl_bytecode_hash) else current_hash
+    prev_effective = last_snapshot.get("bytecode_hash")
+
+    content_data = (
+        f"{target['entity_id']}{address}{chain}"
+        f"{effective_hash}{now.isoformat()}"
+    )
+    content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
+
+    # Insert new snapshot (keyed on proxy bytecode hash — the on-chain identity)
+    execute(
+        """INSERT INTO contract_bytecode_snapshots
+            (contract_address, chain, bytecode_hash, implementation_address,
+             is_proxy, is_verified, captured_at)
+           VALUES (%s, %s, %s, %s, %s, FALSE, NOW())
+           ON CONFLICT (contract_address, chain, bytecode_hash) DO UPDATE
+               SET implementation_address = EXCLUDED.implementation_address,
+                   captured_at = NOW()""",
+        (address, chain, current_hash, impl_address, is_proxy),
+    )
+
+    # Insert upgrade record
+    execute(
+        """INSERT INTO contract_upgrade_history
+            (entity_type, entity_id, entity_symbol, contract_address, chain,
+             previous_bytecode_hash, current_bytecode_hash,
+             previous_implementation, current_implementation,
+             slither_queued, content_hash, attested_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, NOW())""",
+        (
+            target["entity_type"],
+            target["entity_id"],
+            target["entity_symbol"],
+            address,
+            chain,
+            prev_effective,
+            effective_hash,
+            last_snapshot.get("implementation_address"),
+            impl_address,
+            content_hash,
+        ),
+    )
+
+    # Attest
+    try:
+        from app.state_attestation import attest_state
+        attest_state("contract_upgrades", [{
+            "entity_id": target["entity_id"],
+            "contract_address": address,
+            "chain": chain,
+            "current_bytecode_hash": effective_hash,
+            "previous_implementation": last_snapshot.get("implementation_address"),
+            "current_implementation": impl_address,
+            "upgrade_detected_at": now.isoformat(),
+        }], str(target["entity_id"]))
+    except Exception as ae:
+        logger.debug(f"Contract upgrade attestation failed: {ae}")
+
+    logger.warning(
+        f"CONTRACT UPGRADE DETECTED: {target['entity_symbol']} "
+        f"on {chain} ({address})"
+        + (f" impl {last_snapshot.get('implementation_address')} -> {impl_address}" if is_proxy else "")
+    )
+
+
 def collect_contract_upgrades() -> dict:
     """
     Scan all scored entity contracts for bytecode changes.
@@ -243,8 +354,29 @@ def collect_contract_upgrades() -> dict:
             bytecode = _rpc_get_code(rpc_url, address)
             if not bytecode and chain == "ethereum":
                 bytecode = _get_etherscan_bytecode(address)
+
+            # Look up most recent snapshot (need this even if bytecode is empty
+            # to detect self-destruction of previously-live contracts)
+            last_snapshot = fetch_one(
+                """SELECT bytecode_hash, implementation_address
+                   FROM contract_bytecode_snapshots
+                   WHERE contract_address = %s AND chain = %s
+                   ORDER BY captured_at DESC LIMIT 1""",
+                (address, chain),
+            )
+
+            # No bytecode returned — either EOA, self-destructed, or RPC failure
             if not bytecode:
-                logger.debug(f"No bytecode for {address} on {chain}")
+                if last_snapshot:
+                    # Previously had bytecode, now gone — flag as destruction
+                    logger.warning(
+                        f"CONTRACT BYTECODE GONE: {target['entity_symbol']} "
+                        f"on {chain} ({address}) — previously had bytecode, "
+                        f"now eth_getCode returns 0x (self-destructed or RPC error)"
+                    )
+                else:
+                    logger.debug(f"No bytecode for {address} on {chain}, skipping")
+                entities_checked += 1
                 continue
 
             current_hash = _hash_bytecode(bytecode)
@@ -259,15 +391,6 @@ def collect_contract_upgrades() -> dict:
                 if impl_bytecode:
                     impl_bytecode_hash = _hash_bytecode(impl_bytecode)
 
-            # Look up most recent snapshot
-            last_snapshot = fetch_one(
-                """SELECT bytecode_hash, implementation_address
-                   FROM contract_bytecode_snapshots
-                   WHERE contract_address = %s AND chain = %s
-                   ORDER BY captured_at DESC LIMIT 1""",
-                (address, chain),
-            )
-
             if not last_snapshot:
                 # First capture — insert snapshot, no upgrade record
                 execute(
@@ -279,74 +402,27 @@ def collect_contract_upgrades() -> dict:
                     (address, chain, current_hash, impl_address, is_proxy),
                 )
                 first_captures += 1
+                if is_proxy:
+                    logger.info(
+                        f"First capture (proxy): {target['entity_symbol']} on {chain} "
+                        f"impl={impl_address}"
+                    )
 
-            elif last_snapshot["bytecode_hash"] != current_hash:
-                # Upgrade detected!
-                now = datetime.now(timezone.utc)
-                content_data = (
-                    f"{target['entity_id']}{address}{chain}"
-                    f"{current_hash}{now.isoformat()}"
-                )
-                content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
-
-                # Insert new snapshot
-                execute(
-                    """INSERT INTO contract_bytecode_snapshots
-                        (contract_address, chain, bytecode_hash, implementation_address,
-                         is_proxy, is_verified, captured_at)
-                       VALUES (%s, %s, %s, %s, %s, FALSE, NOW())
-                       ON CONFLICT (contract_address, chain, bytecode_hash) DO NOTHING""",
-                    (address, chain, current_hash, impl_address, is_proxy),
-                )
-
-                # Insert upgrade record
-                execute(
-                    """INSERT INTO contract_upgrade_history
-                        (entity_type, entity_id, entity_symbol, contract_address, chain,
-                         previous_bytecode_hash, current_bytecode_hash,
-                         previous_implementation, current_implementation,
-                         slither_queued, content_hash, attested_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, NOW())""",
-                    (
-                        target["entity_type"],
-                        target["entity_id"],
-                        target["entity_symbol"],
-                        address,
-                        chain,
-                        last_snapshot["bytecode_hash"],
-                        current_hash,
-                        last_snapshot.get("implementation_address"),
-                        impl_address,
-                        content_hash,
-                    ),
-                )
-
-                # Attest
-                try:
-                    from app.state_attestation import attest_state
-                    attest_state("contract_upgrades", [{
-                        "entity_id": target["entity_id"],
-                        "contract_address": address,
-                        "chain": chain,
-                        "current_bytecode_hash": current_hash,
-                        "upgrade_detected_at": now.isoformat(),
-                    }], str(target["entity_id"]))
-                except Exception as ae:
-                    logger.debug(f"Contract upgrade attestation failed: {ae}")
-
-                logger.warning(
-                    f"CONTRACT UPGRADE DETECTED: {target['entity_symbol']} "
-                    f"on {chain} ({address})"
+            elif _detect_change(last_snapshot, current_hash, impl_address, impl_bytecode_hash):
+                # Upgrade detected
+                _record_upgrade(
+                    target, address, chain, last_snapshot,
+                    current_hash, impl_address, impl_bytecode_hash, is_proxy,
                 )
                 upgrades_detected += 1
 
             else:
-                # No change — update captured_at on latest snapshot
+                # No change — update captured_at and current impl on latest snapshot
                 execute(
                     """UPDATE contract_bytecode_snapshots
-                       SET captured_at = NOW()
+                       SET captured_at = NOW(), implementation_address = %s
                        WHERE contract_address = %s AND chain = %s AND bytecode_hash = %s""",
-                    (address, chain, current_hash),
+                    (impl_address, address, chain, current_hash),
                 )
 
             # Rate limit: small sleep between RPC calls
