@@ -603,6 +603,19 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     logger.error("=== DATA LAYER COLLECTORS START (worker.py fast cycle) ===")
 
+    logger.error("=== WRITING ONE ROW DIRECTLY ===")
+    try:
+        from app.database import get_cursor as _wr_gc
+        with _wr_gc() as _wr_cur:
+            _wr_cur.execute("""
+                INSERT INTO entity_snapshots_hourly
+                (entity_id, entity_type, price_usd, snapshot_at)
+                VALUES ('direct_test', 'stablecoin', 1.0, NOW())
+            """)
+        logger.error("=== ONE ROW WRITTEN ===")
+    except Exception as _wr_e:
+        logger.error(f"=== ONE ROW FAILED: {_wr_e} ===")
+
     # Clean up old test rows
     try:
         from app.database import execute as _cleanup_exec
