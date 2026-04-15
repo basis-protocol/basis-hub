@@ -1582,6 +1582,15 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
                 "provenance": live.get("provenance", {}),
                 "data_quality": live.get("data_quality", {}),
                 "storage": live.get("storage", {}),
+                "collector_health": live.get("collector_health", []),
+                "active_alerts": live.get("active_alerts", {}),
+                "keeper_status": live.get("keeper_status", {}),
+                "scoring_performance": live.get("scoring_performance", {}),
+                "cda_freshness": live.get("cda_freshness", []),
+                "component_coverage": live.get("component_coverage", {}),
+                "cqi_contagion": live.get("cqi_contagion", {}),
+                "x402_revenue": live.get("x402_revenue", {}),
+                "security_scanning": live.get("security_scanning", {}),
             }
         except Exception as dlx:
             data_layer_live = {"error": str(dlx)}

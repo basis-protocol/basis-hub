@@ -1106,18 +1106,31 @@ function StateGrowthPanel() {
               )}
 
               {/* Provenance */}
-              {prov.total > 0 && (
-                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
-                  <div>
-                    <Lbl>Provenance</Lbl>
-                    <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 600, color: prov.coverage_pct >= 100 ? "#27ae60" : "#f39c12" }}>{prov.coverage_pct}%</div>
+              {(() => {
+                const provLive = dl.provenance?.live || {};
+                const provReg = dl.provenance?.sources || prov;
+                const hasProv = provLive.total_proofs > 0 || provReg.total > 0;
+                return hasProv ? (
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                    <div>
+                      <Lbl>Provenance</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 600, color: (provLive.coverage_pct || 0) >= 80 ? "#27ae60" : "#f39c12" }}>{provLive.coverage_pct || provReg.coverage_pct || 0}%</div>
+                    </div>
+                    <div>
+                      <Lbl>Sources 24h</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{provLive.sources_proved_24h || 0}/{provLive.registered_sources || provReg.total || 0}</div>
+                    </div>
+                    <div>
+                      <Lbl>Proofs 24h</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: "#27ae60" }}>+{provLive.proofs_24h || 0}</div>
+                    </div>
+                    <div>
+                      <Lbl>Total Proofs</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{fmtNum(provLive.total_proofs || 0)}</div>
+                    </div>
                   </div>
-                  <div>
-                    <Lbl>Sources</Lbl>
-                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{prov.proven + prov.attested}/{prov.total}</div>
-                  </div>
-                </div>
-              )}
+                ) : null;
+              })()}
 
               {/* Data quality */}
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
@@ -1134,6 +1147,266 @@ function StateGrowthPanel() {
                   <div style={{ fontSize: 14, fontFamily: T.mono, color: dq.stale_count > 0 ? "#e74c3c" : "#27ae60" }}>{dq.stale_count || 0}</div>
                 </div>
               </div>
+
+              {/* Collector Health */}
+              {dl.collector_health && dl.collector_health.length > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>COLLECTOR HEALTH ({dl.collector_health.length})</summary>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono, marginTop: 4 }}>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Collector</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>OK</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Err</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Latency</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Rate</span>
+                    {dl.collector_health.map((c) => (
+                      <div key={c.name} style={{ display: "contents" }}>
+                        <span style={{ color: T.inkMid }}>{c.name}</span>
+                        <span style={{ textAlign: "right", color: "#27ae60" }}>{c.ok}</span>
+                        <span style={{ textAlign: "right", color: c.error > 0 ? "#e74c3c" : T.inkFaint }}>{c.error + c.timeout}</span>
+                        <span style={{ textAlign: "right", color: T.inkMid }}>{c.avg_latency_ms}ms</span>
+                        <span style={{ textAlign: "right", color: c.success_rate >= 90 ? "#27ae60" : c.success_rate >= 50 ? "#f39c12" : "#e74c3c" }}>{c.success_rate}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Active Alerts */}
+              {dl.active_alerts && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>ACTIVE ALERTS</div>
+                  <div>
+                    <Lbl>Oracle Stress</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: dl.active_alerts.oracle_stress_open > 0 ? "#e74c3c" : "#27ae60" }}>{dl.active_alerts.oracle_stress_open || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Upgrades 7d</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: dl.active_alerts.contract_upgrades_7d > 0 ? "#f39c12" : T.inkFaint }}>{dl.active_alerts.contract_upgrades_7d || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Param Changes 7d</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: dl.active_alerts.parameter_changes_7d > 0 ? "#f39c12" : T.inkFaint }}>{dl.active_alerts.parameter_changes_7d || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Signals 24h</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.inkMid }}>{dl.active_alerts.discovery_signals_24h || 0}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Keeper Status */}
+              {dl.keeper_status && dl.keeper_status.total_cycles > 0 && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>KEEPER STATUS</div>
+                  <div>
+                    <Lbl>Cycles 24h</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.keeper_status.cycles_24h || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Total Cycles</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.keeper_status.total_cycles}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Base</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.keeper_status.sii_updates_base || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Arb</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.keeper_status.sii_updates_arb || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>State Root</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: dl.keeper_status.state_root_published ? "#27ae60" : T.inkFaint }}>{dl.keeper_status.state_root_published ? "Yes" : "No"}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Scoring Performance */}
+              {dl.scoring_performance && dl.scoring_performance.daily_trend && dl.scoring_performance.daily_trend.length > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>SCORING PERFORMANCE</summary>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+                    <div>
+                      <Lbl>Avg Components/Coin</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.scoring_performance.avg_components_per_coin || 0}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto auto auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono }}>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Day</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Latency</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Components</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Coins</span>
+                    {dl.scoring_performance.daily_trend.map((d) => (
+                      <div key={d.day} style={{ display: "contents" }}>
+                        <span style={{ color: T.inkMid }}>{d.day}</span>
+                        <span style={{ textAlign: "right" }}>{d.avg_latency_ms}ms</span>
+                        <span style={{ textAlign: "right" }}>{fmtNum(d.total_components)}</span>
+                        <span style={{ textAlign: "right" }}>{d.coins_scored}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* CDA Freshness */}
+              {dl.cda_freshness && dl.cda_freshness.length > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>
+                    CDA FRESHNESS ({dl.cda_freshness.filter(c => c.stale).length} stale / {dl.cda_freshness.length})
+                  </summary>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono, marginTop: 4 }}>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Asset</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Issuer</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Days</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Status</span>
+                    {dl.cda_freshness.map((c) => (
+                      <div key={c.asset} style={{ display: "contents" }}>
+                        <span style={{ color: T.inkMid }}>{c.asset}</span>
+                        <span style={{ color: T.inkFaint, overflow: "hidden", textOverflow: "ellipsis" }}>{c.issuer || "—"}</span>
+                        <span style={{ textAlign: "right", color: T.inkMid }}>{c.days_since != null ? c.days_since : "—"}</span>
+                        <span style={{ textAlign: "right", color: c.stale ? "#e74c3c" : "#27ae60", fontSize: 9 }}>{c.stale ? "STALE" : "OK"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Component Coverage */}
+              {dl.component_coverage && dl.component_coverage.sii && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>COMPONENT COVERAGE</div>
+                  <div>
+                    <Lbl>SII Avg Components</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.component_coverage.sii.avg_components || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Populated</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: "#27ae60" }}>{dl.component_coverage.sii.avg_populated || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Empty</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: dl.component_coverage.sii.avg_empty > 0 ? "#f39c12" : T.inkFaint }}>{dl.component_coverage.sii.avg_empty || 0}</div>
+                  </div>
+                  {dl.component_coverage.psi && (
+                    <div>
+                      <Lbl>PSI Components</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.component_coverage.psi.unique_components || 0}</div>
+                    </div>
+                  )}
+                  {dl.component_coverage.rpi && (
+                    <div>
+                      <Lbl>RPI Components</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.component_coverage.rpi.unique_components || 0}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* CQI Contagion */}
+              {dl.cqi_contagion && dl.cqi_contagion.protocols_total > 0 && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>CQI CONTAGION</div>
+                  <div>
+                    <Lbl>Pool Coverage</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.cqi_contagion.coverage_pct}%</div>
+                  </div>
+                  <div>
+                    <Lbl>With Pool Data</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.cqi_contagion.protocols_with_pool_data}/{dl.cqi_contagion.protocols_total}</div>
+                  </div>
+                  <div>
+                    <Lbl>Pool Wallets</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{fmtNum(dl.cqi_contagion.pool_wallets_discovered)}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* x402 Revenue */}
+              {dl.x402_revenue && dl.x402_revenue.total_payments > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>x402 REVENUE</summary>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+                    <div>
+                      <Lbl>Total Revenue</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>${dl.x402_revenue.total_revenue_usd?.toFixed(4) || "0"}</div>
+                    </div>
+                    <div>
+                      <Lbl>Revenue 7d</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: "#27ae60" }}>${dl.x402_revenue.revenue_7d_usd?.toFixed(4) || "0"}</div>
+                    </div>
+                    <div>
+                      <Lbl>Total Payments</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.x402_revenue.total_payments}</div>
+                    </div>
+                    <div>
+                      <Lbl>Unique Payers</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.x402_revenue.unique_payers || 0}</div>
+                    </div>
+                  </div>
+                  {dl.x402_revenue.top_endpoints && dl.x402_revenue.top_endpoints.length > 0 && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono }}>
+                      <span style={{ fontWeight: 600, color: T.inkLight }}>Endpoint</span>
+                      <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Calls</span>
+                      <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Revenue</span>
+                      {dl.x402_revenue.top_endpoints.map((ep) => (
+                        <div key={ep.endpoint} style={{ display: "contents" }}>
+                          <span style={{ color: T.inkMid, overflow: "hidden", textOverflow: "ellipsis" }}>{ep.endpoint}</span>
+                          <span style={{ textAlign: "right" }}>{ep.calls}</span>
+                          <span style={{ textAlign: "right", color: "#27ae60" }}>${ep.revenue_usd}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </details>
+              )}
+
+              {/* Security Scanning */}
+              {dl.security_scanning && dl.security_scanning.contracts_monitored > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>
+                    SECURITY SCANNING ({dl.security_scanning.contracts_monitored} contracts)
+                  </summary>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+                    <div>
+                      <Lbl>Monitored</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.security_scanning.contracts_monitored}</div>
+                    </div>
+                    <div>
+                      <Lbl>Scan Coverage</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, color: (dl.security_scanning.scan_coverage?.coverage_pct || 0) >= 80 ? "#27ae60" : "#f39c12" }}>{dl.security_scanning.scan_coverage?.coverage_pct || 0}%</div>
+                    </div>
+                    <div>
+                      <Lbl>Upgrades 7d</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: dl.security_scanning.upgrade_alerts_7d > 0 ? "#f39c12" : T.inkFaint }}>{dl.security_scanning.upgrade_alerts_7d || 0}</div>
+                    </div>
+                    <div>
+                      <Lbl>Total Diffs</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.security_scanning.total_diffs_detected || 0}</div>
+                    </div>
+                  </div>
+                  {dl.security_scanning.admin_key_risk && (
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        Admin Keys: <span style={{ color: dl.security_scanning.admin_key_risk.contracts_with_admin_keys > 0 ? "#f39c12" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.contracts_with_admin_keys}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        Timelock {"<"}24h: <span style={{ color: dl.security_scanning.admin_key_risk.timelock_under_24h > 0 ? "#e74c3c" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.timelock_under_24h}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        No Multisig: <span style={{ color: dl.security_scanning.admin_key_risk.no_multisig > 0 ? "#e74c3c" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.no_multisig}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        Pause w/o Lock: <span style={{ color: dl.security_scanning.admin_key_risk.pausable_without_timelock > 0 ? "#e74c3c" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.pausable_without_timelock}</span>
+                      </div>
+                    </div>
+                  )}
+                  {dl.security_scanning.scan_coverage?.unmonitored_entities?.length > 0 && (
+                    <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 4 }}>
+                      Unmonitored: <span style={{ color: "#e74c3c" }}>{dl.security_scanning.scan_coverage.unmonitored_entities.join(", ")}</span>
+                    </div>
+                  )}
+                </details>
+              )}
 
               {/* Per-category table breakdown */}
               <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, marginBottom: 4 }}>BY CATEGORY</div>
