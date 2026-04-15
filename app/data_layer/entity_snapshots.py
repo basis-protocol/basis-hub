@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 CG_BASE = "https://pro-api.coingecko.com/api/v3" if API_KEY else "https://api.coingecko.com/api/v3"
 
+# CoinGecko ID corrections — fix IDs that return 404 due to renames/delistings
+CG_ID_CORRECTIONS = {
+    "susd": "nusd",             # Synthetix USD — CoinGecko lists as "nusd"
+    "spark": "spark-protocol",  # Spark Protocol — not just "spark"
+}
+
 
 def _headers() -> dict:
     h = {"Accept": "application/json"}
@@ -156,17 +162,19 @@ async def run_entity_snapshots() -> dict:
     )
     if stablecoins:
         for sc in stablecoins:
-            if sc.get("coingecko_id"):
+            cg_id = sc.get("coingecko_id")
+            if cg_id:
+                cg_id = CG_ID_CORRECTIONS.get(cg_id, cg_id)
                 entities.append({
                     "entity_id": sc["id"],
                     "entity_type": "stablecoin",
-                    "coingecko_id": sc["coingecko_id"],
+                    "coingecko_id": cg_id,
                 })
 
     # PSI protocol tokens
     PSI_CG_MAP = {
         "aave": "aave", "compound-finance": "compound-governance-token",
-        "morpho": "morpho", "spark": "spark",
+        "morpho": "morpho", "spark": "spark-protocol",
         "lido": "lido-dao", "rocket-pool": "rocket-pool",
         "uniswap": "uniswap", "curve-finance": "curve-dao-token",
         "convex-finance": "convex-finance", "eigenlayer": "eigenlayer",

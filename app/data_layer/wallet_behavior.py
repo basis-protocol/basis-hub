@@ -149,20 +149,20 @@ def _compute_wallet_metrics(address: str) -> dict:
     # Edge count (counterparties)
     edge_count = fetch_one(
         """SELECT COUNT(*) as cnt FROM wallet_graph.wallet_edges
-           WHERE source_address = %s OR target_address = %s""",
+           WHERE from_address = %s OR to_address = %s""",
         (address, address),
     )
     metrics["edge_count"] = edge_count["cnt"] if edge_count else 0
 
     # Inflow/outflow ratio from edges
     inflow = fetch_one(
-        """SELECT COALESCE(SUM(transfer_value_usd), 0) as total
-           FROM wallet_graph.wallet_edges WHERE target_address = %s""",
+        """SELECT COALESCE(SUM(total_value_usd), 0) as total
+           FROM wallet_graph.wallet_edges WHERE to_address = %s""",
         (address,),
     )
     outflow = fetch_one(
-        """SELECT COALESCE(SUM(transfer_value_usd), 0) as total
-           FROM wallet_graph.wallet_edges WHERE source_address = %s""",
+        """SELECT COALESCE(SUM(total_value_usd), 0) as total
+           FROM wallet_graph.wallet_edges WHERE from_address = %s""",
         (address,),
     )
 

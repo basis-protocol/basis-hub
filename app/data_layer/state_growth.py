@@ -178,7 +178,7 @@ def get_state_growth() -> dict:
     )
     wallets_with_scores = _safe_count("SELECT COUNT(*) as cnt FROM wallet_graph.wallet_risk_scores")
     wallets_with_edges = _safe_count(
-        "SELECT COUNT(DISTINCT source_address) as cnt FROM wallet_graph.wallet_edges"
+        "SELECT COUNT(DISTINCT from_address) as cnt FROM wallet_graph.wallet_edges"
     )
     wallets_with_tags = _safe_count(
         "SELECT COUNT(DISTINCT wallet_address) as cnt FROM wallet_behavior_tags"
@@ -227,7 +227,7 @@ def get_state_growth() -> dict:
     circle7 = {}
     for index_id in ["lsti", "bri", "dohi", "vsri", "cxri", "tti"]:
         count = _safe_count(
-            "SELECT COUNT(DISTINCT entity_id) as cnt FROM generic_index_scores WHERE index_id = %s",
+            "SELECT COUNT(DISTINCT entity_slug) as cnt FROM generic_index_scores WHERE index_id = %s",
             (index_id,),
         )
         circle7[index_id] = count
@@ -276,6 +276,26 @@ def get_state_growth() -> dict:
     try:
         from app.data_layer.provenance_scaling import get_coverage_report
         provenance = get_coverage_report()
+
+        # Also compute live proof coverage from provenance_proofs table
+        # (the registry-based report may show 0% if proof linking hasn't run)
+        total_registered = _safe_count("SELECT COUNT(*) as cnt FROM provenance_sources WHERE enabled = true")
+        proved_24h = _safe_count(
+            "SELECT COUNT(DISTINCT source_domain) as cnt FROM provenance_proofs "
+            "WHERE proved_at > NOW() - INTERVAL '24 hours'"
+        )
+        total_proofs = _safe_count("SELECT COUNT(*) as cnt FROM provenance_proofs")
+        proofs_24h = _safe_count(
+            "SELECT COUNT(*) as cnt FROM provenance_proofs "
+            "WHERE proved_at > NOW() - INTERVAL '24 hours'"
+        )
+        provenance["live"] = {
+            "registered_sources": total_registered,
+            "sources_proved_24h": proved_24h,
+            "coverage_pct": round(proved_24h / max(total_registered, 1) * 100, 1),
+            "total_proofs": total_proofs,
+            "proofs_24h": proofs_24h,
+        }
     except Exception:
         provenance = {"sources": {"total": 0, "proven": 0}}
 

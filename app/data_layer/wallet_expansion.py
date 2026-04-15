@@ -47,9 +47,9 @@ async def run_wallet_graph_expansion(
            FROM wallet_graph.wallets w
            JOIN wallet_graph.wallet_risk_scores r ON w.address = r.wallet_address
            LEFT JOIN (
-               SELECT source_address as address, COUNT(*) as edge_count
+               SELECT from_address as address, COUNT(*) as edge_count
                FROM wallet_graph.wallet_edges
-               GROUP BY source_address
+               GROUP BY from_address
            ) e ON w.address = e.address
            WHERE r.total_stablecoin_value >= 100000
            ORDER BY COALESCE(e.edge_count, 0) ASC, r.total_stablecoin_value DESC

@@ -634,11 +634,12 @@ async def run_fast_cycle():
     # ==== 1. ENTITY SNAPSHOTS — all scored entities ====
     try:
         _coins = _dl_fa("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
-        _entities = [(r["id"], r["coingecko_id"], "stablecoin") for r in _coins]
+        _cg_fix = {"susd": "nusd", "spark": "spark-protocol"}
+        _entities = [(r["id"], _cg_fix.get(r["coingecko_id"], r["coingecko_id"]), "stablecoin") for r in _coins]
         _psi = {"aave":"aave","compound-finance":"compound-governance-token","morpho":"morpho",
                 "lido":"lido-dao","uniswap":"uniswap","curve-finance":"curve-dao-token",
                 "convex-finance":"convex-finance","eigenlayer":"eigenlayer","sky":"maker",
-                "spark":"spark","pendle":"pendle","ethena":"ethena"}
+                "spark":"spark-protocol","pendle":"pendle","ethena":"ethena"}
         for s,c in _psi.items(): _entities.append((s,c,"protocol_token"))
 
         _es_ok, _es_err = 0, 0
@@ -1446,13 +1447,13 @@ async def run_slow_cycle():
         if wallet_expansion_age >= 24:
             # Wallet expansion — seed new addresses from under-covered stablecoins
             try:
-                from app.indexer.expander import run_wallet_expansion
-                logger.info("Running wallet expansion pipeline...")
-                expansion_result = await run_wallet_expansion(max_etherscan_calls=50)
-                logger.info(
-                    f"Wallet expansion complete: {expansion_result.get('new_wallets_seeded', 0)} seeded, "
-                    f"{expansion_result.get('etherscan_calls_used', 0)} Etherscan calls used"
+                from app.data_layer.wallet_expansion import run_wallet_graph_expansion
+                logger.info("Running wallet expansion pipeline (target: 10K wallets, budget: 5K calls)...")
+                expansion_result = await run_wallet_graph_expansion(
+                    target_new_wallets=10_000, max_etherscan_calls=5_000
                 )
+                new_wallets = expansion_result.get('new_wallets_seeded', 0)
+                logger.error(f"=== WALLET EXPANSION: {new_wallets} new wallets ===")
             except Exception as e:
                 logger.warning(f"Wallet expansion failed: {e}")
 
@@ -1529,6 +1530,69 @@ async def run_slow_cycle():
             logger.info(f"Edge building skipped — last ran {edge_age_hours:.1f}h ago")
     except Exception as e:
         logger.warning(f"Edge build gate check failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Correlation matrices — daily, needs 30+ days of score history
+    # -------------------------------------------------------------------------
+    try:
+        from app.data_layer.correlation_engine import run_correlation_computation
+        logger.info("Running correlation computation...")
+        corr_result = run_correlation_computation()
+        logger.info(f"Correlation computation: {corr_result}")
+    except Exception as e:
+        logger.warning(f"Correlation computation failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Incident detection — every cycle, computed from existing data
+    # -------------------------------------------------------------------------
+    try:
+        from app.data_layer.incident_detector import run_incident_detection
+        logger.info("Running incident detection...")
+        incident_result = run_incident_detection()
+        total_incidents = sum(v for v in incident_result.values() if isinstance(v, int))
+        logger.info(f"Incident detection: {total_incidents} incidents detected")
+    except Exception as e:
+        logger.warning(f"Incident detection failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # DEX pool OHLCV — 6-hour gate, GeckoTerminal API
+    # -------------------------------------------------------------------------
+    try:
+        ohlcv_last = fetch_one("SELECT MAX(timestamp) as t FROM dex_pool_ohlcv")
+        ohlcv_age = 7
+        if ohlcv_last and ohlcv_last.get("t"):
+            _ot = ohlcv_last["t"]
+            if hasattr(_ot, 'tzinfo') and _ot.tzinfo is None:
+                _ot = _ot.replace(tzinfo=timezone.utc)
+            if hasattr(_ot, 'timestamp'):
+                ohlcv_age = (datetime.now(timezone.utc) - _ot).total_seconds() / 3600
+        if ohlcv_age >= 6:
+            from app.data_layer.ohlcv_collector import run_ohlcv_collection
+            logger.info("Running DEX pool OHLCV collection...")
+            ohlcv_result = await run_ohlcv_collection()
+            logger.info(
+                f"OHLCV collection: {ohlcv_result.get('records_stored', 0)} records, "
+                f"{ohlcv_result.get('pools_found', 0)} pools"
+            )
+        else:
+            logger.info(f"OHLCV collection skipped — last ran {ohlcv_age:.1f}h ago")
+    except Exception as e:
+        logger.warning(f"OHLCV collection failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Wallet behavior tagging — every cycle, computed from existing data
+    # -------------------------------------------------------------------------
+    try:
+        from app.data_layer.wallet_behavior import run_behavioral_classification
+        logger.info("Running wallet behavior classification...")
+        behavior_result = run_behavioral_classification(batch_size=2000)
+        tagged = behavior_result.get("wallets_classified", 0)
+        skipped = behavior_result.get("skipped", 0)
+        logger.error(
+            f"=== WALLET BEHAVIOR: {tagged} wallets tagged, {skipped} skipped (insufficient history) ==="
+        )
+    except Exception as e:
+        logger.warning(f"Wallet behavior classification failed: {e}")
 
     # =========================================================================
     # State-building pipelines — permanent historical record
