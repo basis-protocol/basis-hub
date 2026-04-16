@@ -186,6 +186,13 @@ def fetch_defillama_hacks() -> list[dict]:
 
     try:
         resp = httpx.get(f"{LLAMA_BASE}/hacks", timeout=30)
+        if resp.status_code == 402:
+            # DeFiLlama hacks API paywalled as of April 2026.
+            # Circle 7 indices fall back to empty exploit history (score = 100).
+            logger.debug("DeFiLlama /hacks returned 402 (paywalled) — using cached or empty")
+            if cached:
+                return cached[1]
+            return []
         resp.raise_for_status()
         data = resp.json()
         hacks = data if isinstance(data, list) else []
@@ -194,7 +201,6 @@ def fetch_defillama_hacks() -> list[dict]:
         return hacks
     except Exception as e:
         logger.warning(f"DeFiLlama hacks fetch failed: {e}")
-        # Return stale cache if available
         if cached:
             return cached[1]
         return []

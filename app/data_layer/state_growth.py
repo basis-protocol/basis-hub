@@ -527,13 +527,16 @@ def get_state_growth() -> dict:
     try:
         issuers = fetch_all("""
             SELECT r.asset_symbol, r.issuer_name, r.is_active,
+                   r.collection_method,
                    MAX(e.extracted_at) as last_extraction
             FROM cda_issuer_registry r
             LEFT JOIN cda_vendor_extractions e ON e.asset_symbol = r.asset_symbol
-            GROUP BY r.asset_symbol, r.issuer_name, r.is_active
+            GROUP BY r.asset_symbol, r.issuer_name, r.is_active, r.collection_method
             ORDER BY r.is_active DESC, last_extraction ASC NULLS FIRST
         """) or []
         for r in issuers:
+            method = r.get("collection_method", "")
+            no_attestation = method in ("no_attestation", "nav_oracle", "crypto_backed", "algorithmic")
             last = r.get("last_extraction")
             days_since = None
             if last:
@@ -544,9 +547,10 @@ def get_state_growth() -> dict:
                 "asset": r["asset_symbol"],
                 "issuer": r.get("issuer_name"),
                 "active": r.get("is_active", False),
+                "collection_method": method,
                 "last_extraction": last.isoformat() if last else None,
                 "days_since": days_since,
-                "stale": days_since is None or days_since > 30,
+                "stale": False if no_attestation else (days_since is None or days_since > 30),
             })
     except Exception:
         pass

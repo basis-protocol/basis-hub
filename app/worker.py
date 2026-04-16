@@ -2189,6 +2189,22 @@ async def run_slow_cycle_parallel():
     except Exception as e:
         logger.warning(f"Oracle table creation/seeding failed (non-critical): {e}")
 
+    # Mark non-attesting CDA issuers so they don't show as stale
+    try:
+        from app.database import execute as _cda_exec
+        # USDD (TRON): minimal attestation practices, no standard reserve reports
+        # DAI (MakerDAO/Sky): crypto-backed, uses on-chain collateral not attestation PDFs
+        # FRAX (Frax Finance): algorithmic/hybrid, no standard attestation reports
+        for _symbol, _method in [("USDD", "no_attestation"), ("DAI", "crypto_backed"), ("FRAX", "algorithmic")]:
+            _cda_exec("""
+                UPDATE cda_issuer_registry
+                SET collection_method = %s, updated_at = NOW()
+                WHERE UPPER(asset_symbol) = %s
+                  AND collection_method NOT IN ('no_attestation', 'crypto_backed', 'algorithmic')
+            """, (_method, _symbol))
+    except Exception as e:
+        logger.debug(f"CDA issuer method update skipped: {e}")
+
     # Contract surveillance re-scan — force if no scans in 24h
     try:
         from app.database import fetch_one as _csf
