@@ -722,12 +722,16 @@ async def run_fast_cycle():
         logger.error(f"=== YIELDS: {_ys_ok} ok, {_ys_err} err, total={_dl_fo('SELECT COUNT(*) as c FROM yield_snapshots')} ===")
     except Exception as _e3: logger.error(f"=== YIELDS FAILED: {_e3} ===")
 
-    # ==== 4. BRIDGE FLOWS (DeFiLlama) ====
+    # ==== 4. BRIDGE FLOWS (DeFiLlama — free endpoint) ====
     try:
         async with httpx.AsyncClient(timeout=30) as _bc:
-            _r = await _bc.get("https://bridges.llama.fi/bridges", params={"includeChains":"true"})
-            _brs = _r.json().get("bridges",[]) if _r.status_code == 200 else []
-        logger.error(f"=== BRIDGES: fetched {len(_brs)} bridges from DeFiLlama ===")
+            # bridges.llama.fi returns 402 (paywalled). Use free api.llama.fi/bridges
+            _r = await _bc.get("https://api.llama.fi/bridges", params={"includeChains":"true"})
+            if _r.status_code == 402:
+                # Paywalled endpoint — try alternative
+                _r = await _bc.get("https://api.llama.fi/v2/bridges")
+            _brs = _r.json().get("bridges", _r.json() if isinstance(_r.json(), list) else []) if _r.status_code == 200 else []
+        logger.error(f"=== BRIDGES: fetched {len(_brs)} (status={_r.status_code}) ===")
         _bf_ok, _bf_err = 0, 0
         for _b in sorted(_brs, key=lambda x: x.get("lastDayVolume",0) or 0, reverse=True)[:20]:
             _bid = _b.get("id")
@@ -817,8 +821,9 @@ async def run_fast_cycle():
         if _mb_age >= 20:
             ETH_KEY = os.environ.get("ETHERSCAN_API_KEY", "")
             _mb_ok, _mb_err = 0, 0
+            _mb_coins = _dl_fa("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []
             async with httpx.AsyncClient(timeout=15) as _mbc:
-                for _sc in (_peg_coins if '_peg_coins' in dir() else _dl_fa("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []):
+                for _sc in _mb_coins:
                     _contract = _sc.get("contract","")
                     if not _contract or not _contract.startswith("0x"): continue
                     try:
@@ -860,7 +865,7 @@ async def run_fast_cycle():
                     except Exception as _e:
                         logger.error(f"mintburn fetch fail {_sc['id']}: {_e}")
                     await asyncio.sleep(0.15)
-            logger.error(f"=== MINTBURN: {_mb_ok} ok, {_mb_err} err ===")
+            logger.error(f"=== MINTBURN: {_mb_ok} ok, {_mb_err} err, coins={len(_mb_coins)}, total={_dl_fo('SELECT COUNT(*) as c FROM mint_burn_events')} ===")
         else:
             logger.error(f"=== MINTBURN: skipped (last {_mb_age:.0f}h ago) ===")
     except Exception as _e7: logger.error(f"=== MINTBURN FAILED: {_e7} ===")
@@ -2056,6 +2061,151 @@ async def run_slow_cycle_parallel():
         logger.warning("Coherence sweep timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
         logger.warning(f"Coherence sweep failed: {e}")
+
+    # Wallet expansion — run every cycle, no gate
+    try:
+        async def _wallet_expansion():
+            from app.data_layer.wallet_expansion import run_wallet_graph_expansion
+            from app.database import fetch_one as _wfe
+            _wc = _wfe("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
+            _count = _wc["cnt"] if _wc else 0
+            logger.error(f"=== WALLET EXPANSION: started, target=10000, current={_count} ===")
+            result = await run_wallet_graph_expansion(target_new_wallets=10_000, max_etherscan_calls=5_000)
+            logger.error(f"=== WALLET EXPANSION: {result.get('new_wallets_seeded', 0)} new wallets, result={result} ===")
+        await asyncio.wait_for(_wallet_expansion(), timeout=POST_TASK_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.error("=== WALLET EXPANSION: timed out after %ds ===" % POST_TASK_TIMEOUT)
+    except Exception as e:
+        logger.error(f"=== WALLET EXPANSION FAILED: {e} ===")
+
+    # Clustered concentration — daily
+    try:
+        async def _concentration():
+            from app.collectors.clustered_concentration import collect_clustered_concentration
+            result = await collect_clustered_concentration()
+            logger.error(
+                f"=== CONCENTRATION: {result.get('stablecoins_analyzed', 0)} stablecoins, "
+                f"{result.get('clusters_computed', 0)} clusters, "
+                f"{result.get('snapshots_stored', 0)} snapshots ==="
+            )
+        await asyncio.wait_for(_concentration(), timeout=POST_TASK_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Concentration analysis timed out after %ds", POST_TASK_TIMEOUT)
+    except Exception as e:
+        logger.error(f"Concentration analysis failed: {e}")
+
+    # Ensure oracle_registry table exists (migration may not have run)
+    try:
+        from app.database import execute as _exec_mig
+        _exec_mig("""
+            CREATE TABLE IF NOT EXISTS oracle_registry (
+                id SERIAL PRIMARY KEY,
+                oracle_address VARCHAR(42) NOT NULL,
+                oracle_name VARCHAR(200) NOT NULL,
+                oracle_provider VARCHAR(50) NOT NULL,
+                chain VARCHAR(20) NOT NULL,
+                asset_symbol VARCHAR(20) NOT NULL,
+                quote_symbol VARCHAR(20) NOT NULL DEFAULT 'usd',
+                decimals INTEGER NOT NULL DEFAULT 8,
+                read_function VARCHAR(100),
+                is_active BOOLEAN DEFAULT TRUE,
+                entity_type VARCHAR(20),
+                entity_slug VARCHAR(100),
+                added_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (oracle_address, chain, asset_symbol)
+            )
+        """)
+        _exec_mig("""
+            CREATE TABLE IF NOT EXISTS oracle_price_readings (
+                id SERIAL PRIMARY KEY,
+                oracle_address VARCHAR(42) NOT NULL,
+                oracle_name VARCHAR(200),
+                oracle_provider VARCHAR(50),
+                chain VARCHAR(20) NOT NULL,
+                asset_symbol VARCHAR(20) NOT NULL,
+                quote_symbol VARCHAR(20) NOT NULL DEFAULT 'usd',
+                oracle_price DECIMAL(30,8) NOT NULL,
+                oracle_price_raw VARCHAR(200),
+                oracle_decimals INTEGER,
+                cex_price DECIMAL(30,8),
+                deviation_pct DECIMAL(10,6),
+                deviation_abs DECIMAL(20,8),
+                latency_seconds INTEGER,
+                round_id VARCHAR(100),
+                answer_timestamp TIMESTAMPTZ,
+                recorded_at TIMESTAMPTZ DEFAULT NOW(),
+                is_stress_event BOOLEAN DEFAULT FALSE,
+                content_hash VARCHAR(66),
+                attested_at TIMESTAMPTZ
+            )
+        """)
+        _exec_mig("""
+            CREATE TABLE IF NOT EXISTS oracle_stress_events (
+                id SERIAL PRIMARY KEY,
+                oracle_address VARCHAR(42) NOT NULL,
+                oracle_name VARCHAR(200),
+                asset_symbol VARCHAR(20) NOT NULL,
+                chain VARCHAR(20) NOT NULL,
+                event_type VARCHAR(50),
+                event_start TIMESTAMPTZ NOT NULL,
+                event_end TIMESTAMPTZ,
+                duration_seconds INTEGER,
+                max_deviation_pct DECIMAL(10,6),
+                max_latency_seconds INTEGER,
+                reading_count INTEGER DEFAULT 1,
+                concurrent_sii_score DECIMAL(6,2),
+                concurrent_psi_scores JSONB,
+                affected_protocols JSONB,
+                content_hash VARCHAR(66),
+                attested_at TIMESTAMPTZ
+            )
+        """)
+        # Seed oracle feeds if empty
+        from app.database import fetch_one as _ofe
+        _ocount = _ofe("SELECT COUNT(*) as cnt FROM oracle_registry")
+        if _ocount and _ocount["cnt"] == 0:
+            _exec_mig("""
+                INSERT INTO oracle_registry
+                    (oracle_address, oracle_name, oracle_provider, chain, asset_symbol, quote_symbol,
+                     decimals, read_function, entity_type, entity_slug)
+                VALUES
+                    ('0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6', 'Chainlink USDC/USD', 'chainlink',
+                     'ethereum', 'USDC', 'usd', 8, 'latestRoundData', 'stablecoin', 'usdc'),
+                    ('0x3E7d1eAB13ad0104d2750B8863b489D65364e32D', 'Chainlink USDT/USD', 'chainlink',
+                     'ethereum', 'USDT', 'usd', 8, 'latestRoundData', 'stablecoin', 'usdt'),
+                    ('0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9', 'Chainlink DAI/USD', 'chainlink',
+                     'ethereum', 'DAI', 'usd', 8, 'latestRoundData', 'stablecoin', 'dai'),
+                    ('0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', 'Chainlink ETH/USD', 'chainlink',
+                     'ethereum', 'ETH', 'usd', 8, 'latestRoundData', NULL, NULL),
+                    ('0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', 'Chainlink BTC/USD', 'chainlink',
+                     'ethereum', 'BTC', 'usd', 8, 'latestRoundData', NULL, NULL),
+                    ('0x86392dC19c0b719886221c78AB11eb8Cf5c52812', 'Chainlink stETH/ETH', 'chainlink',
+                     'ethereum', 'stETH', 'eth', 18, 'latestRoundData', 'stablecoin', 'steth'),
+                    ('0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a', 'Pyth USDC/USD', 'pyth',
+                     'base', 'USDC', 'usd', 6, 'getPrice', 'stablecoin', 'usdc')
+                ON CONFLICT (oracle_address, chain, asset_symbol) DO NOTHING
+            """)
+            logger.error("=== ORACLE: seeded 7 oracle feeds into oracle_registry ===")
+    except Exception as e:
+        logger.warning(f"Oracle table creation/seeding failed (non-critical): {e}")
+
+    # Contract surveillance re-scan — force if no scans in 24h
+    try:
+        from app.database import fetch_one as _csf
+        _cs_latest = _csf("SELECT MAX(scanned_at) as latest FROM contract_surveillance")
+        _cs_age = 999
+        if _cs_latest and _cs_latest.get("latest"):
+            _cslt = _cs_latest["latest"]
+            if _cslt.tzinfo is None:
+                _cslt = _cslt.replace(tzinfo=timezone.utc)
+            _cs_age = (datetime.now(timezone.utc) - _cslt).total_seconds() / 3600
+        if _cs_age >= 24:
+            from app.data_layer.contract_surveillance import run_contract_surveillance
+            logger.info("Running contract surveillance re-scan...")
+            _cs_result = await run_contract_surveillance()
+            logger.error(f"=== CONTRACT SURVEILLANCE: {_cs_result} ===")
+    except Exception as e:
+        logger.warning(f"Contract surveillance re-scan failed: {e}")
 
     # Provenance health re-check (disabled sources)
     try:

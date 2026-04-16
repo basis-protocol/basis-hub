@@ -568,7 +568,7 @@ async def run_enrichment_pipeline() -> dict:
         name="governance_activity", func=_run_governance_collection,
         timeout_seconds=600, group="data_layer", priority=3,
         gate_check=make_db_gate(
-            "SELECT MAX(collected_at) AS latest FROM governance_proposals",
+            "SELECT MAX(captured_at) AS latest FROM governance_proposals",
             min_hours=24,
         ),
     ))
@@ -786,7 +786,7 @@ async def run_enrichment_pipeline() -> dict:
         name="entity_discovery", func=_run_entity_discovery,
         timeout_seconds=300, group="growth", priority=5,
         gate_check=make_db_gate(
-            "SELECT MAX(created_at) AS latest FROM discovery_signals WHERE signal_type = 'entity_discovery'",
+            "SELECT MAX(detected_at) AS latest FROM discovery_signals WHERE signal_type = 'entity_discovery'",
             min_hours=168,  # weekly
         ),
     ))
