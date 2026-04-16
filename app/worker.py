@@ -1154,6 +1154,30 @@ async def run_fast_cycle():
         _current_cycle_stats.store()
         _current_cycle_stats = None
 
+    # One-time diagnostic: data layer table row counts via pg_stat (instant, no scan)
+    try:
+        from app.database import fetch_all as _diag_fa
+        _diag_rows = _diag_fa("""
+            SELECT relname AS table_name, n_live_tup
+            FROM pg_stat_user_tables
+            WHERE relname IN (
+                'entity_snapshots_hourly', 'liquidity_depth', 'yield_snapshots',
+                'exchange_snapshots', 'bridge_flows', 'mint_burn_events',
+                'peg_snapshots_5m', 'dex_pool_ohlcv', 'market_chart_history',
+                'volatility_surfaces', 'correlation_matrices', 'contract_surveillance',
+                'wallet_behavior_tags', 'protocol_pool_wallets', 'coherence_violations',
+                'incident_events', 'oracle_price_readings', 'oracle_stress_events',
+                'holder_clusters', 'concentration_snapshots',
+                'protocol_parameter_changes', 'protocol_parameter_snapshots',
+                'contract_upgrade_history'
+            )
+            ORDER BY n_live_tup DESC
+        """)
+        _diag_lines = [f"  {r['table_name']:35s} {r['n_live_tup']:>10,}" for r in (_diag_rows or [])]
+        logger.error("=== DATA LAYER ROW COUNTS (pg_stat) ===\n" + "\n".join(_diag_lines))
+    except Exception as _de:
+        logger.error(f"=== DATA LAYER DIAGNOSTIC FAILED: {_de} ===")
+
     elapsed = time.time() - fast_start
     logger.info(f"=== Fast cycle complete in {elapsed:.0f}s ===")
 

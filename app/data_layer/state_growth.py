@@ -126,6 +126,23 @@ def _safe_fetch(query: str, params: tuple = ()):
         return None
 
 
+def _bulk_row_counts() -> dict[str, int]:
+    """Fetch approximate row counts for all tables via pg_stat — instant, no scan."""
+    counts = {}
+    try:
+        rows = fetch_all(
+            "SELECT schemaname || '.' || relname AS full_name, relname, n_live_tup "
+            "FROM pg_stat_user_tables"
+        )
+        for r in (rows or []):
+            # Store under both "schema.table" and plain "table" for matching
+            counts[r["full_name"]] = int(r["n_live_tup"])
+            counts[r["relname"]] = int(r["n_live_tup"])
+    except Exception:
+        pass
+    return counts
+
+
 def get_state_growth() -> dict:
     """Comprehensive state growth dashboard — live queries across all tables."""
     now = datetime.now(timezone.utc)
@@ -133,6 +150,10 @@ def get_state_growth() -> dict:
     # =========================================================================
     # 1. Per-table row counts and growth (grouped by category)
     # =========================================================================
+    # Use pg_stat_user_tables for row counts (approximate but instant).
+    # Only use COUNT(*) for 24h/7d growth where we need time-filtered counts.
+    pg_counts = _bulk_row_counts()
+
     tables = {}
     by_category = {}
     total_rows = 0
@@ -144,13 +165,23 @@ def get_state_growth() -> dict:
         arb = config["avg_row_bytes"]
         cat = config.get("category", "other")
 
-        row_count = _safe_count(f"SELECT COUNT(*) as cnt FROM {table_name}")
-        rows_24h = _safe_count(
-            f"SELECT COUNT(*) as cnt FROM {table_name} WHERE {tc} >= NOW() - INTERVAL '24 hours'"
-        )
-        rows_7d = _safe_count(
-            f"SELECT COUNT(*) as cnt FROM {table_name} WHERE {tc} >= NOW() - INTERVAL '7 days'"
-        )
+        # Approximate row count from pg_stat (instant)
+        row_count = pg_counts.get(table_name, 0)
+        # For schema-qualified names like "wallet_graph.wallets", try both forms
+        if row_count == 0 and "." in table_name:
+            plain = table_name.split(".")[-1]
+            row_count = pg_counts.get(plain, 0)
+
+        # Time-filtered counts — only for tables with rows (skip empty tables)
+        rows_24h = 0
+        rows_7d = 0
+        if row_count > 0:
+            rows_24h = _safe_count(
+                f"SELECT COUNT(*) as cnt FROM {table_name} WHERE {tc} >= NOW() - INTERVAL '24 hours'"
+            )
+            rows_7d = _safe_count(
+                f"SELECT COUNT(*) as cnt FROM {table_name} WHERE {tc} >= NOW() - INTERVAL '7 days'"
+            )
 
         growth_rate = round(rows_7d / 7, 1) if rows_7d else 0
         est_monthly_bytes = growth_rate * 30 * arb
