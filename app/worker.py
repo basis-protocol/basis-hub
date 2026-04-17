@@ -1168,6 +1168,26 @@ async def run_fast_cycle():
     except Exception:
         pass
 
+    # Gate status diagnostic — log whether expansion and edge gates are open
+    try:
+        from app.database import fetch_one as _gate_fo
+        _edge_ts = _gate_fo("SELECT EXTRACT(EPOCH FROM MAX(last_built_at)) AS ts FROM wallet_graph.edge_build_status")
+        _edge_last = float(_edge_ts["ts"]) if _edge_ts and _edge_ts.get("ts") else 0
+        _edge_age_h = (time.time() - _edge_last) / 3600 if _edge_last > 0 else 999
+        _wallet_max = _gate_fo("SELECT MAX(created_at) AS latest FROM wallet_graph.wallets WHERE created_at > NOW() - INTERVAL '48 hours'")
+        _wallet_latest = _wallet_max.get("latest") if _wallet_max else None
+        _wallet_age_h = 999
+        if _wallet_latest:
+            if _wallet_latest.tzinfo is None:
+                _wallet_latest = _wallet_latest.replace(tzinfo=timezone.utc)
+            _wallet_age_h = (datetime.now(timezone.utc) - _wallet_latest).total_seconds() / 3600
+        logger.error(
+            f"=== GATE STATUS: edge_age={_edge_age_h:.1f}h (open={_edge_age_h >= 10}), "
+            f"wallet_expansion_age={_wallet_age_h:.1f}h (open={_wallet_age_h >= 24 or _wallet_latest is None}) ==="
+        )
+    except Exception as _ge:
+        logger.error(f"=== GATE STATUS FAILED: {_ge} ===")
+
     # One-time diagnostic: data layer table row counts via pg_stat (instant, no scan)
     try:
         from app.database import fetch_all as _diag_fa

@@ -68,27 +68,30 @@ class EnrichmentPipeline:
         # Check gate
         if task.gate_check:
             try:
-                if not task.gate_check():
-                    logger.info(f"Enrichment [{task.name}] skipped (gate closed)")
+                gate_open = task.gate_check()
+                if not gate_open:
+                    logger.error(f"[enrichment] [{task.name}] GATED (skipped)")
                     return TaskResult(
                         name=task.name,
                         success=True,
                         elapsed_seconds=0,
                         result={"skipped": True, "reason": "gate_closed"},
                     )
+                else:
+                    logger.error(f"[enrichment] [{task.name}] gate OPEN, will run")
             except Exception as e:
-                logger.warning(f"Gate check failed for {task.name}: {e}")
+                logger.error(f"[enrichment] [{task.name}] gate CHECK FAILED: {e} — running anyway")
 
         async with semaphore:
             start = time.time()
             try:
-                logger.info(f"Enrichment [{task.name}] starting...")
+                logger.error(f"[enrichment] [{task.name}] starting...")
                 result = await asyncio.wait_for(
                     task.func(*task.args, **task.kwargs),
                     timeout=task.timeout_seconds,
                 )
                 elapsed = time.time() - start
-                logger.info(f"Enrichment [{task.name}] complete in {elapsed:.1f}s")
+                logger.error(f"[enrichment] [{task.name}] complete in {elapsed:.1f}s")
                 return TaskResult(
                     name=task.name,
                     success=True,
@@ -97,8 +100,8 @@ class EnrichmentPipeline:
                 )
             except asyncio.TimeoutError:
                 elapsed = time.time() - start
-                logger.warning(
-                    f"Enrichment [{task.name}] timeout after {task.timeout_seconds}s"
+                logger.error(
+                    f"[enrichment] [{task.name}] TIMEOUT after {task.timeout_seconds}s"
                 )
                 return TaskResult(
                     name=task.name,
@@ -400,18 +403,25 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_wallet_expansion():
         results = {}
+        logger.error("=== [wallet_expansion] ENTERED _run_wallet_expansion ===")
         try:
             from app.data_layer.wallet_expansion import run_wallet_graph_expansion
+            from app.database import fetch_one as _wfe
+            _wc = _wfe("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
+            _count = _wc["cnt"] if _wc else 0
+            logger.error(f"=== [wallet_expansion] starting, current_count={_count}, target=10000 ===")
             expansion_result = await run_wallet_graph_expansion(
                 target_new_wallets=10_000, max_etherscan_calls=5_000
             )
             results["expansion"] = expansion_result
             logger.error(
-                f"=== ENRICHMENT WALLET EXPANSION: "
-                f"{expansion_result.get('new_wallets_seeded', 0)} new wallets ==="
+                f"=== [wallet_expansion] complete, inserted={expansion_result.get('new_wallets_seeded', 0)}, "
+                f"discovered={expansion_result.get('new_wallets_discovered', 0)}, "
+                f"api_calls={expansion_result.get('etherscan_calls_used', 0)}, "
+                f"result={expansion_result} ==="
             )
         except Exception as e:
-            logger.error(f"Wallet expansion failed: {e}")
+            logger.error(f"=== [wallet_expansion] FAILED: {type(e).__name__}: {e} ===")
             results["expansion_error"] = str(e)
 
         try:
@@ -466,19 +476,24 @@ async def run_enrichment_pipeline() -> dict:
     # ---- Edge building ----
 
     async def _run_edges():
+        logger.error("=== [edge_building] ENTERED _run_edges ===")
         results = {}
         for chain in ["ethereum", "base", "arbitrum", "solana"]:
             try:
                 from app.indexer.edges import run_edge_builder
+                logger.error(f"=== [edge_building] starting chain={chain} ===")
                 result = await asyncio.wait_for(
                     run_edge_builder(max_wallets=100, priority="value", chain=chain),
                     timeout=900,
                 )
                 results[chain] = result
+                logger.error(f"=== [edge_building] {chain}: {result.get('total_edges_created', 0)} edges ===")
             except asyncio.TimeoutError:
                 results[chain] = {"error": "15min timeout"}
+                logger.error(f"=== [edge_building] {chain}: TIMEOUT ===")
             except Exception as e:
                 results[chain] = {"error": str(e)}
+                logger.error(f"=== [edge_building] {chain}: FAILED: {e} ===")
 
         # Decay + prune
         try:
@@ -808,8 +823,11 @@ async def run_enrichment_pipeline() -> dict:
     # ---- Autonomous wallet graph expansion ----
 
     async def _run_wallet_graph_expansion():
+        logger.error("=== [wallet_graph_expansion] ENTERED (190K budget) ===")
         from app.data_layer.wallet_expansion import run_wallet_graph_expansion
-        return await run_wallet_graph_expansion(target_new_wallets=10_000, max_etherscan_calls=190_000)
+        result = await run_wallet_graph_expansion(target_new_wallets=10_000, max_etherscan_calls=190_000)
+        logger.error(f"=== [wallet_graph_expansion] complete: {result} ===")
+        return result
 
     pipeline.add(EnrichmentTask(
         name="wallet_graph_expansion", func=_run_wallet_graph_expansion,
