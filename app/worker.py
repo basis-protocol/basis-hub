@@ -673,11 +673,19 @@ async def run_fast_cycle():
     try:
         _EX = ["binance","coinbase-exchange","okx","bybit_spot","kraken","kucoin","gate",
                "bitget","htx","crypto_com","mexc","bitfinex","bitstamp","gemini","lbank"]
+        # CoinGecko exchange ID corrections (IDs that 404)
+        _EX_FIX = {
+            "coinbase-exchange": "gdax",   # CoinGecko still uses legacy 'gdax' for Coinbase
+            "okx": "okex",                 # OKX listed as 'okex' on CoinGecko
+            "htx": "huobi",                # HTX rebranded from Huobi, CG still uses 'huobi'
+            "mexc": "mxc",                 # CoinGecko slug is 'mxc'
+        }
         _ex_ok, _ex_err = 0, 0
         async with httpx.AsyncClient(timeout=30) as _xc:
             for _xid in _EX:
+                _cg_xid = _EX_FIX.get(_xid, _xid)
                 try:
-                    _r = await _xc.get(f"{CG_BASE}/exchanges/{_xid}", headers=CG_HDR)
+                    _r = await _xc.get(f"{CG_BASE}/exchanges/{_cg_xid}", headers=CG_HDR)
                     if _r.status_code != 200: continue
                     _d = _r.json()
                     with _dl_gc() as _c:
@@ -724,14 +732,31 @@ async def run_fast_cycle():
 
     # ==== 4. BRIDGE FLOWS (DeFiLlama — free endpoint) ====
     try:
+        # DeFiLlama bridges endpoints have been unstable:
+        # - bridges.llama.fi/bridges was paywalled at one point
+        # - api.llama.fi/bridges now returns 404
+        # Try all known variants; use first that returns 200.
+        _brs = []
+        _tried_status = {}
         async with httpx.AsyncClient(timeout=30) as _bc:
-            # bridges.llama.fi returns 402 (paywalled). Use free api.llama.fi/bridges
-            _r = await _bc.get("https://api.llama.fi/bridges", params={"includeChains":"true"})
-            if _r.status_code == 402:
-                # Paywalled endpoint — try alternative
-                _r = await _bc.get("https://api.llama.fi/v2/bridges")
-            _brs = _r.json().get("bridges", _r.json() if isinstance(_r.json(), list) else []) if _r.status_code == 200 else []
-        logger.error(f"=== BRIDGES: fetched {len(_brs)} (status={_r.status_code}) ===")
+            for _url, _params in [
+                ("https://bridges.llama.fi/bridges", {"includeChains": "true"}),
+                ("https://api.llama.fi/bridges", {"includeChains": "true"}),
+                ("https://api.llama.fi/bridgedaystats", None),
+                ("https://api.llama.fi/v1/bridges", None),
+            ]:
+                try:
+                    _r = await _bc.get(_url, params=_params) if _params else await _bc.get(_url)
+                    _tried_status[_url] = _r.status_code
+                    if _r.status_code == 200:
+                        _data = _r.json()
+                        _brs = _data.get("bridges", _data if isinstance(_data, list) else [])
+                        logger.error(f"=== BRIDGES: {_url} returned {len(_brs)} ===")
+                        break
+                except Exception as _be:
+                    _tried_status[_url] = f"error:{_be}"
+        if not _brs:
+            logger.error(f"=== BRIDGES: all endpoints failed: {_tried_status} ===")
         _bf_ok, _bf_err = 0, 0
         for _b in sorted(_brs, key=lambda x: x.get("lastDayVolume",0) or 0, reverse=True)[:20]:
             _bid = _b.get("id")
@@ -755,31 +780,48 @@ async def run_fast_cycle():
     # ==== 5. PEG 5-MIN + MARKET CHART ====
     try:
         _pg_ok, _mc_ok = 0, 0
+        _mc_start = time.time()
         _peg_coins = _dl_fa("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
+        _cg_fix_mc = {"susd": "nusd", "spark": "spark-protocol"}
         async with httpx.AsyncClient(timeout=30) as _pc:
             for _sc in _peg_coins:
+                _coin_start = time.time()
+                _cg = _cg_fix_mc.get(_sc["coingecko_id"], _sc["coingecko_id"])
                 try:
-                    _r = await _pc.get(f"{CG_BASE}/coins/{_sc['coingecko_id']}/market_chart",
+                    _r = await _pc.get(f"{CG_BASE}/coins/{_cg}/market_chart",
                         params={"vs_currency":"usd","days":1}, headers=CG_HDR)
-                    if _r.status_code != 200: continue
+                    if _r.status_code != 200:
+                        await asyncio.sleep(0.15)
+                        continue
                     from datetime import datetime as _pdt
+                    # Batch all inserts for this coin into a single transaction
+                    _peg_rows = []
+                    _mc_rows = []
                     for _pt in _r.json().get("prices",[]):
                         _ts = _pdt.fromtimestamp(_pt[0]/1000, tz=timezone.utc)
+                        _peg_rows.append((_sc["id"], _pt[1], _ts, round(abs(_pt[1]-1.0)*10000, 2)))
+                        _mc_rows.append((_sc["coingecko_id"], _sc["id"], _ts, _pt[1]))
+                    if _peg_rows:
                         try:
                             with _dl_gc() as _c:
-                                _c.execute("INSERT INTO peg_snapshots_5m(stablecoin_id,price,timestamp,deviation_bps) VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                                    (_sc["id"],_pt[1],_ts,round(abs(_pt[1]-1.0)*10000,2)))
-                            _pg_ok += 1
-                        except Exception: pass
-                        try:
-                            with _dl_gc() as _c:
-                                _c.execute("INSERT INTO market_chart_history(coin_id,stablecoin_id,timestamp,price,granularity) VALUES(%s,%s,%s,%s,'5min') ON CONFLICT DO NOTHING",
-                                    (_sc["coingecko_id"],_sc["id"],_ts,_pt[1]))
-                            _mc_ok += 1
-                        except Exception: pass
+                                _c.executemany(
+                                    "INSERT INTO peg_snapshots_5m(stablecoin_id,price,timestamp,deviation_bps) "
+                                    "VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                                    _peg_rows,
+                                )
+                                _c.executemany(
+                                    "INSERT INTO market_chart_history(coin_id,stablecoin_id,timestamp,price,granularity) "
+                                    "VALUES(%s,%s,%s,%s,'5min') ON CONFLICT DO NOTHING",
+                                    _mc_rows,
+                                )
+                            _pg_ok += len(_peg_rows)
+                            _mc_ok += len(_mc_rows)
+                        except Exception as _ei:
+                            logger.error(f"peg/mchart bulk insert fail {_sc['id']}: {_ei}")
+                    logger.error(f"peg/mchart {_sc['id']}: {len(_peg_rows)} rows in {time.time()-_coin_start:.1f}s")
                 except Exception as _e: logger.error(f"peg fail {_sc['id']}: {_e}")
                 await asyncio.sleep(0.15)
-        logger.error(f"=== PEG: {_pg_ok}, MCHART: {_mc_ok} ===")
+        logger.error(f"=== PEG: {_pg_ok}, MCHART: {_mc_ok}, elapsed={time.time()-_mc_start:.1f}s ===")
     except Exception as _e5: logger.error(f"=== PEG FAILED: {_e5} ===")
 
     # ==== 6. LIQUIDITY DEPTH (CEX tickers) ====

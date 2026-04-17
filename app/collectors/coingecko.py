@@ -257,8 +257,12 @@ async def collect_liquidity_components(
     
     md = current.get("market_data", {})
     
-    # Market Cap
-    market_cap = md.get("market_cap", {}).get("usd", 0)
+    # Coerce None to 0 for illiquid assets (e.g. stkgho returns null fields)
+    market_cap = md.get("market_cap", {}).get("usd") or 0
+    volume = md.get("total_volume", {}).get("usd") or 0
+    circ = md.get("circulating_supply") or 0
+    total = md.get("total_supply") or 0
+
     components.append({
         "component_id": "market_cap",
         "category": "liquidity",
@@ -268,9 +272,8 @@ async def collect_liquidity_components(
         }), 2),
         "data_source": "coingecko",
     })
-    
+
     # 24h Volume
-    volume = md.get("total_volume", {}).get("usd", 0)
     components.append({
         "component_id": "volume_24h",
         "category": "liquidity",
@@ -280,9 +283,9 @@ async def collect_liquidity_components(
         }), 2),
         "data_source": "coingecko",
     })
-    
+
     # Volume/MCap Ratio
-    if market_cap > 0:
+    if market_cap and market_cap > 0 and volume is not None:
         ratio = volume / market_cap
         components.append({
             "component_id": "volume_mcap_ratio",
@@ -291,11 +294,9 @@ async def collect_liquidity_components(
             "normalized_score": round(min(100, normalize_linear(ratio, 0.01, 0.15)), 2),
             "data_source": "coingecko",
         })
-    
+
     # Circulating/Total Ratio
-    circ = md.get("circulating_supply", 0)
-    total = md.get("total_supply", 0)
-    if total > 0:
+    if total and total > 0 and circ is not None:
         circ_ratio = circ / total
         components.append({
             "component_id": "circulating_ratio",
@@ -350,10 +351,14 @@ async def collect_liquidity_components(
                 "data_source": "coingecko",
             })
         
-        # Volume Concentration
+        # Volume Concentration (guard against None values)
         volumes = sorted(
-            [t.get("converted_volume", {}).get("usd", 0) for t in tickers if t.get("converted_volume", {}).get("usd", 0) > 0],
-            reverse=True
+            [
+                (t.get("converted_volume") or {}).get("usd") or 0
+                for t in tickers
+                if ((t.get("converted_volume") or {}).get("usd") or 0) > 0
+            ],
+            reverse=True,
         )
         if len(volumes) >= 3:
             total_vol = sum(volumes)
