@@ -375,17 +375,27 @@ def check_exchange_regulatory(entity_slug: str, exchange_names: list[str] = None
 
     # Store evidence in regulatory_registry_checks
     try:
+        # Ensure unique constraint exists (expression index doesn't work with ON CONFLICT)
+        try:
+            execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_check_entity_registry_simple
+                ON regulatory_registry_checks(entity_slug, registry_name)
+            """)
+        except Exception:
+            pass
+
         execute("""
             INSERT INTO regulatory_registry_checks
                 (entity_slug, entity_type, registry_name, registry_url,
                  is_listed, license_type, enforcement_actions, raw_content, checked_at)
             VALUES (%s, 'cex', 'sec_edgar', 'https://efts.sec.gov',
                     %s, %s, %s, %s, NOW())
-            ON CONFLICT (entity_slug, registry_name, checked_at::date) DO UPDATE SET
+            ON CONFLICT (entity_slug, registry_name) DO UPDATE SET
                 is_listed = EXCLUDED.is_listed,
                 license_type = EXCLUDED.license_type,
                 enforcement_actions = EXCLUDED.enforcement_actions,
-                raw_content = EXCLUDED.raw_content
+                raw_content = EXCLUDED.raw_content,
+                checked_at = EXCLUDED.checked_at
         """, (
             entity_slug,
             sec_data.get("registered", False),
@@ -393,8 +403,9 @@ def check_exchange_regulatory(entity_slug: str, exchange_names: list[str] = None
             json.dumps({"count": enforcement_count}),
             json.dumps(disclosure.get("details", {})),
         ))
+        logger.error(f"[regulatory] stored check for {entity_slug}/sec_edgar")
     except Exception as e:
-        logger.debug(f"Regulatory evidence store failed for {entity_slug}: {e}")
+        logger.error(f"Regulatory evidence store failed for {entity_slug}: {e}")
 
     _reg_cache[entity_slug] = (time.time(), results)
 
