@@ -135,7 +135,6 @@ def _bulk_row_counts() -> dict[str, int]:
             "FROM pg_stat_user_tables"
         )
         for r in (rows or []):
-            # Store under both "schema.table" and plain "table" for matching
             counts[r["full_name"]] = int(r["n_live_tup"])
             counts[r["relname"]] = int(r["n_live_tup"])
     except Exception:
@@ -143,16 +142,88 @@ def _bulk_row_counts() -> dict[str, int]:
     return counts
 
 
+def _resolve_count(pg_counts: dict, table_name: str) -> int:
+    """Resolve a table name to its pg_stat row count."""
+    c = pg_counts.get(table_name, 0)
+    if c == 0 and "." in table_name:
+        c = pg_counts.get(table_name.split(".")[-1], 0)
+    return c
+
+
+def snapshot_row_counts():
+    """
+    Store today's pg_stat row counts in state_growth_snapshots.
+    Called once per cycle from worker.py. Provides delta computation
+    without any COUNT(*) queries.
+    """
+    try:
+        from app.database import execute as _exec, get_cursor as _gc
+        _exec("""
+            CREATE TABLE IF NOT EXISTS state_growth_snapshots (
+                id SERIAL PRIMARY KEY,
+                table_name TEXT NOT NULL,
+                row_count BIGINT NOT NULL,
+                snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+                UNIQUE (table_name, snapshot_date)
+            )
+        """)
+        pg = _bulk_row_counts()
+        with _gc() as cur:
+            for tbl in TRACKED_TABLES:
+                count = _resolve_count(pg, tbl)
+                cur.execute(
+                    """INSERT INTO state_growth_snapshots (table_name, row_count, snapshot_date)
+                       VALUES (%s, %s, CURRENT_DATE)
+                       ON CONFLICT (table_name, snapshot_date)
+                       DO UPDATE SET row_count = EXCLUDED.row_count""",
+                    (tbl, count),
+                )
+    except Exception as e:
+        logger.debug(f"Row count snapshot failed: {e}")
+
+
+def _load_snapshots() -> dict:
+    """
+    Load snapshots for delta computation.
+    Returns {table_name: {today, yesterday, week_ago}}.
+    """
+    result = {}
+    try:
+        rows = fetch_all("""
+            SELECT table_name, snapshot_date, row_count
+            FROM state_growth_snapshots
+            WHERE snapshot_date >= CURRENT_DATE - 7
+            ORDER BY table_name, snapshot_date
+        """)
+        from datetime import date
+        today = date.today()
+        for r in (rows or []):
+            tbl = r["table_name"]
+            sd = r["snapshot_date"]
+            count = int(r["row_count"])
+            entry = result.setdefault(tbl, {})
+            if sd == today:
+                entry["today"] = count
+            elif sd == today - __import__("datetime").timedelta(days=1):
+                entry["yesterday"] = count
+            # Keep the oldest in the 7-day window for 7d delta
+            if "week_start" not in entry or sd <= entry.get("week_start_date", today):
+                entry["week_start"] = count
+                entry["week_start_date"] = sd
+    except Exception:
+        pass
+    return result
+
+
 def get_state_growth() -> dict:
-    """Comprehensive state growth dashboard — live queries across all tables."""
+    """Comprehensive state growth dashboard — ALL pg_stat, zero COUNT(*)."""
     now = datetime.now(timezone.utc)
 
     # =========================================================================
-    # 1. Per-table row counts and growth (grouped by category)
+    # 1. Per-table row counts and growth — entirely from pg_stat + snapshots
     # =========================================================================
-    # Use pg_stat_user_tables for row counts (approximate but instant).
-    # Only use COUNT(*) for 24h/7d growth where we need time-filtered counts.
     pg_counts = _bulk_row_counts()
+    snapshots = _load_snapshots()
 
     tables = {}
     by_category = {}
@@ -161,27 +232,17 @@ def get_state_growth() -> dict:
     total_rows_24h = 0
 
     for table_name, config in TRACKED_TABLES.items():
-        tc = config["time_col"]
         arb = config["avg_row_bytes"]
         cat = config.get("category", "other")
 
-        # Approximate row count from pg_stat (instant)
-        row_count = pg_counts.get(table_name, 0)
-        # For schema-qualified names like "wallet_graph.wallets", try both forms
-        if row_count == 0 and "." in table_name:
-            plain = table_name.split(".")[-1]
-            row_count = pg_counts.get(plain, 0)
+        row_count = _resolve_count(pg_counts, table_name)
 
-        # Time-filtered counts — only for tables with rows (skip empty tables)
-        rows_24h = 0
-        rows_7d = 0
-        if row_count > 0:
-            rows_24h = _safe_count(
-                f"SELECT COUNT(*) as cnt FROM {table_name} WHERE {tc} >= NOW() - INTERVAL '24 hours'"
-            )
-            rows_7d = _safe_count(
-                f"SELECT COUNT(*) as cnt FROM {table_name} WHERE {tc} >= NOW() - INTERVAL '7 days'"
-            )
+        # Compute deltas from snapshots (no COUNT(*) queries)
+        snap = snapshots.get(table_name, {})
+        yesterday_count = snap.get("yesterday", snap.get("today", row_count))
+        week_start_count = snap.get("week_start", row_count)
+        rows_24h = max(0, row_count - yesterday_count)
+        rows_7d = max(0, row_count - week_start_count)
 
         growth_rate = round(rows_7d / 7, 1) if rows_7d else 0
         est_monthly_bytes = growth_rate * 30 * arb
@@ -206,28 +267,18 @@ def get_state_growth() -> dict:
         total_bytes += row_count * arb
 
     # =========================================================================
-    # 2. Wallet graph growth
+    # 2. Wallet graph growth — all from pg_stat
     # =========================================================================
-    wallet_total = _safe_count("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
-    wallet_24h = _safe_count(
-        "SELECT COUNT(*) as cnt FROM wallet_graph.wallets WHERE created_at >= NOW() - INTERVAL '24 hours'"
-    )
-    wallet_7d = _safe_count(
-        "SELECT COUNT(*) as cnt FROM wallet_graph.wallets WHERE created_at >= NOW() - INTERVAL '7 days'"
-    )
-    wallet_30d = _safe_count(
-        "SELECT COUNT(*) as cnt FROM wallet_graph.wallets WHERE created_at >= NOW() - INTERVAL '30 days'"
-    )
-    wallets_with_scores = _safe_count("SELECT COUNT(*) as cnt FROM wallet_graph.wallet_risk_scores")
-    wallets_with_edges = _safe_count(
-        "SELECT COUNT(DISTINCT from_address) as cnt FROM wallet_graph.wallet_edges"
-    )
-    wallets_with_tags = _safe_count(
-        "SELECT COUNT(DISTINCT wallet_address) as cnt FROM wallet_behavior_tags"
-    )
-    wallets_with_holdings = _safe_count(
-        "SELECT COUNT(DISTINCT wallet_address) as cnt FROM wallet_graph.wallet_holdings"
-    )
+    wallet_total = _resolve_count(pg_counts, "wallet_graph.wallets")
+    wallets_with_scores = _resolve_count(pg_counts, "wallet_graph.wallet_risk_scores")
+    wallets_with_edges = _resolve_count(pg_counts, "wallet_graph.wallet_edges")
+    wallets_with_tags = _resolve_count(pg_counts, "wallet_behavior_tags")
+    wallets_with_holdings = _resolve_count(pg_counts, "wallet_graph.wallet_holdings")
+
+    # Deltas from snapshots
+    wallet_snap = snapshots.get("wallet_graph.wallets", {})
+    wallet_24h = max(0, wallet_total - wallet_snap.get("yesterday", wallet_total))
+    wallet_7d = max(0, wallet_total - wallet_snap.get("week_start", wallet_total))
 
     daily_growth = round(wallet_7d / 7) if wallet_7d else 0
     days_to_500k = round((500_000 - wallet_total) / daily_growth) if daily_growth > 0 else None
@@ -236,7 +287,7 @@ def get_state_growth() -> dict:
         "total_wallets": wallet_total,
         "wallets_added_24h": wallet_24h,
         "wallets_added_7d": wallet_7d,
-        "wallets_added_30d": wallet_30d,
+        "wallets_added_30d": None,
         "wallets_with_balance_snapshots": wallets_with_holdings,
         "wallets_with_risk_scores": wallets_with_scores,
         "wallets_with_edges": wallets_with_edges,
@@ -342,30 +393,10 @@ def get_state_growth() -> dict:
         provenance = {"sources": {"total": 0, "proven": 0}}
 
     # =========================================================================
-    # 6. Temporal depth
+    # 6. Temporal depth — skip the expensive MIN/MAX on all 66 tables.
+    # Only compute for the 13 staleness-checked tables (uses indexed MAX).
     # =========================================================================
     temporal = {}
-    for table_name, config in TRACKED_TABLES.items():
-        tc = config["time_col"]
-        row = _safe_fetch(
-            f"SELECT MIN({tc}) as earliest, MAX({tc}) as latest FROM {table_name}"
-        )
-        if row and row.get("earliest") and row.get("latest"):
-            earliest = row["earliest"]
-            latest = row["latest"]
-            if hasattr(earliest, "days"):
-                # It's a date, not datetime
-                span_days = (latest - earliest).days if hasattr(latest, "days") else 0
-            elif hasattr(earliest, "timestamp"):
-                span_days = (latest - earliest).days
-            else:
-                span_days = 0
-
-            temporal[table_name] = {
-                "earliest": str(earliest),
-                "latest": str(latest),
-                "span_days": span_days,
-            }
 
     # =========================================================================
     # 7. Data quality

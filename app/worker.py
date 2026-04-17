@@ -1161,6 +1161,13 @@ async def run_fast_cycle():
     except Exception:
         pass
 
+    # Snapshot row counts for dashboard delta computation (pg_stat, instant)
+    try:
+        from app.data_layer.state_growth import snapshot_row_counts
+        snapshot_row_counts()
+    except Exception:
+        pass
+
     # One-time diagnostic: data layer table row counts via pg_stat (instant, no scan)
     try:
         from app.database import fetch_all as _diag_fa
