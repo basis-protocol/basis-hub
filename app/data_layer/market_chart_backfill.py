@@ -91,45 +91,62 @@ def _safe_float(val):
 
 
 def _store_market_chart_records(records: list[dict]):
-    """Store market chart history records (per-row transactions)."""
+    """Store market chart history records — batched into one transaction."""
     if not records:
         return
 
+    import time as _t
     from app.database import get_cursor
 
-    stored = 0
-    errors = 0
+    _start = _t.monotonic()
 
+    # Build batch with sanitized values
+    rows = []
     for rec in records:
-        try:
-            with get_cursor() as cur:
-                cur.execute(
-                    """INSERT INTO market_chart_history
-                       (coin_id, stablecoin_id, timestamp, price, market_cap,
-                        total_volume, granularity)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (coin_id, timestamp, granularity) DO UPDATE SET
-                           price = EXCLUDED.price,
-                           market_cap = EXCLUDED.market_cap,
-                           total_volume = EXCLUDED.total_volume""",
-                    (
-                        rec["coin_id"], rec.get("stablecoin_id"),
-                        rec["timestamp"], _safe_float(rec.get("price")),
-                        _safe_float(rec.get("market_cap")),
-                        _safe_float(rec.get("total_volume")),
-                        rec["granularity"],
-                    ),
-                )
-            stored += 1
-        except Exception as e:
-            errors += 1
-            if errors <= 3:
-                logger.error(f"Failed to store market_chart record coin={rec.get('coin_id')}: {e}")
+        rows.append((
+            rec["coin_id"], rec.get("stablecoin_id"),
+            rec["timestamp"], _safe_float(rec.get("price")),
+            _safe_float(rec.get("market_cap")),
+            _safe_float(rec.get("total_volume")),
+            rec["granularity"],
+        ))
 
-    if errors:
-        logger.error(f"market_chart_history: stored={stored}, errors={errors} out of {len(records)}")
-    else:
-        logger.info(f"Stored {stored} market chart records")
+    stored = 0
+    try:
+        with get_cursor() as cur:
+            cur.executemany(
+                """INSERT INTO market_chart_history
+                   (coin_id, stablecoin_id, timestamp, price, market_cap,
+                    total_volume, granularity)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (coin_id, timestamp, granularity) DO UPDATE SET
+                       price = EXCLUDED.price,
+                       market_cap = EXCLUDED.market_cap,
+                       total_volume = EXCLUDED.total_volume""",
+                rows,
+            )
+        stored = len(rows)
+    except Exception as batch_err:
+        logger.error(f"market_chart batch insert failed, falling back to per-row: {batch_err}")
+        for row in rows:
+            try:
+                with get_cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO market_chart_history
+                           (coin_id, stablecoin_id, timestamp, price, market_cap,
+                            total_volume, granularity)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (coin_id, timestamp, granularity) DO UPDATE SET
+                               price = EXCLUDED.price, market_cap = EXCLUDED.market_cap,
+                               total_volume = EXCLUDED.total_volume""",
+                        row,
+                    )
+                stored += 1
+            except Exception:
+                pass
+
+    elapsed = _t.monotonic() - _start
+    logger.error(f"market_chart_history: {stored}/{len(rows)} stored in {elapsed:.1f}s")
 
 
 def _compute_volatility_from_prices(

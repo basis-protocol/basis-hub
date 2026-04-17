@@ -139,6 +139,24 @@ def _bulk_row_counts() -> dict[str, int]:
             counts[r["relname"]] = int(r["n_live_tup"])
     except Exception:
         pass
+
+    # Override pg_stat for tables with DELETE+INSERT churn patterns.
+    # pg_stat n_live_tup inflates massively between VACUUM cycles for these.
+    TABLE_COUNT_OVERRIDES = {
+        "wallet_graph.wallet_risk_scores": "SELECT COUNT(DISTINCT wallet_address) as cnt FROM wallet_graph.wallet_risk_scores",
+        "wallet_graph.wallet_holdings": "SELECT COUNT(DISTINCT wallet_address || token_address) as cnt FROM wallet_graph.wallet_holdings WHERE public.immutable_date(indexed_at) = CURRENT_DATE",
+    }
+    for table_name, query in TABLE_COUNT_OVERRIDES.items():
+        try:
+            row = fetch_one(query)
+            if row and row.get("cnt") is not None:
+                real_count = int(row["cnt"])
+                counts[table_name] = real_count
+                plain = table_name.split(".")[-1] if "." in table_name else table_name
+                counts[plain] = real_count
+        except Exception:
+            pass
+
     return counts
 
 

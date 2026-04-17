@@ -712,22 +712,41 @@ async def run_fast_cycle():
         _rel = [p for p in _pools if (p.get("stablecoin") or any(
             s in (p.get("symbol","").upper()) for s in ["USDC","USDT","DAI","FRAX"]
         )) and (p.get("tvlUsd") or 0) >= 1_000_000][:200]
-        _ys_ok, _ys_err = 0, 0
+        _ys_start = time.time()
+        _ys_rows = []
         for _p in _rel:
-            try:
-                with _dl_gc() as _c:
-                    _c.execute("""INSERT INTO yield_snapshots
-                        (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
-                        ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
-                        (_p.get("pool",""),_p.get("project",""),_p.get("chain",""),_p.get("symbol",""),
-                         _sn(_p.get("apy")),_sn(_p.get("apyBase")),_sn(_p.get("apyReward")),
-                         _sn(_p.get("tvlUsd")),_p.get("stablecoin",False)))
-                _ys_ok += 1
-            except Exception as _e:
-                _ys_err += 1
-                if _ys_err <= 3: logger.error(f"yield fail: {_e}")
-        logger.error(f"=== YIELDS: {_ys_ok} ok, {_ys_err} err, total={_dl_fo('SELECT COUNT(*) as c FROM yield_snapshots')} ===")
+            _ys_rows.append((
+                _p.get("pool",""), _p.get("project",""), _p.get("chain",""), _p.get("symbol",""),
+                _sn(_p.get("apy")), _sn(_p.get("apyBase")), _sn(_p.get("apyReward")),
+                _sn(_p.get("tvlUsd")), _p.get("stablecoin", False),
+            ))
+        _ys_ok = 0
+        try:
+            with _dl_gc() as _c:
+                _c.executemany(
+                    """INSERT INTO yield_snapshots
+                       (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                       ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
+                    _ys_rows,
+                )
+            _ys_ok = len(_ys_rows)
+        except Exception as _yb:
+            logger.error(f"yield batch failed, falling back to per-row: {_yb}")
+            for _yr in _ys_rows:
+                try:
+                    with _dl_gc() as _c:
+                        _c.execute(
+                            """INSERT INTO yield_snapshots
+                               (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
+                               VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                               ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
+                            _yr,
+                        )
+                    _ys_ok += 1
+                except Exception:
+                    pass
+        logger.error(f"=== YIELDS: {_ys_ok}/{len(_ys_rows)} in {time.time()-_ys_start:.1f}s ===")
     except Exception as _e3: logger.error(f"=== YIELDS FAILED: {_e3} ===")
 
     # ==== 4. BRIDGE FLOWS (DeFiLlama — free endpoint) ====
@@ -2430,14 +2449,28 @@ async def main():
     except Exception as e:
         logger.debug(f"API usage table creation skipped: {e}")
 
-    # Run ANALYZE on key tables so pg_stat_user_tables.n_live_tup is fresh
+    # VACUUM ANALYZE churny tables (DELETE+INSERT pattern inflates pg_stat)
+    # then ANALYZE the rest so n_live_tup is fresh
     try:
         from app.database import get_cursor as _analyze_gc
         with _analyze_gc() as cur:
+            # VACUUM ANALYZE for tables with DELETE+INSERT churn
+            for _tbl in [
+                "wallet_graph.wallet_risk_scores",
+                "wallet_graph.wallet_holdings",
+            ]:
+                try:
+                    cur.execute("COMMIT")  # VACUUM can't run inside a transaction
+                    cur.execute(f"VACUUM ANALYZE {_tbl}")
+                except Exception:
+                    try:
+                        cur.execute(f"ANALYZE {_tbl}")
+                    except Exception:
+                        pass
+            # Regular ANALYZE for other key tables
             for _tbl in [
                 "component_readings", "score_history", "scores", "psi_scores",
-                "wallet_graph.wallets", "wallet_graph.wallet_risk_scores",
-                "wallet_graph.wallet_edges", "wallet_graph.wallet_holdings",
+                "wallet_graph.wallets", "wallet_graph.wallet_edges",
                 "entity_snapshots_hourly", "data_provenance", "state_attestations",
                 "provenance_proofs", "assessment_events",
             ]:
@@ -2445,7 +2478,7 @@ async def main():
                     cur.execute(f"ANALYZE {_tbl}")
                 except Exception:
                     pass
-        logger.info("ANALYZE complete on key tables — pg_stat refreshed")
+        logger.info("VACUUM ANALYZE complete on churny tables, ANALYZE on key tables")
     except Exception as e:
         logger.debug(f"ANALYZE skipped: {e}")
 
