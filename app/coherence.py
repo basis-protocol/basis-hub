@@ -195,9 +195,9 @@ def _check_sii_psi_alignment() -> list[dict]:
     try:
         stale_sii = fetch_all(
             """
-            SELECT stablecoin_id, calculated_at
+            SELECT stablecoin_id, computed_at
             FROM scores
-            WHERE calculated_at < NOW() - INTERVAL '6 hours'
+            WHERE computed_at < NOW() - INTERVAL '6 hours'
             """
         )
         for row in stale_sii:

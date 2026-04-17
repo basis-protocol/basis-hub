@@ -91,7 +91,7 @@ DATA_SOURCE_REGISTRY = {
     "scores": {
         "table": "scores",
         "entity_col": "stablecoin_id",
-        "time_col": "calculated_at",
+        "time_col": "computed_at",
         "metrics": ["overall_score", "peg_score", "liquidity_score", "structural_score"],
         "entity_type": "stablecoin",
     },
@@ -351,7 +351,7 @@ def _get_latest_metric(
     allowed_metrics = set()
     for s in DATA_SOURCE_REGISTRY.values():
         allowed_metrics.update(s["metrics"])
-    allowed_time_cols = {"timestamp", "snapshot_at", "collected_at", "computed_at", "calculated_at", "scored_at"}
+    allowed_time_cols = {"timestamp", "snapshot_at", "collected_at", "computed_at", "computed_at", "scored_at"}
 
     if table not in allowed_tables:
         return None
