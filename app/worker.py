@@ -2368,6 +2368,39 @@ async def main():
     except Exception as e:
         logger.debug(f"API usage table creation skipped: {e}")
 
+    # Run ANALYZE on key tables so pg_stat_user_tables.n_live_tup is fresh
+    try:
+        from app.database import get_cursor as _analyze_gc
+        with _analyze_gc() as cur:
+            for _tbl in [
+                "component_readings", "score_history", "scores", "psi_scores",
+                "wallet_graph.wallets", "wallet_graph.wallet_risk_scores",
+                "wallet_graph.wallet_edges", "wallet_graph.wallet_holdings",
+                "entity_snapshots_hourly", "data_provenance", "state_attestations",
+                "provenance_proofs", "assessment_events",
+            ]:
+                try:
+                    cur.execute(f"ANALYZE {_tbl}")
+                except Exception:
+                    pass
+        logger.info("ANALYZE complete on key tables — pg_stat refreshed")
+    except Exception as e:
+        logger.debug(f"ANALYZE skipped: {e}")
+
+    # Create state_growth_snapshots table if needed
+    try:
+        execute("""
+            CREATE TABLE IF NOT EXISTS state_growth_snapshots (
+                id SERIAL PRIMARY KEY,
+                table_name TEXT NOT NULL,
+                row_count BIGINT NOT NULL,
+                snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+                UNIQUE (table_name, snapshot_date)
+            )
+        """)
+    except Exception:
+        pass
+
     # Seed email alert channel if not configured
     try:
         existing = fetch_one("SELECT id FROM ops_alert_config WHERE channel = 'email'")

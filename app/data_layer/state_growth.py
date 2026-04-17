@@ -186,6 +186,7 @@ def _load_snapshots() -> dict:
     """
     Load snapshots for delta computation.
     Returns {table_name: {today, yesterday, week_ago}}.
+    Falls back to daily_pulses state_accumulation if no snapshots exist yet.
     """
     result = {}
     try:
@@ -195,7 +196,7 @@ def _load_snapshots() -> dict:
             WHERE snapshot_date >= CURRENT_DATE - 7
             ORDER BY table_name, snapshot_date
         """)
-        from datetime import date
+        from datetime import date, timedelta
         today = date.today()
         for r in (rows or []):
             tbl = r["table_name"]
@@ -204,14 +205,55 @@ def _load_snapshots() -> dict:
             entry = result.setdefault(tbl, {})
             if sd == today:
                 entry["today"] = count
-            elif sd == today - __import__("datetime").timedelta(days=1):
+            elif sd == today - timedelta(days=1):
                 entry["yesterday"] = count
-            # Keep the oldest in the 7-day window for 7d delta
             if "week_start" not in entry or sd <= entry.get("week_start_date", today):
                 entry["week_start"] = count
                 entry["week_start_date"] = sd
     except Exception:
         pass
+
+    # If no snapshot history yet, seed from daily_pulses state_accumulation
+    has_yesterday = any("yesterday" in v for v in result.values())
+    if not has_yesterday:
+        try:
+            pulse = fetch_one(
+                "SELECT summary FROM daily_pulses WHERE pulse_date = CURRENT_DATE - 1 ORDER BY pulse_date DESC LIMIT 1"
+            )
+            if pulse and pulse.get("summary"):
+                s = pulse["summary"]
+                if isinstance(s, str):
+                    s = json.loads(s)
+                sa = s.get("state_accumulation", {})
+                ns = s.get("network_state", {})
+                # Map pulse field names to TRACKED_TABLES names
+                pulse_to_table = {
+                    "score_history": "score_history",
+                    "component_readings": "component_readings",
+                    "assessment_events": "assessment_events",
+                    "cda_extractions": "cda_vendor_extractions",
+                    "discovery_signals": "discovery_signals",
+                    "historical_prices": "historical_prices",
+                    "collateral_exposure": "protocol_collateral_exposure",
+                    "treasury_holdings": "protocol_treasury_holdings",
+                    "protocol_backlog": "protocol_backlog",
+                    "wallet_profiles": "wallet_graph.wallet_profiles",
+                    "daily_pulses": "daily_pulses",
+                }
+                for pulse_key, table_name in pulse_to_table.items():
+                    val = sa.get(pulse_key, 0)
+                    if val and isinstance(val, (int, float)):
+                        result.setdefault(table_name, {})["yesterday"] = int(val)
+                # Network state fields
+                if ns.get("wallets_indexed"):
+                    result.setdefault("wallet_graph.wallets", {})["yesterday"] = int(ns["wallets_indexed"])
+                if ns.get("wallets_scored"):
+                    result.setdefault("wallet_graph.wallet_risk_scores", {})["yesterday"] = int(ns["wallets_scored"])
+                if ns.get("edge_count"):
+                    result.setdefault("wallet_graph.wallet_edges", {})["yesterday"] = int(ns["edge_count"])
+        except Exception:
+            pass
+
     return result
 
 

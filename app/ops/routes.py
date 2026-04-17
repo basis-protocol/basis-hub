@@ -1595,6 +1595,35 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
         except Exception as dlx:
             data_layer_live = {"error": str(dlx)}
 
+        # Reconciliation: compare daily_pulses state_accumulation with live pg_stat
+        try:
+            if day_entries and data_layer_live.get("tables"):
+                newest_breakdown = day_entries[0].get("breakdown", {})
+                live_tables = data_layer_live["tables"]
+                mismatches = []
+                pulse_to_live = {
+                    "component_readings": "component_readings",
+                    "score_history": "score_history",
+                    "assessment_events": "assessment_events",
+                }
+                for pulse_key, live_key in pulse_to_live.items():
+                    pulse_val = newest_breakdown.get(pulse_key, {}).get("value", 0)
+                    live_val = live_tables.get(live_key, {}).get("row_count", 0)
+                    if pulse_val and live_val:
+                        diff_pct = abs(pulse_val - live_val) / max(pulse_val, 1) * 100
+                        if diff_pct > 5:
+                            mismatches.append(f"{pulse_key}: pulse={pulse_val} pg_stat={live_val} diff={diff_pct:.1f}%")
+                if mismatches:
+                    logger.error(f"=== DASHBOARD RECONCILIATION: {len(mismatches)} mismatches ===")
+                    for m in mismatches:
+                        logger.error(f"  {m}")
+                    logger.error("Pulse values are from daily snapshot, pg_stat values are live estimates. "
+                                 "Run ANALYZE to refresh pg_stat. Mismatches >5% may indicate stale statistics.")
+                else:
+                    logger.info("Dashboard reconciliation: pulse and pg_stat agree within 5%")
+        except Exception as reconcile_err:
+            logger.debug(f"Dashboard reconciliation skipped: {reconcile_err}")
+
         return {
             "days": day_entries,
             "summary": {
