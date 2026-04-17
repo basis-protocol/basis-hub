@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0x7a240a4c718042ae048b2936b746f69b8d235bcf11f424454d1253ee86d32f88",
+  "crisis_date": "2021-01-29",
+  "crisis_label": "Basis Cash (BAC) Failed Stable",
+  "crisis_slug": "basis-cash",
+  "delta": -37.0,
+  "entity_slug": "bac",
+  "final_grade": "F",
+  "final_score": 7.0,
+  "index_kind": "sii",
+  "input_vector_hash": "0x7b92c38aeea4da4a705a035b90f98e015b077aff8795090cdb69dd4570f96f3b",
+  "methodology_version": "v1.0.0",
+  "pre_crisis_score": 44.0,
+  "summary": "Three-token seigniorage design failed to recover peg; project effectively defunct."
+}

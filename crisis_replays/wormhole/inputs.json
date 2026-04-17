@@ -1,0 +1,15 @@
+{
+  "components": {
+    "audit_recency_days": 90,
+    "exploit_loss_usd": 326000000,
+    "guardian_count": 19.0,
+    "incident_severity": 100.0,
+    "tvl": 1000000000
+  },
+  "crisis_date": "2022-02-02",
+  "crisis_label": "Wormhole Bridge Exploit",
+  "crisis_slug": "wormhole",
+  "entity_slug": "wormhole",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

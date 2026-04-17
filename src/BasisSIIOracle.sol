@@ -285,6 +285,132 @@ contract BasisOracle is IBasisSIIOracle {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // TRACK RECORD COMMITMENTS (Oracle V2 — Bucket A1)
+    // ═══════════════════════════════════════════════════════════
+    //
+    // Every consequential event the platform makes a "call" on (a divergence
+    // signal, a meaningful score move, a coherence drop, an RPI delta) is
+    // hashed and anchored on-chain so the public can verify after the fact.
+    // The hash binds the event payload to the state root that was live at
+    // the moment of the call, so reviewers can re-derive both.
+
+    struct TrackRecord {
+        bytes32 eventHash;           // sha256 of canonical event payload
+        bytes32 stateRootAtEvent;    // state root that was current at the event
+        uint48  eventTimestamp;      // platform's logical event time
+        uint48  committedAt;         // block timestamp of the commit
+        bytes4  eventType;           // 4-byte tag: 'DIVG', 'RPID', 'COHD', 'SCRC'
+    }
+
+    mapping(bytes32 => TrackRecord) public trackRecords;
+    bytes32[] public trackRecordHashes;
+
+    event TrackRecordPublished(
+        bytes32 indexed eventHash,
+        bytes4  indexed eventType,
+        bytes32 stateRootAtEvent,
+        uint48  eventTimestamp,
+        uint48  committedAt
+    );
+
+    /// @notice Anchor a track-record event on-chain.
+    /// @param eventHash      sha256 of the canonical event payload (off-chain)
+    /// @param stateRootAtEvent The state root that was live at the moment of the call
+    /// @param eventType      4-byte event-type tag (e.g. bytes4("DIVG"))
+    /// @param eventTimestamp Platform's logical event time (unix seconds)
+    function publishTrackRecord(
+        bytes32 eventHash,
+        bytes32 stateRootAtEvent,
+        bytes4  eventType,
+        uint48  eventTimestamp
+    ) external onlyKeeper whenNotPaused {
+        require(eventHash != bytes32(0), "Basis: zero event hash");
+        require(eventTimestamp <= uint48(block.timestamp), "Basis: future event");
+        require(trackRecords[eventHash].eventTimestamp == 0, "Basis: duplicate event");
+
+        trackRecords[eventHash] = TrackRecord({
+            eventHash: eventHash,
+            stateRootAtEvent: stateRootAtEvent,
+            eventTimestamp: eventTimestamp,
+            committedAt: uint48(block.timestamp),
+            eventType: eventType
+        });
+        trackRecordHashes.push(eventHash);
+
+        emit TrackRecordPublished(eventHash, eventType, stateRootAtEvent, eventTimestamp, uint48(block.timestamp));
+    }
+
+    function getTrackRecord(bytes32 eventHash) external view returns (
+        bytes32 stateRootAtEvent,
+        bytes4  eventType,
+        uint48  eventTimestamp,
+        uint48  committedAt
+    ) {
+        TrackRecord memory r = trackRecords[eventHash];
+        return (r.stateRootAtEvent, r.eventType, r.eventTimestamp, r.committedAt);
+    }
+
+    function trackRecordCount() external view returns (uint256) {
+        return trackRecordHashes.length;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // DISPUTE COMMITMENTS (Oracle V2 — Bucket A4)
+    // ═══════════════════════════════════════════════════════════
+    //
+    // Every dispute state transition (submission, counter-evidence,
+    // resolution) is hashed off-chain and the hash anchored here so
+    // an external observer can verify that the audit trail Basis
+    // displays matches what was committed on-chain.
+
+    struct DisputeCommitment {
+        bytes32 commitmentHash;
+        uint48  committedAt;
+        bytes4  transitionKind;   // 'SUBM', 'CTRE', 'RSLV'
+    }
+
+    // disputeId => transitionKind => commitment
+    mapping(bytes32 => mapping(bytes4 => DisputeCommitment)) public disputeCommits;
+
+    event DisputeCommitmentPublished(
+        bytes32 indexed disputeId,
+        bytes4  indexed transitionKind,
+        bytes32 commitmentHash,
+        uint48  committedAt
+    );
+
+    /// @notice Anchor a dispute state transition.
+    /// @param disputeId       keccak256 identifier of the dispute (off-chain DB id hashed)
+    /// @param transitionKind  4-byte tag: 'SUBM', 'CTRE', 'RSLV'
+    /// @param commitmentHash  sha256 of the canonical transition payload
+    function publishDisputeHash(
+        bytes32 disputeId,
+        bytes4  transitionKind,
+        bytes32 commitmentHash
+    ) external onlyKeeper whenNotPaused {
+        require(commitmentHash != bytes32(0), "Basis: zero commitment");
+        // Each (disputeId, transitionKind) is write-once. Resolutions can be
+        // re-keyed off-chain if needed, but the audit trail here is append-only.
+        require(disputeCommits[disputeId][transitionKind].committedAt == 0, "Basis: transition already committed");
+
+        disputeCommits[disputeId][transitionKind] = DisputeCommitment({
+            commitmentHash: commitmentHash,
+            committedAt: uint48(block.timestamp),
+            transitionKind: transitionKind
+        });
+
+        emit DisputeCommitmentPublished(disputeId, transitionKind, commitmentHash, uint48(block.timestamp));
+    }
+
+    function getDisputeCommitment(
+        bytes32 disputeId,
+        bytes4  transitionKind
+    ) external view returns (bytes32 commitmentHash, uint48 committedAt) {
+        DisputeCommitment memory c = disputeCommits[disputeId][transitionKind];
+        return (c.commitmentHash, c.committedAt);
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // ADMIN
     // ═══════════════════════════════════════════════════════════
 

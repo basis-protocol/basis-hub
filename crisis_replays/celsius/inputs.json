@@ -1,0 +1,16 @@
+{
+  "components": {
+    "audit_recency_days": 720,
+    "governance_decentralization": 5.0,
+    "off_balance_sheet_exposure": 90.0,
+    "tvl": 11800000000,
+    "tvl_7d_change": -40.0,
+    "withdrawal_freeze": 100.0
+  },
+  "crisis_date": "2022-06-12",
+  "crisis_label": "Celsius Network Withdrawal Freeze",
+  "crisis_slug": "celsius",
+  "entity_slug": "celsius",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

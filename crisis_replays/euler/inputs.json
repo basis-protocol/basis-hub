@@ -1,0 +1,18 @@
+{
+  "components": {
+    "audit_recency_days": 200,
+    "exploit_loss_usd": 197000000,
+    "governance_decentralization": 50.0,
+    "incident_severity": 95.0,
+    "treasury_total_usd": 5000000,
+    "tvl": 200000000,
+    "tvl_30d_change": -97.0,
+    "tvl_7d_change": -95.0
+  },
+  "crisis_date": "2023-03-13",
+  "crisis_label": "Euler Finance Exploit",
+  "crisis_slug": "euler",
+  "entity_slug": "euler",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

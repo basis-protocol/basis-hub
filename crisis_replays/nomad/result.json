@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0x8661583e17ed61319e366062439e3fc6a1533929c5aa348a059da04f8ef5b606",
+  "crisis_date": "2022-08-01",
+  "crisis_label": "Nomad Bridge Exploit",
+  "crisis_slug": "nomad",
+  "delta": -58.0,
+  "entity_slug": "nomad-bridge",
+  "final_grade": "F",
+  "final_score": 6.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x4899d1bf3be2dcc4f4ce0dfb99fb292467b4213c3492bf82087c00ff12ba981b",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 64.0,
+  "summary": "Replay vulnerability turned the bridge into a public ATM."
+}

@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0x31abfbdabee69041057019bb3c26fcfe4449cd5257af247734c0e6a2f5b81341",
+  "crisis_date": "2023-03-13",
+  "crisis_label": "Euler Finance Exploit",
+  "crisis_slug": "euler",
+  "delta": -54.0,
+  "entity_slug": "euler",
+  "final_grade": "F",
+  "final_score": 18.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x22ff2c1b930cd79ed9a2c750281fca6984c49471444f08e929499cd1cdd8d907",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 72.0,
+  "summary": "Donate-back exploit drained ~$197M; funds later returned by attacker."
+}

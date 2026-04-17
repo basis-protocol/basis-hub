@@ -28,6 +28,7 @@ export interface KeeperConfig {
   gasLimitPerUpdate: number;
   dryRun: boolean;
   sbtAddress?: string;
+  adminKey?: string;
 }
 
 function requireEnv(key: string): string {
@@ -72,5 +73,7 @@ export function loadConfig(): KeeperConfig {
     dryRun: process.env["DRY_RUN"] === "true",
 
     sbtAddress: process.env["BASE_SBT_ADDRESS"],
+
+    adminKey: process.env["ADMIN_KEY"],
   };
 }

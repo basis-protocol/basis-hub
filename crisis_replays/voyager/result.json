@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xec32497df30862897a67775f3a40c9c99706a7fc0b0293bbff5b6df10354ebe6",
+  "crisis_date": "2022-07-01",
+  "crisis_label": "Voyager Digital Insolvency",
+  "crisis_slug": "voyager",
+  "delta": -35.0,
+  "entity_slug": "voyager",
+  "final_grade": "F",
+  "final_score": 12.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x3c52e825ce6ac922d142eeafb19e0a39bbd9d87fed678b95b857e61756da485f",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 47.0,
+  "summary": "3AC default left Voyager with a $670M unsecured loan; Chapter 11 by July 5."
+}

@@ -1,0 +1,15 @@
+{
+  "components": {
+    "audit_recency_days": 240,
+    "exploit_loss_usd": 100000000,
+    "incident_severity": 100.0,
+    "tvl": 100000000,
+    "validator_concentration_top4_pct": 100.0
+  },
+  "crisis_date": "2022-06-23",
+  "crisis_label": "Harmony Horizon Bridge Exploit",
+  "crisis_slug": "harmony-horizon",
+  "entity_slug": "harmony-horizon",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

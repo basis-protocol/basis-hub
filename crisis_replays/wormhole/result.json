@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xb1d75519368ff28bf04be36cdfdc506415aed69c3304bfb6b720697022524626",
+  "crisis_date": "2022-02-02",
+  "crisis_label": "Wormhole Bridge Exploit",
+  "crisis_slug": "wormhole",
+  "delta": -48.0,
+  "entity_slug": "wormhole",
+  "final_grade": "F",
+  "final_score": 22.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x59e487b890146278a52b96849d69a8ec96a6a7f36fdb7f3107546ba5ad7d42bb",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 70.0,
+  "summary": "Signature verification bypass minted 120K wETH on Solana with no backing."
+}

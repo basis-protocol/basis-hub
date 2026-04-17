@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xead1fc6fa1bd57ee220990f583c2daa82cc47d772cbd8a077693e9e8f3b2e627",
+  "crisis_date": "2022-05-09",
+  "crisis_label": "Terra/Luna Death Spiral",
+  "crisis_slug": "terra-luna",
+  "delta": -58.8,
+  "entity_slug": "ust",
+  "final_grade": "F",
+  "final_score": 12.6,
+  "index_kind": "sii",
+  "input_vector_hash": "0x2197d7ed7805929b257deb509b0c20cda5d9641c36352adccdca91d20e30444e",
+  "methodology_version": "v1.0.0",
+  "pre_crisis_score": 71.4,
+  "summary": "UST broke peg on May 9 2022; algorithmic backing collapsed within 72 hours."
+}

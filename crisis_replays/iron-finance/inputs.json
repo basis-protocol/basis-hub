@@ -1,0 +1,16 @@
+{
+  "components": {
+    "concentration_top10_pct": 70.0,
+    "peg_deviation_pct": 95.0,
+    "peg_volatility_7d": 90.0,
+    "redemption_friction": 100.0,
+    "reserve_quality": 30.0,
+    "smart_contract_audit_score": 40.0
+  },
+  "crisis_date": "2021-06-16",
+  "crisis_label": "Iron Finance / TITAN Bank Run",
+  "crisis_slug": "iron-finance",
+  "entity_slug": "iron",
+  "index_kind": "sii",
+  "methodology_version": "v1.0.0"
+}

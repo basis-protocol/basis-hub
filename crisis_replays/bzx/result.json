@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xf6d9564719b1afcbb8802507380ab4fbb57394ff627153cd21385a64c1b33f84",
+  "crisis_date": "2020-02-15",
+  "crisis_label": "bZx Flash Loan Attacks",
+  "crisis_slug": "bzx",
+  "delta": -31.0,
+  "entity_slug": "bzx",
+  "final_grade": "F",
+  "final_score": 19.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x6fbef243bca5df62785b058d2337deb5f7b7a0f22e958c687a5f845e47aab84e",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 50.0,
+  "summary": "First widely covered DeFi flash-loan exploit; oracle manipulation vector."
+}

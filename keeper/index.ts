@@ -14,7 +14,7 @@ import { logger } from "./logger.js";
 import { sendAlert, checkStaleness } from "./alerter.js";
 import { TOKEN_ADDRESSES } from "./converter.js";
 import { fetchOnChainScores, computeUpdates, type ApiScore } from "./differ.js";
-import { publishUpdates, publishPsiScores, publishReportHashes, publishStateRoot, sleep, type ReportHashUpdate, type PsiScoreUpdate } from "./publisher.js";
+import { publishUpdates, publishPsiScores, publishReportHashes, publishStateRoot, publishTrackRecords, publishDisputeCommitments, sleep, type ReportHashUpdate, type PsiScoreUpdate, type TrackRecordUpdate, type DisputeCommitmentUpdate } from "./publisher.js";
 
 // Hub API response envelope
 interface HubScoresResponse {
@@ -305,8 +305,134 @@ async function runCycle(
     logger.warn("State root publishing failed", { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // 8. Publish track-record commitments (Bucket A1)
+  //    Trigger detector + outcome scorer first, then publish any pending events.
+  try {
+    if (config.adminKey) {
+      await fetch(`${config.apiUrl}/api/admin/track-record/scan?key=${encodeURIComponent(config.adminKey)}`, {
+        method: "POST",
+        signal: AbortSignal.timeout(30_000),
+      }).catch(() => null);
+    }
+    const trUpdates = await fetchTrackRecordUpdates(config.apiUrl, config.adminKey);
+    if (trUpdates.length > 0) {
+      const published = await publishTrackRecords(
+        trUpdates, providerBase, walletBase,
+        config.chains.base.oracleAddress, "base", config
+      );
+      logger.info("Track records published", { count: published });
+      // Mark as committed in the hub. publishTrackRecords returns the per-event tx hashes.
+      if (config.adminKey) {
+        for (const u of trUpdates.slice(0, published)) {
+          await fetch(
+            `${config.apiUrl}/api/admin/track-record/${u.eventId}/mark-committed?key=${encodeURIComponent(config.adminKey)}`,
+            { method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tx_hash: u.txHash || "pending", chain: "base" }),
+              signal: AbortSignal.timeout(5_000) }
+          ).catch(() => null);
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn("Track record publishing failed (non-blocking)", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // 9. Publish dispute commitments (Bucket A4)
+  try {
+    if (config.adminKey) {
+      const dcUpdates = await fetchDisputeCommitments(config.apiUrl, config.adminKey);
+      if (dcUpdates.length > 0) {
+        const published = await publishDisputeCommitments(
+          dcUpdates, providerBase, walletBase,
+          config.chains.base.oracleAddress, "base", config
+        );
+        logger.info("Dispute commitments published", { count: published });
+        for (const u of dcUpdates.slice(0, published)) {
+          await fetch(
+            `${config.apiUrl}/api/admin/disputes/commit/${u.commitId}/published?key=${encodeURIComponent(config.adminKey)}`,
+            { method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tx_hash: u.txHash || "pending", chain: "base" }),
+              signal: AbortSignal.timeout(5_000) }
+          ).catch(() => null);
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn("Dispute commitment publishing failed (non-blocking)", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const cycleDuration = Date.now() - cycleStart;
   logger.info("=== Keeper cycle complete ===", { durationMs: cycleDuration });
+}
+
+async function fetchTrackRecordUpdates(apiUrl: string, adminKey: string | undefined): Promise<TrackRecordUpdate[]> {
+  if (!adminKey) return [];
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/admin/track-record/pending?key=${encodeURIComponent(adminKey)}`,
+      { signal: AbortSignal.timeout(15_000) }
+    );
+    if (!res.ok) return [];
+    const data = await res.json() as { pending?: Array<any> };
+    const items = data.pending || [];
+    return items.map((p) => {
+      const evHashHex = (p.event_hash || "").startsWith("0x") ? p.event_hash : "0x" + (p.event_hash || "");
+      const stateRoot = p.state_root_at_event || "0x" + "0".repeat(64);
+      const stateRootHex = stateRoot.startsWith("0x") ? stateRoot : "0x" + stateRoot;
+      const ts = Math.floor(new Date(p.event_timestamp).getTime() / 1000);
+      const eventTypeMap: Record<string, string> = {
+        divergence: "DIVG", rpi_delta: "RPID",
+        coherence_drop: "COHD", score_change: "SCRC",
+      };
+      const tag = eventTypeMap[p.event_type] || "UNKN";
+      const eventTypeBytes4 = "0x" + Buffer.from(tag, "ascii").toString("hex").padEnd(8, "0").slice(0, 8);
+      return {
+        eventId: p.id,
+        eventHash: ethers.zeroPadValue(evHashHex.length === 66 ? evHashHex : ethers.toBeHex(BigInt(evHashHex), 32), 32),
+        stateRootAtEvent: ethers.zeroPadValue(stateRootHex.length === 66 ? stateRootHex : ethers.toBeHex(BigInt(stateRootHex), 32), 32),
+        eventType: eventTypeBytes4,
+        eventTimestamp: ts,
+      };
+    });
+  } catch (err) {
+    logger.warn("Failed to fetch track-record updates", { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+async function fetchDisputeCommitments(apiUrl: string, adminKey: string): Promise<DisputeCommitmentUpdate[]> {
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/admin/disputes/pending-commits?key=${encodeURIComponent(adminKey)}`,
+      { signal: AbortSignal.timeout(15_000) }
+    );
+    if (!res.ok) return [];
+    const data = await res.json() as { pending?: Array<any> };
+    const items = data.pending || [];
+    return items.map((p) => {
+      const transitionMap: Record<string, string> = {
+        submission: "SUBM", counter_evidence: "CTRE", resolution: "RSLV",
+      };
+      const tag = transitionMap[p.transition_kind] || "UNKN";
+      const tagBytes4 = "0x" + Buffer.from(tag, "ascii").toString("hex").padEnd(8, "0").slice(0, 8);
+      const cHash = (p.commitment_hash || "").startsWith("0x") ? p.commitment_hash : "0x" + p.commitment_hash;
+      // Use disputeId hashed as bytes32 for the on-chain key
+      const disputeIdHash = ethers.keccak256(ethers.toUtf8Bytes(`dispute:${p.dispute_id}`));
+      return {
+        commitId: p.id,
+        disputeId: disputeIdHash,
+        transitionKind: tagBytes4,
+        commitmentHash: ethers.zeroPadValue(cHash.length === 66 ? cHash : ethers.toBeHex(BigInt(cHash), 32), 32),
+      };
+    });
+  } catch (err) {
+    logger.warn("Failed to fetch dispute commitments", { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
 }
 
 async function fetchReportHashes(apiUrl: string): Promise<ReportHashUpdate[]> {

@@ -1,0 +1,15 @@
+{
+  "components": {
+    "peg_deviation_pct": 80.0,
+    "peg_volatility_7d": 75.0,
+    "redemption_friction": 90.0,
+    "reserve_quality": 5.0,
+    "smart_contract_audit_score": 30.0
+  },
+  "crisis_date": "2021-01-29",
+  "crisis_label": "Basis Cash (BAC) Failed Stable",
+  "crisis_slug": "basis-cash",
+  "entity_slug": "bac",
+  "index_kind": "sii",
+  "methodology_version": "v1.0.0"
+}

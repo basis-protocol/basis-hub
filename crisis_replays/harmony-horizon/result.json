@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xdd9248fa5e8214bcbd8834e691795955e246133c9ca1b6252cabbbce6f9a2cc2",
+  "crisis_date": "2022-06-23",
+  "crisis_label": "Harmony Horizon Bridge Exploit",
+  "crisis_slug": "harmony-horizon",
+  "delta": -47.0,
+  "entity_slug": "harmony-horizon",
+  "final_grade": "F",
+  "final_score": 9.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0xb8c4c4ff120cc4ec1285316c99e3513ba65b8db74c26475e6262ad53e99fb04e",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 56.0,
+  "summary": "2-of-5 multisig compromised; $100M drained from Horizon bridge."
+}

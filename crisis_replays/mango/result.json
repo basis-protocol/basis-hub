@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0x6f07fd928923dd672cba8df4c76ac7602e42a9aa08f10db96765114e21c13387",
+  "crisis_date": "2022-10-11",
+  "crisis_label": "Mango Markets Oracle Exploit",
+  "crisis_slug": "mango",
+  "delta": -48.0,
+  "entity_slug": "mango-markets",
+  "final_grade": "F",
+  "final_score": 17.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x862e576b3ab85f55d60952f04040f57d79d380a37f5f5cce91b575ccd9cdc264",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 65.0,
+  "summary": "MNGO oracle pumped on low liquidity; attacker borrowed against inflated collateral."
+}

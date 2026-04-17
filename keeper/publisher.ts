@@ -10,6 +10,8 @@ const ORACLE_ABI = [
   "function isStale(address token, uint256 maxAge) external view returns (bool)",
   "function publishReportHash(bytes32 entityId, bytes32 reportHash, bytes4 lensId) external",
   "function publishStateRoot(bytes32 stateRoot) external",
+  "function publishTrackRecord(bytes32 eventHash, bytes32 stateRootAtEvent, bytes4 eventType, uint48 eventTimestamp) external",
+  "function publishDisputeHash(bytes32 disputeId, bytes4 transitionKind, bytes32 commitmentHash) external",
   "function reportTimestamps(bytes32 entityId) external view returns (uint48)",
   "function stateRootTimestamp() external view returns (uint48)",
 ];
@@ -366,6 +368,109 @@ export async function publishStateRoot(
     });
     return false;
   }
+}
+
+// ============================================================
+// Track Record commitments (Bucket A1)
+// ============================================================
+
+export interface TrackRecordUpdate {
+  eventId: number;
+  eventHash: string;          // bytes32 hex
+  stateRootAtEvent: string;   // bytes32 hex
+  eventType: string;          // bytes4 hex
+  eventTimestamp: number;     // unix seconds
+  txHash?: string;
+}
+
+export async function publishTrackRecords(
+  updates: TrackRecordUpdate[],
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  oracleAddress: string,
+  chainKey: string,
+  config: KeeperConfig
+): Promise<number> {
+  if (updates.length === 0 || config.dryRun) {
+    if (config.dryRun && updates.length > 0) {
+      logger.info("DRY RUN — would publish track records", { chain: chainKey, count: updates.length });
+    }
+    return 0;
+  }
+
+  const oracle = new ethers.Contract(oracleAddress, ORACLE_ABI, wallet);
+  let published = 0;
+
+  for (const u of updates) {
+    try {
+      const nonce = await nonceManager.getCurrentNonce(provider, wallet.address, chainKey);
+      const tx = await (oracle.publishTrackRecord as ethers.ContractMethod)(
+        u.eventHash, u.stateRootAtEvent, u.eventType, u.eventTimestamp,
+        { nonce, gasLimit: 120_000n }
+      );
+      await tx.wait(1);
+      u.txHash = tx.hash;
+      published++;
+      logger.info("Track record published", { chain: chainKey, eventId: u.eventId, txHash: tx.hash });
+    } catch (err) {
+      logger.warn("Failed to publish track record", {
+        chain: chainKey, eventId: u.eventId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return published;
+}
+
+// ============================================================
+// Dispute commitments (Bucket A4)
+// ============================================================
+
+export interface DisputeCommitmentUpdate {
+  commitId: number;
+  disputeId: string;          // bytes32 hex
+  transitionKind: string;     // bytes4 hex
+  commitmentHash: string;     // bytes32 hex
+  txHash?: string;
+}
+
+export async function publishDisputeCommitments(
+  updates: DisputeCommitmentUpdate[],
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  oracleAddress: string,
+  chainKey: string,
+  config: KeeperConfig
+): Promise<number> {
+  if (updates.length === 0 || config.dryRun) {
+    if (config.dryRun && updates.length > 0) {
+      logger.info("DRY RUN — would publish dispute commitments", { chain: chainKey, count: updates.length });
+    }
+    return 0;
+  }
+
+  const oracle = new ethers.Contract(oracleAddress, ORACLE_ABI, wallet);
+  let published = 0;
+
+  for (const u of updates) {
+    try {
+      const nonce = await nonceManager.getCurrentNonce(provider, wallet.address, chainKey);
+      const tx = await (oracle.publishDisputeHash as ethers.ContractMethod)(
+        u.disputeId, u.transitionKind, u.commitmentHash,
+        { nonce, gasLimit: 120_000n }
+      );
+      await tx.wait(1);
+      u.txHash = tx.hash;
+      published++;
+      logger.info("Dispute commitment published", { chain: chainKey, commitId: u.commitId, txHash: tx.hash });
+    } catch (err) {
+      logger.warn("Failed to publish dispute commitment", {
+        chain: chainKey, commitId: u.commitId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return published;
 }
 
 // ============================================================

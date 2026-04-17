@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xd1b2c3fa6c940ddb33d224bb9947f0afb9cbbf9cf7ecbf9e9ac83d97e2b754ba",
+  "crisis_date": "2023-07-30",
+  "crisis_label": "Curve Pools Vyper Reentrancy",
+  "crisis_slug": "curve",
+  "delta": -37.0,
+  "entity_slug": "curve",
+  "final_grade": "D",
+  "final_score": 41.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x4ef43110148db3a0f5f646f27714edbb86c88bd167c56332d507fa254cff9b5a",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 78.0,
+  "summary": "Vyper compiler reentrancy bug drained four CRV pools."
+}

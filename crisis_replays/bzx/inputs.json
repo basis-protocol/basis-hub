@@ -1,0 +1,15 @@
+{
+  "components": {
+    "audit_recency_days": 90,
+    "exploit_loss_usd": 954000,
+    "incident_severity": 80.0,
+    "oracle_manipulation_susceptibility": 100.0,
+    "tvl": 50000000
+  },
+  "crisis_date": "2020-02-15",
+  "crisis_label": "bZx Flash Loan Attacks",
+  "crisis_slug": "bzx",
+  "entity_slug": "bzx",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

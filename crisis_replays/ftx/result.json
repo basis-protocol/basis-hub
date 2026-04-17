@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0x94b7d1b0bef9d24a0f1502e7e99396d4301c832ba77b7945e8824ad5ff9a03ee",
+  "crisis_date": "2022-11-08",
+  "crisis_label": "FTX / Alameda Collapse",
+  "crisis_slug": "ftx",
+  "delta": -58.8,
+  "entity_slug": "ftx-exchange",
+  "final_grade": "F",
+  "final_score": 9.2,
+  "index_kind": "psi",
+  "input_vector_hash": "0x4c17728d79914d4ad09c9ffa522c5694f9176bdbd9a9d4566ea1b2f1717b19a6",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 68.0,
+  "summary": "FTX paused withdrawals Nov 8 2022; bankruptcy filed Nov 11."
+}

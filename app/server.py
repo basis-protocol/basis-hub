@@ -8474,6 +8474,562 @@ async def oracle_divergence():
 
 
 # =============================================================================
+# Track Record Commitments (Bucket A1)
+# =============================================================================
+
+@app.get("/api/track-record")
+async def track_record_list(
+    event_type: Optional[str] = Query(None),
+    entity_slug: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """List on-chain-anchored track-record commitments."""
+    where = []
+    params: list = []
+    if event_type:
+        where.append("event_type = %s")
+        params.append(event_type)
+    if entity_slug:
+        where.append("entity_slug = %s")
+        params.append(entity_slug)
+    sql = """
+        SELECT id, event_type, entity_slug, event_hash, event_timestamp,
+               magnitude, direction, score_before, score_after,
+               on_chain_tx_hash, on_chain_chain, on_chain_block,
+               state_root_at_event, committed_at,
+               outcome_30d, outcome_60d, outcome_90d,
+               methodology_version
+        FROM track_record_commitments
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY event_timestamp DESC LIMIT %s"
+    params.append(limit)
+    rows = fetch_all(sql, tuple(params))
+    return {"events": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/track-record/{event_id}")
+async def track_record_detail(event_id: int):
+    row = fetch_one(
+        "SELECT * FROM track_record_commitments WHERE id = %s",
+        (event_id,),
+    )
+    if not row:
+        raise HTTPException(404, "event not found")
+    return dict(row)
+
+
+@app.post("/api/admin/track-record/scan")
+async def track_record_scan(request: Request):
+    """Run all detectors and write any new events. Admin only."""
+    _check_admin_key(request)
+    from app.track_record import detect_all, score_outcomes
+    counts = detect_all()
+    outcomes = score_outcomes()
+    return {"detected": counts, "outcomes_filled": outcomes}
+
+
+@app.get("/api/admin/track-record/pending")
+async def track_record_pending(request: Request):
+    _check_admin_key(request)
+    from app.track_record import pending_commits
+    return {"pending": pending_commits()}
+
+
+@app.post("/api/admin/track-record/{event_id}/mark-committed")
+async def track_record_mark_committed(event_id: int, request: Request):
+    _check_admin_key(request)
+    body = await request.json()
+    from app.track_record import mark_committed
+    mark_committed(event_id, body["tx_hash"], body.get("chain", "base"), body.get("block"))
+    return {"status": "ok", "event_id": event_id}
+
+
+# =============================================================================
+# Crisis Replays (Bucket A2)
+# =============================================================================
+
+@app.get("/api/crisis-replays")
+async def crisis_replays_list():
+    rows = fetch_all(
+        """
+        SELECT crisis_slug, crisis_label, crisis_date, index_kind, entity_slug,
+               methodology_version, final_score, final_grade, pre_crisis_score, delta,
+               input_vector_hash, computation_hash, replay_script_path
+        FROM crisis_replays
+        ORDER BY crisis_date DESC
+        """
+    )
+    return {"replays": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/crisis-replays/{slug}")
+async def crisis_replay_detail(slug: str):
+    row = fetch_one(
+        "SELECT * FROM crisis_replays WHERE crisis_slug = %s",
+        (slug,),
+    )
+    if not row:
+        raise HTTPException(404, "replay not found")
+    return dict(row)
+
+
+@app.post("/api/admin/crisis-replays/load")
+async def crisis_replays_load(request: Request):
+    _check_admin_key(request)
+    from app.crisis_replays_loader import load_all_into_db
+    n = load_all_into_db()
+    return {"loaded": n}
+
+
+# =============================================================================
+# Historical Score Backfill (Bucket A3)
+# =============================================================================
+
+@app.get("/api/historical-scores/{index_kind}/{entity_slug}")
+async def historical_scores(index_kind: str, entity_slug: str):
+    from app.historical_score_backfill import get_series, DEFINITION_MAP
+    if index_kind not in DEFINITION_MAP:
+        raise HTTPException(400, f"unknown index: {index_kind}")
+    return {
+        "index_kind": index_kind,
+        "entity_slug": entity_slug,
+        "series": get_series(index_kind, entity_slug),
+    }
+
+
+@app.get("/api/historical-scores/{index_kind}/{entity_slug}/input-vector")
+async def historical_scores_input_vector(index_kind: str, entity_slug: str, snapshot_date: str):
+    from app.historical_score_backfill import get_input_vector, DEFINITION_MAP
+    if index_kind not in DEFINITION_MAP:
+        raise HTTPException(400, f"unknown index: {index_kind}")
+    try:
+        d = date.fromisoformat(snapshot_date)
+    except ValueError:
+        raise HTTPException(400, "snapshot_date must be YYYY-MM-DD")
+    row = get_input_vector(index_kind, entity_slug, d)
+    if not row:
+        raise HTTPException(404, "no input vector for that date")
+    return row
+
+
+@app.post("/api/admin/historical-scores/backfill")
+async def historical_scores_backfill(request: Request):
+    _check_admin_key(request)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from app.historical_score_backfill import backfill_index, backfill_all
+    if body.get("index_kind"):
+        result = backfill_index(
+            body["index_kind"],
+            max_entities=body.get("max_entities"),
+            max_weeks_per_entity=body.get("max_weeks_per_entity"),
+        )
+    else:
+        result = backfill_all(
+            max_entities=body.get("max_entities"),
+            max_weeks_per_entity=body.get("max_weeks_per_entity"),
+        )
+    return {"result": result}
+
+
+# =============================================================================
+# Disputes (Bucket A4)
+# =============================================================================
+
+@app.post("/api/disputes")
+async def disputes_submit(request: Request):
+    body = await request.json()
+    from app.disputes import submit_dispute
+    try:
+        row = submit_dispute(
+            entity_slug=body["entity_slug"],
+            score_hash_disputed=body["score_hash_disputed"],
+            submitter_address=body["submitter_address"],
+            submission_payload=body["submission_payload"],
+            index_kind=body.get("index_kind"),
+            score_value_disputed=body.get("score_value_disputed"),
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return row
+
+
+@app.get("/api/disputes/{dispute_id}")
+async def disputes_get(dispute_id: int):
+    from app.disputes import get_dispute
+    row = get_dispute(dispute_id)
+    if not row:
+        raise HTTPException(404, "dispute not found")
+    return row
+
+
+@app.get("/api/disputes")
+async def disputes_list(
+    status: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    from app.disputes import list_disputes
+    return {"disputes": list_disputes(status=status, limit=limit)}
+
+
+@app.post("/api/disputes/{dispute_id}/counter-evidence")
+async def disputes_counter_evidence(dispute_id: int, request: Request):
+    _check_admin_key(request)
+    body = await request.json()
+    from app.disputes import attach_counter_evidence
+    try:
+        return attach_counter_evidence(dispute_id, body.get("payload") or body)
+    except (LookupError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/disputes/{dispute_id}/resolve")
+async def disputes_resolve(dispute_id: int, request: Request):
+    _check_admin_key(request)
+    body = await request.json()
+    from app.disputes import resolve_dispute
+    try:
+        return resolve_dispute(
+            dispute_id,
+            body["status"],
+            body["payload"],
+            resolver=body.get("resolver"),
+        )
+    except (LookupError, KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/admin/disputes/pending-commits")
+async def disputes_pending_commits(request: Request):
+    _check_admin_key(request)
+    from app.disputes import pending_dispute_commits
+    return {"pending": pending_dispute_commits()}
+
+
+@app.post("/api/admin/disputes/commit/{commit_id}/published")
+async def disputes_commit_published(commit_id: int, request: Request):
+    _check_admin_key(request)
+    body = await request.json()
+    from app.disputes import mark_dispute_commit_published
+    mark_dispute_commit_published(
+        commit_id, body["tx_hash"], body.get("chain", "base"), body.get("block")
+    )
+    return {"status": "ok", "commit_id": commit_id}
+
+
+# =============================================================================
+# SSR pages (track-record, crisis-replays, disputes)
+# =============================================================================
+
+def _render_track_record_html() -> str:
+    rows = fetch_all(
+        """
+        SELECT id, event_type, entity_slug, event_hash, event_timestamp,
+               magnitude, direction, on_chain_tx_hash, on_chain_chain,
+               state_root_at_event, outcome_30d, outcome_60d, outcome_90d,
+               score_before, score_after
+        FROM track_record_commitments
+        ORDER BY event_timestamp DESC
+        LIMIT 200
+        """
+    ) or []
+
+    def _link(tx: str | None, chain: str | None) -> str:
+        if not tx:
+            return "—"
+        base = "https://basescan.org/tx/" if (chain or "").lower() == "base" else "https://arbiscan.io/tx/"
+        return f'<a href="{base}{tx}" target="_blank">{tx[:10]}…</a>'
+
+    body_rows = ""
+    for r in rows:
+        ts = r["event_timestamp"].strftime("%Y-%m-%d %H:%M UTC") if r.get("event_timestamp") else "—"
+        body_rows += f"""
+        <tr>
+            <td><code>{r['event_type']}</code></td>
+            <td><strong>{r['entity_slug']}</strong></td>
+            <td class="num">{ts}</td>
+            <td class="num">{r.get('magnitude') or '—'}</td>
+            <td class="num">{r.get('direction') or '—'}</td>
+            <td><code>{(r.get('event_hash') or '')[:16]}…</code></td>
+            <td>{_link(r.get('on_chain_tx_hash'), r.get('on_chain_chain'))}</td>
+            <td class="num">{r.get('outcome_30d') or '—'}</td>
+            <td class="num">{r.get('outcome_60d') or '—'}</td>
+            <td class="num">{r.get('outcome_90d') or '—'}</td>
+        </tr>"""
+
+    ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": "Basis Track Record — On-chain Anchored Calls",
+        "description": f"{len(rows)} consequential events anchored on-chain with state-root binding.",
+        "url": f"{CANONICAL_BASE_URL}/track-record",
+        "dateModified": datetime.now(timezone.utc).isoformat(),
+        "creator": {"@type": "Organization", "name": "Basis Protocol", "url": CANONICAL_BASE_URL},
+    }
+    json_ld_str = json.dumps(json_ld, cls=_DecimalEncoder)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Basis Track Record — On-chain Anchored Calls</title>
+    <meta name="description" content="Every consequential call (divergence signal, RPI delta, coherence drop, score change) is hashed and committed on-chain. {len(rows)} events tracked.">
+    <link rel="canonical" href="{CANONICAL_BASE_URL}/track-record">
+    <link rel="alternate" type="application/json" href="{CANONICAL_BASE_URL}/api/track-record">
+    <script type="application/ld+json">{json_ld_str}</script>
+    <style>
+        body {{ font-family: 'Georgia', serif; max-width: 1100px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+        h1 {{ font-size: 1.6rem; font-weight: 400; margin-bottom: 4px; }}
+        .meta {{ font-family: monospace; font-size: 0.75rem; color: #6a6a6a; margin-bottom: 24px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.8rem; }}
+        th {{ text-align: left; padding: 8px; border-bottom: 2px solid #0B090A; font-family: monospace; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: #6a6a6a; }}
+        td {{ padding: 6px 8px; border-bottom: 1px dotted #ccc; }}
+        .num {{ font-family: monospace; }}
+        nav {{ margin-bottom: 24px; font-family: monospace; font-size: 0.8rem; }}
+        nav a {{ color: #0B090A; margin-right: 16px; text-decoration: none; }}
+        code {{ font-size: 0.75rem; }}
+        a {{ color: #0B090A; }}
+        footer {{ margin-top: 32px; font-family: monospace; font-size: 0.75rem; color: #6a6a6a; border-top: 1px solid #ccc; padding-top: 12px; }}
+    </style>
+</head>
+<body>
+    <h1>Basis Track Record</h1>
+    <p class="meta">{len(rows)} events anchored on-chain · Updated {ts_now}</p>
+    <nav>
+        <a href="/">Rankings</a>
+        <a href="/witness">Witness</a>
+        <a href="/track-record">Track Record</a>
+        <a href="/crisis-replays">Crisis Replays</a>
+        <a href="/disputes">Disputes</a>
+    </nav>
+    <p>Every consequential call (divergence signal, RPI delta &gt;10, coherence drop, score change &gt;5) is hashed,
+    bound to the state root that was live at the moment of the call, and committed on-chain. Outcomes at the
+    30/60/90 day horizons are populated as time passes so the public can verify call quality after the fact.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Type</th><th>Entity</th><th class="num">When</th>
+                <th class="num">Magnitude</th><th>Dir</th><th>Event hash</th>
+                <th>On-chain tx</th>
+                <th class="num">30d</th><th class="num">60d</th><th class="num">90d</th>
+            </tr>
+        </thead>
+        <tbody>{body_rows}</tbody>
+    </table>
+    <footer>
+        <p>Basis Protocol · API: <a href="/api/track-record">/api/track-record</a></p>
+    </footer>
+</body>
+</html>"""
+
+
+def _render_crisis_replays_html() -> str:
+    rows = fetch_all(
+        """
+        SELECT crisis_slug, crisis_label, crisis_date, index_kind, entity_slug,
+               methodology_version, final_score, final_grade, pre_crisis_score, delta,
+               input_vector_hash, computation_hash, replay_script_path
+        FROM crisis_replays
+        ORDER BY crisis_date DESC
+        """
+    ) or []
+
+    body_rows = ""
+    for r in rows:
+        body_rows += f"""
+        <tr>
+            <td><a href="/crisis-replays/{r['crisis_slug']}"><strong>{r['crisis_label']}</strong></a></td>
+            <td class="num">{r.get('crisis_date')}</td>
+            <td><code>{r['index_kind']}</code></td>
+            <td>{r.get('entity_slug') or '—'}</td>
+            <td class="num">{r.get('pre_crisis_score') or '—'}</td>
+            <td class="num">{r.get('final_score') or '—'}</td>
+            <td class="num">{r.get('delta') or '—'}</td>
+            <td><code>{(r.get('input_vector_hash') or '')[:14]}…</code></td>
+            <td><code>{(r.get('computation_hash') or '')[:14]}…</code></td>
+        </tr>"""
+
+    ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><title>Basis Crisis Replays</title>
+<link rel="canonical" href="{CANONICAL_BASE_URL}/crisis-replays">
+<style>
+body {{ font-family: 'Georgia', serif; max-width: 1100px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+h1 {{ font-size: 1.6rem; font-weight: 400; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+th {{ text-align: left; padding: 8px; border-bottom: 2px solid #0B090A; font-family: monospace; font-size: 0.7rem; text-transform: uppercase; }}
+td {{ padding: 8px; border-bottom: 1px dotted #ccc; }}
+.num {{ font-family: monospace; }}
+nav {{ margin-bottom: 24px; font-family: monospace; font-size: 0.8rem; }}
+nav a {{ color: #0B090A; margin-right: 16px; text-decoration: none; }}
+code {{ font-size: 0.78rem; }}
+.meta {{ font-family: monospace; font-size: 0.75rem; color: #6a6a6a; }}
+</style></head><body>
+<h1>Basis Crisis Replays</h1>
+<p class="meta">{len(rows)} historical crises re-derived through every applicable index · Updated {ts_now}</p>
+<nav><a href="/">Rankings</a><a href="/witness">Witness</a><a href="/track-record">Track Record</a><a href="/crisis-replays">Crisis Replays</a><a href="/disputes">Disputes</a></nav>
+<p>Each replay loads the canonical input vector, the methodology version that was live at the time, and the
+final scores Basis would have produced. Re-derive any of them yourself with
+<code>python -m crisis_replays.run &lt;slug&gt;</code> against this repo. Hashes below match
+the on-disk <code>result.json</code> for each crisis.</p>
+<table><thead><tr>
+<th>Crisis</th><th class="num">Date</th><th>Index</th><th>Entity</th>
+<th class="num">Pre</th><th class="num">Final</th><th class="num">Delta</th>
+<th>Input hash</th><th>Computation hash</th>
+</tr></thead><tbody>{body_rows}</tbody></table>
+</body></html>"""
+
+
+def _render_crisis_replay_detail_html(slug: str) -> str:
+    row = fetch_one("SELECT * FROM crisis_replays WHERE crisis_slug = %s", (slug,))
+    if not row:
+        return f"<!DOCTYPE html><html><body><h1>Not found: {slug}</h1></body></html>"
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><title>{row['crisis_label']} — Crisis Replay</title>
+<link rel="canonical" href="{CANONICAL_BASE_URL}/crisis-replays/{slug}">
+<style>
+body {{ font-family: 'Georgia', serif; max-width: 900px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+h1 {{ font-size: 1.6rem; font-weight: 400; }}
+dl {{ display: grid; grid-template-columns: 200px 1fr; gap: 8px 16px; font-size: 0.9rem; }}
+dt {{ font-family: monospace; font-size: 0.7rem; color: #6a6a6a; text-transform: uppercase; }}
+dd {{ margin: 0; font-family: monospace; word-break: break-all; }}
+nav a {{ color: #0B090A; margin-right: 16px; font-family: monospace; font-size: 0.8rem; text-decoration: none; }}
+pre {{ background: #fff; padding: 12px; border: 1px solid #ccc; font-size: 0.8rem; overflow-x: auto; }}
+.meta {{ font-family: monospace; font-size: 0.75rem; color: #6a6a6a; margin-bottom: 16px; }}
+</style></head><body>
+<nav><a href="/">Rankings</a><a href="/crisis-replays">Crisis Replays</a></nav>
+<h1>{row['crisis_label']}</h1>
+<p class="meta">{row['crisis_date']} · {row['index_kind']} · methodology {row['methodology_version']}</p>
+<p>{row.get('notes') or ''}</p>
+<dl>
+  <dt>Pre-crisis score</dt><dd>{row.get('pre_crisis_score') or '—'}</dd>
+  <dt>Final score</dt><dd>{row.get('final_score') or '—'} ({row.get('final_grade') or '—'})</dd>
+  <dt>Delta</dt><dd>{row.get('delta') or '—'}</dd>
+  <dt>Input vector hash</dt><dd>{row.get('input_vector_hash')}</dd>
+  <dt>Computation hash</dt><dd>{row.get('computation_hash')}</dd>
+  <dt>Replay script</dt><dd>{row.get('replay_script_path')}</dd>
+</dl>
+<h2>Re-derive yourself</h2>
+<pre>git clone https://github.com/basis-protocol/basis-hub
+cd basis-hub
+python -m crisis_replays.run {slug}</pre>
+<p>The runner re-computes <code>input_vector_hash</code> and <code>computation_hash</code> from the on-disk
+<code>inputs.json</code> and prints OK if both match the values shown above.</p>
+</body></html>"""
+
+
+def _render_disputes_html() -> str:
+    rows = fetch_all(
+        """
+        SELECT id, entity_slug, index_kind, score_hash_disputed,
+               submitter_address, submission_hash, counter_evidence_hash,
+               resolution_hash, resolution_status, submission_timestamp,
+               resolution_timestamp, on_chain_commit_tx
+        FROM disputes ORDER BY submission_timestamp DESC LIMIT 200
+        """
+    ) or []
+    body_rows = ""
+    for r in rows:
+        body_rows += f"""
+        <tr>
+            <td><a href="/disputes/{r['id']}">#{r['id']}</a></td>
+            <td><strong>{r['entity_slug']}</strong></td>
+            <td>{r.get('index_kind') or '—'}</td>
+            <td><code>{r['resolution_status']}</code></td>
+            <td><code>{(r.get('submission_hash') or '')[:14]}…</code></td>
+            <td><code>{(r.get('resolution_hash') or '—')[:14] if r.get('resolution_hash') else '—'}…</code></td>
+            <td>{r['submission_timestamp'].strftime('%Y-%m-%d') if r.get('submission_timestamp') else '—'}</td>
+        </tr>"""
+    ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Basis Disputes</title>
+<link rel="canonical" href="{CANONICAL_BASE_URL}/disputes">
+<style>
+body {{ font-family: 'Georgia', serif; max-width: 1100px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+h1 {{ font-size: 1.6rem; font-weight: 400; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+th {{ text-align: left; padding: 8px; border-bottom: 2px solid #0B090A; font-family: monospace; font-size: 0.7rem; text-transform: uppercase; }}
+td {{ padding: 8px; border-bottom: 1px dotted #ccc; }}
+nav a {{ color: #0B090A; margin-right: 16px; font-family: monospace; font-size: 0.8rem; text-decoration: none; }}
+code {{ font-size: 0.78rem; }}
+.meta {{ font-family: monospace; font-size: 0.75rem; color: #6a6a6a; }}
+a {{ color: #0B090A; }}
+</style></head><body>
+<h1>Basis Disputes</h1>
+<p class="meta">{len(rows)} disputes · Updated {ts_now}</p>
+<nav><a href="/">Rankings</a><a href="/track-record">Track Record</a><a href="/crisis-replays">Crisis Replays</a><a href="/disputes">Disputes</a></nav>
+<p>Anyone may dispute a published score by referencing its content hash.
+Each state transition (submission → counter-evidence → resolution) is hashed off-chain
+and the hash is anchored on the Basis Oracle V2 contract on Base. The full process is
+documented in <a href="/methodology/disputes">methodology/disputes</a>.</p>
+<table><thead><tr>
+<th>ID</th><th>Entity</th><th>Index</th><th>Status</th>
+<th>Submission hash</th><th>Resolution hash</th><th>Submitted</th>
+</tr></thead><tbody>{body_rows}</tbody></table>
+</body></html>"""
+
+
+def _render_dispute_detail_html(dispute_id: int) -> str:
+    from app.disputes import get_dispute
+    d = get_dispute(dispute_id)
+    if not d:
+        return f"<!DOCTYPE html><html><body><h1>Dispute #{dispute_id} not found</h1></body></html>"
+    commits_html = ""
+    for c in d.get("commitments", []):
+        tx = c.get("on_chain_tx_hash")
+        chain = c.get("on_chain_chain") or "base"
+        link = f'<a href="https://basescan.org/tx/{tx}">{tx[:14]}…</a>' if tx else "—"
+        commits_html += f"""
+        <tr>
+            <td><code>{c['transition_kind']}</code></td>
+            <td><code>{c['commitment_hash']}</code></td>
+            <td>{link}</td>
+            <td>{c['committed_at'].strftime('%Y-%m-%d %H:%M UTC') if c.get('committed_at') else '—'}</td>
+        </tr>"""
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Dispute #{dispute_id}</title>
+<link rel="canonical" href="{CANONICAL_BASE_URL}/disputes/{dispute_id}">
+<style>
+body {{ font-family: 'Georgia', serif; max-width: 900px; margin: 0 auto; padding: 24px; background: #F3F2ED; color: #0B090A; }}
+h1 {{ font-size: 1.6rem; font-weight: 400; }}
+dl {{ display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; font-size: 0.9rem; }}
+dt {{ font-family: monospace; font-size: 0.7rem; color: #6a6a6a; text-transform: uppercase; }}
+dd {{ margin: 0; font-family: monospace; word-break: break-all; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 16px; }}
+th {{ text-align: left; padding: 8px; border-bottom: 2px solid #0B090A; font-family: monospace; font-size: 0.7rem; text-transform: uppercase; }}
+td {{ padding: 8px; border-bottom: 1px dotted #ccc; word-break: break-all; }}
+nav a {{ color: #0B090A; margin-right: 16px; font-family: monospace; font-size: 0.8rem; text-decoration: none; }}
+code {{ font-size: 0.78rem; }}
+a {{ color: #0B090A; }}
+</style></head><body>
+<nav><a href="/">Rankings</a><a href="/disputes">Disputes</a></nav>
+<h1>Dispute #{dispute_id}</h1>
+<dl>
+  <dt>Entity</dt><dd>{d['entity_slug']}</dd>
+  <dt>Index</dt><dd>{d.get('index_kind') or '—'}</dd>
+  <dt>Status</dt><dd>{d['resolution_status']}</dd>
+  <dt>Score hash disputed</dt><dd>{d['score_hash_disputed']}</dd>
+  <dt>Submitter</dt><dd>{d['submitter_address']}</dd>
+  <dt>Submission hash</dt><dd>{d['submission_hash']}</dd>
+  <dt>Counter-evidence hash</dt><dd>{d.get('counter_evidence_hash') or '—'}</dd>
+  <dt>Resolution hash</dt><dd>{d.get('resolution_hash') or '—'}</dd>
+</dl>
+<h2>On-chain audit trail</h2>
+<table><thead><tr><th>Transition</th><th>Hash</th><th>On-chain tx</th><th>Committed</th></tr></thead>
+<tbody>{commits_html}</tbody></table>
+</body></html>"""
+
+
+# =============================================================================
 
 def _register_spa_catch_all(app_instance):
     """Register the SPA catch-all AFTER all other routes so it doesn't shadow them."""
@@ -8542,6 +9098,40 @@ def _register_spa_catch_all(app_instance):
                     )
         except Exception as e:
             logger.warning(f"Witness static page render failed for /{full_path}: {e}")
+
+        # Track Record / Crisis Replays / Disputes — SSR for all visitors
+        try:
+            if full_path == "track-record":
+                return HTMLResponse(
+                    content=_render_track_record_html(),
+                    headers={"Cache-Control": "public, max-age=120", "Basis-URL-Stability": "permanent"},
+                )
+            if full_path == "crisis-replays":
+                return HTMLResponse(
+                    content=_render_crisis_replays_html(),
+                    headers={"Cache-Control": "public, max-age=300", "Basis-URL-Stability": "permanent"},
+                )
+            if full_path.startswith("crisis-replays/"):
+                slug = full_path.split("crisis-replays/")[1].split("/")[0].split("?")[0]
+                if slug:
+                    return HTMLResponse(
+                        content=_render_crisis_replay_detail_html(slug.lower()),
+                        headers={"Cache-Control": "public, max-age=300", "Basis-URL-Stability": "permanent"},
+                    )
+            if full_path == "disputes":
+                return HTMLResponse(
+                    content=_render_disputes_html(),
+                    headers={"Cache-Control": "public, max-age=120"},
+                )
+            if full_path.startswith("disputes/"):
+                tail = full_path.split("disputes/")[1].split("/")[0].split("?")[0]
+                if tail.isdigit():
+                    return HTMLResponse(
+                        content=_render_dispute_detail_html(int(tail)),
+                        headers={"Cache-Control": "public, max-age=120"},
+                    )
+        except Exception as e:
+            logger.warning(f"Track-record/disputes SSR failed for /{full_path}: {e}")
 
         # Serve server-rendered HTML for bots/AI on key routes
         if _is_bot(request):

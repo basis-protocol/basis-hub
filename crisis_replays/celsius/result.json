@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xb02cc376fa0de3c4bc0de6bf55e9e88c9fbf87821b1e1069b424e49c64bbed84",
+  "crisis_date": "2022-06-12",
+  "crisis_label": "Celsius Network Withdrawal Freeze",
+  "crisis_slug": "celsius",
+  "delta": -47.0,
+  "entity_slug": "celsius",
+  "final_grade": "F",
+  "final_score": 11.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0xdf7f575811064588a2b2b4360d923f3c13f0cc1e2b9f5136d3070ac7bd7ee12a",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 58.0,
+  "summary": "Froze withdrawals citing 'extreme market conditions'; bankruptcy by July 13."
+}

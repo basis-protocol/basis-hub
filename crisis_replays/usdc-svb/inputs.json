@@ -1,0 +1,21 @@
+{
+  "components": {
+    "banking_concentration_top1_pct": 8.0,
+    "concentration_top10_pct": 28.0,
+    "governance_centralization": 30.0,
+    "network_decentralization": 70.0,
+    "peg_deviation_pct": 13.0,
+    "peg_volatility_7d": 22.0,
+    "redemption_friction": 50.0,
+    "reserve_attestation_recency_days": 30.0,
+    "reserve_quality": 78.0,
+    "smart_contract_audit_score": 92.0,
+    "venue_count": 28.0
+  },
+  "crisis_date": "2023-03-11",
+  "crisis_label": "USDC / Silicon Valley Bank Depeg",
+  "crisis_slug": "usdc-svb",
+  "entity_slug": "usdc",
+  "index_kind": "sii",
+  "methodology_version": "v1.0.0"
+}

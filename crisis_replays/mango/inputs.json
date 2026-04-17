@@ -1,0 +1,15 @@
+{
+  "components": {
+    "audit_recency_days": 180,
+    "exploit_loss_usd": 117000000,
+    "incident_severity": 95.0,
+    "oracle_manipulation_susceptibility": 100.0,
+    "tvl": 100000000
+  },
+  "crisis_date": "2022-10-11",
+  "crisis_label": "Mango Markets Oracle Exploit",
+  "crisis_slug": "mango",
+  "entity_slug": "mango-markets",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

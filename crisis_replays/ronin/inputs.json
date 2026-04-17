@@ -1,0 +1,16 @@
+{
+  "components": {
+    "audit_recency_days": 365,
+    "exploit_loss_usd": 625000000,
+    "incident_severity": 100.0,
+    "tvl": 615000000,
+    "validator_concentration_top4_pct": 100.0,
+    "validator_count": 9.0
+  },
+  "crisis_date": "2022-03-23",
+  "crisis_label": "Ronin Bridge Exploit",
+  "crisis_slug": "ronin",
+  "entity_slug": "ronin-bridge",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

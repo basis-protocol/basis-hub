@@ -1,0 +1,15 @@
+{
+  "components": {
+    "audit_recency_days": 540,
+    "counterparty_concentration": 65.0,
+    "off_balance_sheet_exposure": 90.0,
+    "tvl": 5800000000,
+    "withdrawal_freeze": 100.0
+  },
+  "crisis_date": "2022-07-01",
+  "crisis_label": "Voyager Digital Insolvency",
+  "crisis_slug": "voyager",
+  "entity_slug": "voyager",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

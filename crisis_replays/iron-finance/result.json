@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0xbc1392bb1d68d092047eb31717b5efc149210243aefab0029a5f116ef56ff838",
+  "crisis_date": "2021-06-16",
+  "crisis_label": "Iron Finance / TITAN Bank Run",
+  "crisis_slug": "iron-finance",
+  "delta": -48.0,
+  "entity_slug": "iron",
+  "final_grade": "F",
+  "final_score": 4.0,
+  "index_kind": "sii",
+  "input_vector_hash": "0xe2b7335775ed35d84974d28014a85ed6c8231db7e357037a5298551348afabd8",
+  "methodology_version": "v1.0.0",
+  "pre_crisis_score": 52.0,
+  "summary": "Partial-collateral stable; reflexive collapse drove TITAN to ~$0."
+}

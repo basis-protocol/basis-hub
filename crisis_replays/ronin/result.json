@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0x1dc4a9fa2ef5ff8cbd163bb74a0983d73fe85ad1b215cabd9d5b784738064856",
+  "crisis_date": "2022-03-23",
+  "crisis_label": "Ronin Bridge Exploit",
+  "crisis_slug": "ronin",
+  "delta": -52.0,
+  "entity_slug": "ronin-bridge",
+  "final_grade": "F",
+  "final_score": 8.0,
+  "index_kind": "psi",
+  "input_vector_hash": "0x6e2d1fa143f9fd8c112924ee95e40ee8e6f766e933e34b3f91e8a306df03357f",
+  "methodology_version": "v0.2.0",
+  "pre_crisis_score": 60.0,
+  "summary": "Compromised 5 of 9 validator keys \u2014 $625M drained."
+}

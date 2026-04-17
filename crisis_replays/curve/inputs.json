@@ -1,0 +1,16 @@
+{
+  "components": {
+    "audit_recency_days": 365,
+    "compiler_version_risk": 100.0,
+    "exploit_loss_usd": 73500000,
+    "incident_severity": 70.0,
+    "tvl": 2400000000,
+    "tvl_7d_change": -35.0
+  },
+  "crisis_date": "2023-07-30",
+  "crisis_label": "Curve Pools Vyper Reentrancy",
+  "crisis_slug": "curve",
+  "entity_slug": "curve",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

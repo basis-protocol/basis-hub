@@ -1,0 +1,16 @@
+{
+  "components": {
+    "audit_recency_days": 30,
+    "exploit_loss_usd": 190000000,
+    "governance_decentralization": 40.0,
+    "incident_severity": 100.0,
+    "tvl": 190000000,
+    "tvl_7d_change": -99.0
+  },
+  "crisis_date": "2022-08-01",
+  "crisis_label": "Nomad Bridge Exploit",
+  "crisis_slug": "nomad",
+  "entity_slug": "nomad-bridge",
+  "index_kind": "psi",
+  "methodology_version": "v0.2.0"
+}

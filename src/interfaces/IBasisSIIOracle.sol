@@ -110,12 +110,55 @@ interface IBasisSIIOracle {
     event ReportPublished(bytes32 indexed entityId, bytes32 reportHash, bytes4 lensId, uint48 timestamp);
     event StateRootPublished(bytes32 stateRoot, uint48 timestamp);
 
+    // ─── Track Record Events (Bucket A1) ───
+    event TrackRecordPublished(
+        bytes32 indexed eventHash,
+        bytes4  indexed eventType,
+        bytes32 stateRootAtEvent,
+        uint48  eventTimestamp,
+        uint48  committedAt
+    );
+
+    // ─── Dispute Commitment Events (Bucket A4) ───
+    event DisputeCommitmentPublished(
+        bytes32 indexed disputeId,
+        bytes4  indexed transitionKind,
+        bytes32 commitmentHash,
+        uint48  committedAt
+    );
+
     // ─── Report Attestation Functions ───
     function publishReportHash(bytes32 entityId, bytes32 reportHash, bytes4 lensId) external;
     function getReportHash(bytes32 entityId) external view returns (bytes32 reportHash, bytes4 lensId, uint48 timestamp);
     function publishStateRoot(bytes32 stateRoot) external;
     function latestStateRoot() external view returns (bytes32);
     function stateRootTimestamp() external view returns (uint48);
+
+    // ─── Track Record Functions ───
+    function publishTrackRecord(
+        bytes32 eventHash,
+        bytes32 stateRootAtEvent,
+        bytes4  eventType,
+        uint48  eventTimestamp
+    ) external;
+    function getTrackRecord(bytes32 eventHash) external view returns (
+        bytes32 stateRootAtEvent,
+        bytes4  eventType,
+        uint48  eventTimestamp,
+        uint48  committedAt
+    );
+    function trackRecordCount() external view returns (uint256);
+
+    // ─── Dispute Commitment Functions ───
+    function publishDisputeHash(
+        bytes32 disputeId,
+        bytes4  transitionKind,
+        bytes32 commitmentHash
+    ) external;
+    function getDisputeCommitment(
+        bytes32 disputeId,
+        bytes4  transitionKind
+    ) external view returns (bytes32 commitmentHash, uint48 committedAt);
 
     // ─── Admin Functions ───
     function setKeeper(address newKeeper) external;

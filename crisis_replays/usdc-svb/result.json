@@ -1,0 +1,15 @@
+{
+  "computation_hash": "0x9e1d60f1cc11a48bee7a095280e2b4336786b9e690013dba5fa8c1d16dde301e",
+  "crisis_date": "2023-03-11",
+  "crisis_label": "USDC / Silicon Valley Bank Depeg",
+  "crisis_slug": "usdc-svb",
+  "delta": -22.0,
+  "entity_slug": "usdc",
+  "final_grade": "C",
+  "final_score": 64.0,
+  "index_kind": "sii",
+  "input_vector_hash": "0xcd08ce38a28dbc67d9587b04f8537fb32bb332bce88d89ba37938a3b246d618c",
+  "methodology_version": "v1.0.0",
+  "pre_crisis_score": 86.0,
+  "summary": "USDC dropped to ~$0.87 after SVB exposure disclosed; recovered by Mar 13."
+}
