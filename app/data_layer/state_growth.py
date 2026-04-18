@@ -23,7 +23,7 @@ TRACKED_TABLES = {
     "scores":                   {"time_col": "computed_at",    "avg_row_bytes": 400, "category": "core"},
     "score_history":            {"time_col": "created_at",     "avg_row_bytes": 300, "category": "core"},
     "component_readings":       {"time_col": "collected_at",   "avg_row_bytes": 150, "category": "core"},
-    "psi_scores":               {"time_col": "scored_at",      "avg_row_bytes": 300, "category": "core"},
+    "psi_scores":               {"time_col": "computed_at",    "avg_row_bytes": 300, "category": "core"},
     "rpi_scores":               {"time_col": "computed_at",    "avg_row_bytes": 300, "category": "core"},
     "generic_index_scores":     {"time_col": "computed_at",    "avg_row_bytes": 300, "category": "core"},
 

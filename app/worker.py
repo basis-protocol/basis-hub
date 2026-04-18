@@ -524,7 +524,7 @@ def run_cycle_diagnostics():
             "dex_pool_ohlcv": ("timestamp", 6),
             "market_chart_history": ("timestamp", 26),
             "scores": ("computed_at", 3),
-            "psi_scores": ("scored_at", 26),
+            "psi_scores": ("computed_at", 26),
         }
         _stale_found = []
         for _tbl, (_col, _max_h) in _stale_thresholds.items():
@@ -1214,7 +1214,7 @@ async def run_fast_cycle():
                     _sii_ts = _sii_ts.replace(tzinfo=timezone.utc)
                 sii_age = f"{(datetime.now(timezone.utc) - _sii_ts).total_seconds() / 3600:.1f}"
 
-            psi_row = fetch_one("SELECT COUNT(*) as cnt, MAX(scored_at) as latest FROM psi_scores")
+            psi_row = fetch_one("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM psi_scores")
             psi_count = psi_row["cnt"] if psi_row else 0
             psi_age = "?"
             if psi_row and psi_row.get("latest"):
@@ -2653,49 +2653,78 @@ async def main():
 
     logger.error("[bridges] collector disabled — DeFiLlama paywalled all endpoints. See constitution v9.3 for deferral rationale.")
 
-    # Fix governance_proposals schema drift — migration 052 created the table,
-    # but code was written for migration 069's schema. Add missing columns.
-    try:
-        for _col_sql in [
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS protocol_id INTEGER",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS proposal_source VARCHAR(50)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body TEXT",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_hash VARCHAR(66)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_address VARCHAR(42)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_ens VARCHAR(200)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS state VARCHAR(50)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_start TIMESTAMPTZ",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_end TIMESTAMPTZ",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_total DECIMAL(30,8)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_for DECIMAL(30,8)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_against DECIMAL(30,8)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_abstain DECIMAL(30,8)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS quorum DECIMAL(30,8)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS choices JSONB",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS votes JSONB",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS ipfs_hash VARCHAR(100)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS discussion_url TEXT",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ DEFAULT NOW()",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_changed BOOLEAN DEFAULT FALSE",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS first_capture_body_hash VARCHAR(66)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS content_hash VARCHAR(66)",
-            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS attested_at TIMESTAMPTZ",
-        ]:
-            try:
-                execute(_col_sql)
-            except Exception:
-                pass
-        # Add unique constraint for the 069-style columns if it doesn't exist
+    # Schema introspection — log actual columns for tables with known drift
+    _schema_tables = ["governance_proposals", "psi_scores", "scores", "oracle_registry"]
+    for _st in _schema_tables:
         try:
-            execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_proposals_source_id
-                ON governance_proposals (proposal_source, proposal_id)
-            """)
+            _cols = fetch_all(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s ORDER BY ordinal_position",
+                (_st.split(".")[-1],),
+            )
+            _col_names = [r["column_name"] for r in (_cols or [])]
+            logger.error(f"[schema] {_st}: {_col_names if _col_names else 'TABLE DOES NOT EXIST'}")
+        except Exception as _se:
+            logger.error(f"[schema] {_st}: introspection failed: {_se}")
+
+    # Fix governance_proposals schema drift — add missing columns from migration 069
+    for _col_sql in [
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS protocol_id INTEGER",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS proposal_source VARCHAR(50)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body TEXT",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_hash VARCHAR(66)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_address VARCHAR(42)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_ens VARCHAR(200)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS state VARCHAR(50)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_start TIMESTAMPTZ",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_end TIMESTAMPTZ",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_total DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_for DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_against DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_abstain DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS quorum DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS choices JSONB",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS votes JSONB",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS ipfs_hash VARCHAR(100)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS discussion_url TEXT",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ DEFAULT NOW()",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_changed BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS first_capture_body_hash VARCHAR(66)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS content_hash VARCHAR(66)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS attested_at TIMESTAMPTZ",
+    ]:
+        try:
+            execute(_col_sql)
+        except Exception as _ae:
+            logger.error(f"[schema_fix] ALTER failed: {_col_sql[:80]} — {_ae}")
+
+    # Fix psi_scores — add scored_at alias if missing (code references scored_at but table has computed_at)
+    try:
+        execute("ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ DEFAULT NOW()")
+        logger.error("[schema_fix] psi_scores.scored_at column ensured")
+    except Exception as _ae:
+        logger.error(f"[schema_fix] psi_scores.scored_at failed: {_ae}")
+
+    # Unique index for governance_proposals 069-style
+    try:
+        execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_proposals_source_id
+            ON governance_proposals (proposal_source, proposal_id)
+        """)
+    except Exception as _ae:
+        logger.error(f"[schema_fix] governance_proposals unique index failed: {_ae}")
+
+    # Log schema AFTER fixes
+    for _st in ["governance_proposals", "psi_scores"]:
+        try:
+            _cols = fetch_all(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s ORDER BY ordinal_position",
+                (_st,),
+            )
+            logger.error(f"[schema_after] {_st}: {[r['column_name'] for r in (_cols or [])]}")
         except Exception:
             pass
-        logger.info("governance_proposals schema aligned with migration 069")
-    except Exception as e:
-        logger.debug(f"governance_proposals schema fix skipped: {e}")
 
     # Run diagnostics at startup — immediate snapshot before first cycle
     logger.error("[startup_diagnostic] running initial stale/provenance/budget check...")
