@@ -2482,8 +2482,10 @@ async def main():
     parser.add_argument("--coin", type=str, help="Score single coin")
     parser.add_argument("--interval", type=int, default=COLLECTION_INTERVAL_MINUTES, help="Minutes between cycles")
     args = parser.parse_args()
-    
+
+    logger.error("[startup] worker main() entered — initializing pool")
     init_pool()
+    logger.error("[startup] pool initialized — running schema fixes")
 
     # Ensure API usage tracking tables exist
     try:
@@ -2514,41 +2516,45 @@ async def main():
             )
         """)
     except Exception as e:
-        logger.debug(f"API usage table creation skipped: {e}")
+        logger.error(f"[startup] API usage table creation failed: {e}")
 
-    # VACUUM ANALYZE churny tables (DELETE+INSERT pattern inflates pg_stat)
-    # then ANALYZE the rest so n_live_tup is fresh
+    # VACUUM ANALYZE churny tables — needs autocommit (can't run in transaction)
     try:
-        from app.database import get_cursor as _analyze_gc
-        with _analyze_gc() as cur:
-            # VACUUM ANALYZE for tables with DELETE+INSERT churn
+        import psycopg2 as _vac_pg
+        _vac_url = os.environ.get("DATABASE_URL", "")
+        if _vac_url:
+            _vac_conn = _vac_pg.connect(_vac_url)
+            _vac_conn.autocommit = True
+            _vac_cur = _vac_conn.cursor()
             for _tbl in [
                 "wallet_graph.wallet_risk_scores",
                 "wallet_graph.wallet_holdings",
                 "component_readings",
             ]:
                 try:
-                    cur.execute("COMMIT")  # VACUUM can't run inside a transaction
-                    cur.execute(f"VACUUM ANALYZE {_tbl}")
-                except Exception:
+                    _vac_cur.execute(f"VACUUM ANALYZE {_tbl}")
+                except Exception as _ve:
+                    logger.error(f"[startup] VACUUM ANALYZE {_tbl} failed: {_ve}")
                     try:
-                        cur.execute(f"ANALYZE {_tbl}")
+                        _vac_cur.execute(f"ANALYZE {_tbl}")
                     except Exception:
                         pass
             # Regular ANALYZE for other key tables
             for _tbl in [
-                "component_readings", "score_history", "scores", "psi_scores",
+                "score_history", "scores", "psi_scores",
                 "wallet_graph.wallets", "wallet_graph.wallet_edges",
                 "entity_snapshots_hourly", "data_provenance", "state_attestations",
                 "provenance_proofs", "assessment_events",
             ]:
                 try:
-                    cur.execute(f"ANALYZE {_tbl}")
+                    _vac_cur.execute(f"ANALYZE {_tbl}")
                 except Exception:
                     pass
-        logger.info("VACUUM ANALYZE complete on churny tables, ANALYZE on key tables")
+            _vac_cur.close()
+            _vac_conn.close()
+            logger.error("[startup] VACUUM ANALYZE complete")
     except Exception as e:
-        logger.debug(f"ANALYZE skipped: {e}")
+        logger.error(f"[startup] VACUUM ANALYZE skipped: {e}")
 
     # Create state_growth_snapshots table if needed
     try:
@@ -2649,7 +2655,7 @@ async def main():
             """)
             logger.info("Oracle registry seeded with 7 feeds at startup")
     except Exception as e:
-        logger.debug(f"Oracle table creation skipped: {e}")
+        logger.error(f"[startup] Oracle table creation failed: {e}")
 
     logger.error("[bridges] collector disabled — DeFiLlama paywalled all endpoints. See constitution v9.3 for deferral rationale.")
 
