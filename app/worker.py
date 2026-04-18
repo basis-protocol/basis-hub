@@ -2520,6 +2520,7 @@ async def main():
         import httpx as _httpx_mod
         from app.utils.api_tracker import tracker as _api_tracker
         _orig_send = _httpx_mod.AsyncClient.send
+        _patch_call_count = [0]
         async def _tracked_send(self, request, **kwargs):
             _t0 = time.monotonic()
             try:
@@ -2528,12 +2529,16 @@ async def main():
                 _provider = _host.split(".")[-2] if "." in _host else _host
                 _api_tracker.record(_provider, str(request.url.path)[:100], _resp.status_code,
                                     int((time.monotonic() - _t0) * 1000))
+                _patch_call_count[0] += 1
+                if _patch_call_count[0] <= 3:
+                    logger.error(f"[api_tracker] recorded: {_provider} {request.url.path} → {_resp.status_code}")
                 return _resp
             except Exception as _te:
                 _host = request.url.host or ""
                 _provider = _host.split(".")[-2] if "." in _host else _host
                 _api_tracker.record(_provider, str(request.url.path)[:100], 599,
                                     int((time.monotonic() - _t0) * 1000))
+                _patch_call_count[0] += 1
                 raise
         _httpx_mod.AsyncClient.send = _tracked_send
         logger.error("[startup] httpx monkey-patched for API tracking")
