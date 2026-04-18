@@ -225,7 +225,7 @@ def link_batch_to_proof(table_name: str, data_type: str, batch_timestamp: str = 
     time_cols = {
         "liquidity_depth": "snapshot_at",
         "yield_snapshots": "snapshot_at",
-        "governance_proposals": "collected_at",
+        "governance_proposals": "captured_at",
         "governance_voters": "collected_at",
         "bridge_flows": "snapshot_at",
         "exchange_snapshots": "snapshot_at",

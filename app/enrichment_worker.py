@@ -592,7 +592,7 @@ async def run_enrichment_pipeline() -> dict:
         name="governance_activity", func=_run_governance_collection,
         timeout_seconds=600, group="data_layer", priority=3,
         gate_check=make_db_gate(
-            "SELECT MAX(collected_at) AS latest FROM governance_proposals",
+            "SELECT MAX(captured_at) AS latest FROM governance_proposals",
             min_hours=24,
         ),
     ))

@@ -44,7 +44,7 @@ TRACKED_TABLES = {
     # === Universal Data Layer — Tier 1-8 ===
     "liquidity_depth":          {"time_col": "snapshot_at",    "avg_row_bytes": 300, "category": "data_layer"},
     "yield_snapshots":          {"time_col": "snapshot_at",    "avg_row_bytes": 250, "category": "data_layer"},
-    "governance_proposals":     {"time_col": "collected_at",   "avg_row_bytes": 2000, "category": "data_layer"},
+    "governance_proposals":     {"time_col": "captured_at",    "avg_row_bytes": 2000, "category": "data_layer"},
     "governance_voters":        {"time_col": "collected_at",   "avg_row_bytes": 150, "category": "data_layer"},
     "bridge_flows":             {"time_col": "snapshot_at",    "avg_row_bytes": 200, "category": "deferred"},
     "exchange_snapshots":       {"time_col": "snapshot_at",    "avg_row_bytes": 500, "category": "data_layer"},

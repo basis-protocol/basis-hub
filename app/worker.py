@@ -517,7 +517,7 @@ def run_cycle_diagnostics():
             "exchange_snapshots": ("snapshot_at", 3),
             "entity_snapshots_hourly": ("snapshot_at", 3),
             "yield_snapshots": ("snapshot_at", 26),
-            "governance_proposals": ("collected_at", 26),
+            "governance_proposals": ("captured_at", 26),
             "peg_snapshots_5m": ("timestamp", 26),
             "mint_burn_events": ("collected_at", 26),
             "contract_surveillance": ("scanned_at", 170),
@@ -557,9 +557,20 @@ def run_cycle_diagnostics():
         _conf_ids = {r["id"] for r in (_configured or [])}
         _act_ids = {r["source_domain"] for r in (_active or [])}
         _missing = sorted(_conf_ids - _act_ids)
+        _extra = sorted(_act_ids - _conf_ids)
         logger.error(
-            f"[provenance_gap] configured={len(_conf_ids)}, producing={len(_act_ids)}, missing={_missing}"
+            f"[provenance_gap] configured={len(_conf_ids)}, producing={len(_act_ids)}, "
+            f"missing={_missing}"
         )
+        if _extra:
+            logger.error(f"[provenance_gap] producing but not configured: {_extra}")
+        if len(_act_ids) == 0:
+            _total_proofs = fetch_one("SELECT COUNT(*) as cnt FROM provenance_proofs")
+            _recent = fetch_one("SELECT COUNT(*) as cnt FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '24 hours'")
+            logger.error(
+                f"[provenance_gap] debug: total_proofs={_total_proofs['cnt'] if _total_proofs else 0}, "
+                f"proofs_24h={_recent['cnt'] if _recent else 0}"
+            )
     except Exception as _e:
         logger.error(f"[provenance_gap] failed: {_e}")
 
@@ -2641,6 +2652,50 @@ async def main():
         logger.debug(f"Oracle table creation skipped: {e}")
 
     logger.error("[bridges] collector disabled — DeFiLlama paywalled all endpoints. See constitution v9.3 for deferral rationale.")
+
+    # Fix governance_proposals schema drift — migration 052 created the table,
+    # but code was written for migration 069's schema. Add missing columns.
+    try:
+        for _col_sql in [
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS protocol_id INTEGER",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS proposal_source VARCHAR(50)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body TEXT",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_hash VARCHAR(66)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_address VARCHAR(42)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_ens VARCHAR(200)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS state VARCHAR(50)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_start TIMESTAMPTZ",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_end TIMESTAMPTZ",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_total DECIMAL(30,8)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_for DECIMAL(30,8)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_against DECIMAL(30,8)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_abstain DECIMAL(30,8)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS quorum DECIMAL(30,8)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS choices JSONB",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS votes JSONB",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS ipfs_hash VARCHAR(100)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS discussion_url TEXT",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_changed BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS first_capture_body_hash VARCHAR(66)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS content_hash VARCHAR(66)",
+            "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS attested_at TIMESTAMPTZ",
+        ]:
+            try:
+                execute(_col_sql)
+            except Exception:
+                pass
+        # Add unique constraint for the 069-style columns if it doesn't exist
+        try:
+            execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_proposals_source_id
+                ON governance_proposals (proposal_source, proposal_id)
+            """)
+        except Exception:
+            pass
+        logger.info("governance_proposals schema aligned with migration 069")
+    except Exception as e:
+        logger.debug(f"governance_proposals schema fix skipped: {e}")
 
     # Run diagnostics at startup — immediate snapshot before first cycle
     logger.error("[startup_diagnostic] running initial stale/provenance/budget check...")
