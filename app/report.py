@@ -423,21 +423,27 @@ def _get_protocols_for_stablecoin(symbol: str) -> list[dict]:
 
 
 def _get_stablecoin_exposure(protocol_slug: str) -> list[dict]:
-    """Get stablecoins held/accepted by a protocol."""
+    """Get stablecoins held/accepted by a protocol (latest snapshot only)."""
     try:
         rows = fetch_all("""
-            SELECT ce.token_symbol AS asset_symbol,
-                   SUM(ce.tvl_usd) AS exposure_usd,
+            WITH latest AS (
+                SELECT DISTINCT ON (token_symbol, chain, pool_id)
+                       token_symbol, chain, tvl_usd
+                FROM protocol_collateral_exposure
+                WHERE protocol_slug = %s AND is_stablecoin = TRUE
+                ORDER BY token_symbol, chain, pool_id, snapshot_date DESC
+            )
+            SELECT l.token_symbol AS asset_symbol,
+                   SUM(l.tvl_usd) AS exposure_usd,
                    MAX(s.overall_score) AS overall_score,
                    MAX(s.grade) AS grade,
                    MAX(st.id) AS stablecoin_id,
                    MAX(st.name) AS name,
-                   COUNT(DISTINCT ce.chain) AS chain_count
-            FROM protocol_collateral_exposure ce
-            LEFT JOIN stablecoins st ON UPPER(st.symbol) = UPPER(ce.token_symbol)
+                   COUNT(DISTINCT l.chain) AS chain_count
+            FROM latest l
+            LEFT JOIN stablecoins st ON UPPER(st.symbol) = UPPER(l.token_symbol)
             LEFT JOIN scores s ON s.stablecoin_id = st.id
-            WHERE ce.protocol_slug = %s AND ce.is_stablecoin = TRUE
-            GROUP BY ce.token_symbol
+            GROUP BY l.token_symbol
             ORDER BY exposure_usd DESC NULLS LAST
         """, (protocol_slug,))
         return [{
@@ -568,7 +574,7 @@ def _get_governance_activity(slug: str, days: int = 30) -> dict:
                 for r in edits
             ]
 
-        # Recent high-impact events
+        # Recent high-impact events from governance_events
         events = fetch_all("""
             SELECT event_type, title, description, outcome, event_timestamp
             FROM governance_events
@@ -584,6 +590,27 @@ def _get_governance_activity(slug: str, days: int = 30) -> dict:
                  "timestamp": r["event_timestamp"].isoformat() if r.get("event_timestamp") else None}
                 for r in events
             ]
+
+        # Fallback: executed proposals from governance_proposals
+        if not result["recent_high_impact"]:
+            proposals = fetch_all("""
+                SELECT proposal_id, title, state, proposal_state,
+                       COALESCE(captured_at, scraped_at, created_at) as ts
+                FROM governance_proposals
+                WHERE protocol_slug = %s
+                  AND COALESCE(state, proposal_state) IN ('executed', 'closed', 'passed')
+                  AND COALESCE(captured_at, scraped_at, created_at) > NOW() - INTERVAL '%s days'
+                ORDER BY COALESCE(captured_at, scraped_at, created_at) DESC
+                LIMIT 5
+            """, (slug, days))
+            if proposals:
+                result["recent_high_impact"] = [
+                    {"type": "executed_proposal",
+                     "title": (r.get("title") or "")[:80] + ("..." if len(r.get("title") or "") > 80 else ""),
+                     "description": "", "outcome": r.get("state") or r.get("proposal_state"),
+                     "timestamp": r["ts"].isoformat() if r.get("ts") else None}
+                    for r in proposals
+                ]
     except Exception as e:
         logger.warning(f"_get_governance_activity({slug}) failed: {e}")
     return result

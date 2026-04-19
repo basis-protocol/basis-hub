@@ -316,14 +316,17 @@ def _render_protocol_event(lines: list, d: dict):
 
     # 4-5. Admin key rotation / peg event — not yet wired
 
-    # 6. Any executed governance event or parameter change
+    # 6. Any executed governance event or parameter change proposal
     events = (d.get("governance_activity") or {}).get("recent_high_impact") or []
     if events:
         ev = events[0]
+        title = ev.get("title", "")
+        if len(title) > 80:
+            title = title[:77] + "..."
+        ev_type = ev.get("type", "governance event").replace("_", " ").title()
         lines.append(
-            f"**{ev.get('type', 'Governance event')}**: "
-            f"\"{ev.get('title', '')}\" — outcome: {ev.get('outcome', 'unknown')} "
-            f"({(ev.get('timestamp') or '')[:10]}).")
+            f"**{ev_type}** ({(ev.get('timestamp') or '')[:10]}): "
+            f"\"{title}\" — outcome: {ev.get('outcome', 'unknown')}.")
         return
     if params:
         p = params[0]
