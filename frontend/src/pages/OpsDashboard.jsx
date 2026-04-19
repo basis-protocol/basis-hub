@@ -2232,6 +2232,9 @@ function ReportsPanel() {
   const [generating, setGenerating] = useState(false);
   const [genElapsed, setGenElapsed] = useState(0);
   const [batchResults, setBatchResults] = useState([]);
+  const [emailDraft, setEmailDraft] = useState(null);
+  const [emailDraftOpen, setEmailDraftOpen] = useState(false);
+  const [copyMsg, setCopyMsg] = useState("");
 
   useEffect(() => {
     loadEntities();
@@ -2496,6 +2499,55 @@ function ReportsPanel() {
                 <a href={`/api/reports/verify/${attestation.report_hash}`} target="_blank" rel="noopener"
                   style={{ color: T.accent, fontSize: 10 }}>Verify attestation →</a>
               </div>
+            </div>
+          )}
+          {/* Engagement sharing tools */}
+          <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => {
+              const url = `https://basisprotocol.xyz/engagement/${entityType}/${entityId}`;
+              navigator.clipboard.writeText(url).then(() => { setCopyMsg("URL copied"); setTimeout(() => setCopyMsg(""), 2000); });
+            }} style={btn()}>Copy Shareable URL</button>
+            <button onClick={async () => {
+              try {
+                const key = getAdminKey();
+                const params = new URLSearchParams({ template: "engagement", format: "json" });
+                const resp = await fetch(`/api/reports/${entityType}/${entityId}?${params}`, {
+                  headers: { "x-admin-key": key },
+                });
+                if (!resp.ok) throw new Error(`${resp.status}`);
+                const data = await resp.json();
+                const draft = data.email_draft;
+                if (draft) {
+                  const text = `Subject: ${draft.subject}\n\n${draft.body}`;
+                  navigator.clipboard.writeText(text).then(() => { setCopyMsg("Email draft copied"); setTimeout(() => setCopyMsg(""), 2000); });
+                  setEmailDraft(draft);
+                  setEmailDraftOpen(true);
+                } else {
+                  setCopyMsg("No email draft in response");
+                  setTimeout(() => setCopyMsg(""), 2000);
+                }
+              } catch (e) {
+                setCopyMsg(`Error: ${e.message}`);
+                setTimeout(() => setCopyMsg(""), 3000);
+              }
+            }} style={btn()}>Copy Email Draft</button>
+            {copyMsg && <span style={{ fontSize: 10, fontFamily: T.mono, color: "#27ae60" }}>{copyMsg}</span>}
+          </div>
+          {/* Collapsible email draft */}
+          {emailDraft && (
+            <div style={{ marginTop: 12 }}>
+              <button onClick={() => setEmailDraftOpen(!emailDraftOpen)}
+                style={{ ...btn(), fontSize: 10, marginBottom: 8 }}>
+                {emailDraftOpen ? "Hide" : "Show"} Email Draft
+              </button>
+              {emailDraftOpen && (
+                <div style={{ padding: 12, background: T.paperWarm, border: `1px solid ${T.ruleLight}`, fontSize: 11, fontFamily: T.mono }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <strong>Subject:</strong> {emailDraft.subject}
+                  </div>
+                  <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 10, lineHeight: 1.5 }}>{emailDraft.body}</pre>
+                </div>
+              )}
             </div>
           )}
         </Section>

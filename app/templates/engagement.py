@@ -665,3 +665,131 @@ def _render_wallet_event(lines: list, d: dict):
         f"No material events affecting this wallet in the last 90 days. "
         f"Basis will reconstruct any prior event on request — "
         f"query at `{CANONICAL_BASE_URL}/api/wallets/{entity_id}`.")
+
+
+# =============================================================================
+# Email Draft Generator
+# =============================================================================
+
+def _extract_event_summary(d: dict) -> str:
+    """Extract the first event one-liner from Section 3 data sources."""
+    entity_type = d.get("entity_type", "protocol")
+    name = d.get("name", d.get("entity_id", "Unknown"))
+    entity_id = d.get("entity_id", "")
+
+    if entity_type == "protocol":
+        # Oracle stress
+        stress = (d.get("oracle_behavior") or {}).get("stress_events") or []
+        sig_stress = [s for s in stress if s.get("max_deviation_pct") and abs(s["max_deviation_pct"]) >= 0.25]
+        if sig_stress:
+            ev = sig_stress[0]
+            feed = ev.get("feed", "a monitored feed")
+            date = (ev.get("timestamp") or "")[:10]
+            dev = f"{abs(ev.get('max_deviation_pct', 0)):.1f}%"
+            return f"{name}'s oracle infrastructure experienced stress on {date}: the {feed} deviated {dev} from the CEX reference price."
+
+        # Reactive parameter change
+        params = d.get("parameter_changes") or []
+        reactive = [p for p in params if p.get("context") == "reactive"]
+        if reactive:
+            p = reactive[0]
+            param = p.get("parameter", "a risk parameter")
+            date = (p.get("timestamp") or "")[:10]
+            return f"{name} made a reactive parameter change on {date}: {param} adjusted in response to market conditions."
+
+        # Post-publication governance edit
+        edits = (d.get("governance_activity") or {}).get("edited_after_publication") or []
+        if edits:
+            title = edits[0].get("title", "a governance proposal")
+            return f"Basis detected a post-publication edit to \"{title}\" — the proposal body was modified after voting opened."
+
+        # Executed proposal
+        events = (d.get("governance_activity") or {}).get("recent_high_impact") or []
+        if events:
+            ev = events[0]
+            title = ev.get("title") or ""
+            date = (ev.get("timestamp") or "")[:10]
+            return f"{name} executed a governance proposal on {date}: \"{title[:80]}\"."
+
+        # Generic parameter change
+        if params:
+            p = params[0]
+            param = p.get("parameter", "a parameter")
+            date = (p.get("timestamp") or "")[:10]
+            return f"{name} adjusted {param} on {date}."
+
+        return f"No material events affecting {name} in the last 90 days."
+
+    elif entity_type == "stablecoin":
+        # Depeg event
+        peg = d.get("peg_behavior") or {}
+        if peg.get("depegs_over_50bps", 0) > 0 and peg.get("max_deviation_bps"):
+            max_dev = peg["max_deviation_bps"]
+            count = peg["depegs_over_50bps"]
+            return f"{name} experienced {count} depeg event{'s' if count > 1 else ''} exceeding 50bps (max {max_dev:.0f}bps)."
+
+        # Reserve composition shift
+        reserve = d.get("reserve_composition") or {}
+        extractions = reserve.get("extractions") or []
+        if len(extractions) >= 2:
+            latest_date = (extractions[0].get("extracted_at") or "")[:10]
+            issuer = d.get("issuer") or name
+            return f"{issuer} published an updated reserve attestation on {latest_date}."
+
+        # Holder concentration shift
+        conc = d.get("holder_concentration") or {}
+        if conc.get("gini_delta") is not None and abs(conc["gini_delta"]) >= 0.01:
+            direction = "increased" if conc["gini_delta"] > 0 else "decreased"
+            return f"Holder concentration for {name} {direction} over the observation window."
+
+        if extractions:
+            latest_date = (extractions[0].get("extracted_at") or "")[:10]
+            return f"Most recent reserve attestation captured on {latest_date}."
+
+        return f"No material events affecting {name} in the last 90 days."
+
+    elif entity_type == "wallet":
+        signals = d.get("signal_history") or []
+        if signals:
+            s = signals[0]
+            return f"{s.get('type', 'Event')}: {s.get('summary', 'Assessment event detected.')}"
+
+        return f"No material events affecting this wallet in the last 90 days."
+
+    return f"No material events in the last 90 days."
+
+
+def generate_email_draft(report_data: dict, report_hash: str = "", timestamp: str = "") -> dict:
+    """Generate pre-composed email draft from engagement data."""
+    d = report_data
+    entity_type = d.get("entity_type", "protocol")
+    name = d.get("name", d.get("entity_id", "Unknown"))
+    entity_id = d.get("entity_id", "")
+    ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    event_summary = _extract_event_summary(d)
+    shareable_url = f"{CANONICAL_BASE_URL}/engagement/{entity_type}/{entity_id}"
+
+    subject = f"{event_summary} — one data point for context"
+
+    body_lines = []
+    body_lines.append(event_summary)
+    body_lines.append("")
+    body_lines.append(
+        f"We put together a short engagement artifact for {name} — "
+        f"scores, exposure, and the event timeline in one page:"
+    )
+    body_lines.append("")
+    body_lines.append(shareable_url)
+    body_lines.append("")
+    if report_hash:
+        body_lines.append(f"Report hash: `{report_hash[:16]}...` — verifiable at {CANONICAL_BASE_URL}/api/reports/verify/{report_hash}")
+        body_lines.append("")
+    body_lines.append("---")
+    body_lines.append(f"Basis Protocol · {CANONICAL_BASE_URL} · Decision integrity infrastructure")
+
+    return {
+        "subject": subject,
+        "body": "\n".join(body_lines),
+        "shareable_url": shareable_url,
+    }
