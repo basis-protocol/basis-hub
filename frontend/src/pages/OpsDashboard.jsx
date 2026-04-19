@@ -2454,6 +2454,10 @@ function ReportsPanel() {
             style={btn()}>Engagement: Morpho</button>
           <button onClick={() => { setEntityType("stablecoin"); setEntityId("usdc"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
             style={btn()}>Engagement: USDC</button>
+          <button onClick={() => { setEntityType("stablecoin"); setEntityId("usde"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
+            style={btn()}>Engagement: USDe</button>
+          <button onClick={() => { setEntityType("stablecoin"); setEntityId("dai"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
+            style={btn()}>Engagement: DAI</button>
         </div>
         {batchResults.length > 0 && (
           <div style={{ marginTop: 12 }}>

@@ -131,6 +131,12 @@ def _assemble_stablecoin(symbol: str) -> dict | None:
         "components": [_fmt_component(c) for c in components],
         "component_count": row.get("component_count") or len(components),
         "protocols_holding": protocols_holding,
+        "reserve_composition": _get_reserve_composition_history(symbol),
+        "peg_behavior": _get_peg_behavior(symbol),
+        "freeze_history": _get_freeze_history(symbol),
+        "issuer_activity": _get_issuer_activity(symbol),
+        "holder_concentration": _get_holder_concentration_trend(symbol),
+        "cross_protocol_exposure": _get_cross_protocol_exposure(symbol),
         "score_hashes": score_hashes,
         "state_hashes": state_hashes,
         "history": [{"score": float(h["overall_score"]),
@@ -343,6 +349,10 @@ def _assemble_wallet(address: str) -> dict | None:
         } for h in holdings],
         "num_scored": risk.get("num_scored_holdings") if risk else sum(1 for h in holdings if h.get("is_scored")),
         "num_unscored": risk.get("num_unscored_holdings") if risk else sum(1 for h in holdings if not h.get("is_scored")),
+        "holdings_with_scores": _get_holdings_with_scores(addr),
+        "concentration": _get_wallet_concentration(addr),
+        "contagion": _get_wallet_contagion(addr),
+        "signal_history": _get_wallet_signal_history(addr),
         "score_hashes": score_hashes,
         "state_hashes": state_hashes,
         "formula_version": risk.get("formula_version") if risk else "wallet-v1.0.0",
@@ -840,3 +850,244 @@ def _get_sanctions(slug: str, days: int = 180) -> dict:
     except Exception as e:
         logger.warning(f"_get_sanctions({slug}) failed: {e}")
     return result
+
+
+# =============================================================================
+# Stablecoin composers — Prompt 4
+# =============================================================================
+
+def _get_reserve_composition_history(symbol: str, days: int = 90) -> dict:
+    """CDA extraction history showing reserve mix changes."""
+    try:
+        rows = fetch_all("""
+            SELECT structured_data, extracted_at, source_url
+            FROM cda_vendor_extractions
+            WHERE UPPER(asset_symbol) = UPPER(%s)
+              AND extracted_at > NOW() - INTERVAL '%s days'
+            ORDER BY extracted_at DESC
+            LIMIT 10
+        """, (symbol, days))
+        if not rows:
+            return {"note": "No CDA extractions found for this stablecoin"}
+        extractions = []
+        for r in rows:
+            data = r.get("structured_data") or {}
+            if isinstance(data, str):
+                import json
+                try: data = json.loads(data)
+                except Exception: data = {}
+            extractions.append({
+                "extracted_at": r["extracted_at"].isoformat() if r.get("extracted_at") else None,
+                "source": r.get("source_url", ""),
+                "data": data,
+            })
+        return {"extractions": extractions, "count": len(extractions)}
+    except Exception as e:
+        logger.warning(f"_get_reserve_composition_history({symbol}) failed: {e}")
+        return {"note": f"Reserve query failed: {e}"}
+
+
+def _get_peg_behavior(symbol: str, days: int = 90) -> dict:
+    """Peg stability summary from price history."""
+    try:
+        sid_row = fetch_one("SELECT id FROM stablecoins WHERE UPPER(symbol) = UPPER(%s)", (symbol,))
+        if not sid_row:
+            return {}
+        sid = sid_row["id"]
+        stats = fetch_one("""
+            SELECT COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE deviation_bps > 50) as depegs,
+                   MAX(deviation_bps) as max_deviation,
+                   AVG(deviation_bps) as mean_deviation
+            FROM peg_snapshots_5m
+            WHERE stablecoin_id = %s AND timestamp > NOW() - INTERVAL '%s days'
+        """, (sid, days))
+        if not stats:
+            return {}
+        return {
+            "readings": stats.get("total", 0),
+            "depegs_over_50bps": stats.get("depegs", 0),
+            "max_deviation_bps": round(float(stats["max_deviation"]), 1) if stats.get("max_deviation") else None,
+            "mean_deviation_bps": round(float(stats["mean_deviation"]), 2) if stats.get("mean_deviation") else None,
+            "window_days": days,
+        }
+    except Exception as e:
+        logger.warning(f"_get_peg_behavior({symbol}) failed: {e}")
+        return {}
+
+
+def _get_freeze_history(symbol: str, days: int = 365) -> dict:
+    """Freeze event history. Pipeline not yet shipped — surfaces gap."""
+    return {"note": "Freeze event tracking not yet shipped as a captured domain", "planned": True}
+
+
+def _get_issuer_activity(symbol: str) -> dict:
+    """Parent company filings, sanctions screening for this issuer."""
+    result = {}
+    try:
+        screening = fetch_all("""
+            SELECT target_name, target_type FROM sanctions_screen_targets
+            WHERE LOWER(entity_symbol) = LOWER(%s)
+        """, (symbol,))
+        result["screening_targets"] = len(screening) if screening else 0
+        result["last_screening"] = None
+    except Exception:
+        pass
+    return result if result else {"note": "Issuer activity data not yet captured"}
+
+
+def _get_holder_concentration_trend(symbol: str, days: int = 90) -> dict:
+    """Clustered holder concentration from V9.2 pipeline."""
+    try:
+        rows = fetch_all("""
+            SELECT snapshot_date, nominal_gini, clustered_gini,
+                   nominal_top10_pct, clustered_top10_pct, cluster_count
+            FROM concentration_snapshots
+            WHERE UPPER(stablecoin_symbol) = UPPER(%s)
+              AND snapshot_date > CURRENT_DATE - %s
+            ORDER BY snapshot_date DESC
+            LIMIT 10
+        """, (symbol, days))
+        if not rows:
+            return {"note": "No concentration snapshots captured for this stablecoin"}
+        latest = rows[0]
+        oldest = rows[-1] if len(rows) > 1 else latest
+        return {
+            "current_gini": float(latest["clustered_gini"]) if latest.get("clustered_gini") else None,
+            "gini_delta": round(float(latest["clustered_gini"] or 0) - float(oldest["clustered_gini"] or 0), 4) if len(rows) > 1 else None,
+            "top10_pct": float(latest["clustered_top10_pct"]) if latest.get("clustered_top10_pct") else None,
+            "cluster_count": latest.get("cluster_count"),
+            "snapshots": len(rows),
+        }
+    except Exception as e:
+        logger.warning(f"_get_holder_concentration_trend({symbol}) failed: {e}")
+        return {}
+
+
+def _get_cross_protocol_exposure(symbol: str) -> list:
+    """Protocols holding this stablecoin as collateral — inverse of _get_stablecoin_exposure."""
+    try:
+        rows = fetch_all("""
+            SELECT ce.protocol_slug, ce.tvl_usd,
+                   ps.overall_score as psi_score, ps.grade as psi_grade
+            FROM protocol_collateral_exposure ce
+            LEFT JOIN (
+                SELECT DISTINCT ON (protocol_slug) protocol_slug, overall_score, grade
+                FROM psi_scores ORDER BY protocol_slug, computed_at DESC
+            ) ps ON ps.protocol_slug = ce.protocol_slug
+            WHERE UPPER(ce.token_symbol) = UPPER(%s) AND ce.is_stablecoin = TRUE
+            ORDER BY ce.tvl_usd DESC NULLS LAST
+        """, (symbol,))
+        return [{
+            "protocol": r["protocol_slug"],
+            "exposure_usd": float(r["tvl_usd"]) if r.get("tvl_usd") else None,
+            "psi_score": float(r["psi_score"]) if r.get("psi_score") else None,
+            "psi_grade": r.get("psi_grade"),
+        } for r in rows] if rows else []
+    except Exception as e:
+        logger.warning(f"_get_cross_protocol_exposure({symbol}) failed: {e}")
+        return []
+
+
+# =============================================================================
+# Wallet composers — Prompt 4
+# =============================================================================
+
+def _get_holdings_with_scores(address: str) -> list:
+    """Holdings joined to SII scores and protocol mappings."""
+    try:
+        rows = fetch_all("""
+            SELECT h.symbol, h.value_usd, h.pct_of_wallet, h.is_scored,
+                   h.sii_score, h.sii_grade, h.chain
+            FROM wallet_graph.wallet_holdings h
+            WHERE LOWER(h.wallet_address) = LOWER(%s)
+              AND h.indexed_at > NOW() - INTERVAL '7 days'
+              AND h.value_usd >= 1
+            ORDER BY h.value_usd DESC
+        """, (address,))
+        return [{
+            "symbol": r.get("symbol"),
+            "value_usd": float(r["value_usd"]) if r.get("value_usd") else 0,
+            "pct": float(r["pct_of_wallet"]) if r.get("pct_of_wallet") else 0,
+            "sii_score": float(r["sii_score"]) if r.get("sii_score") is not None else None,
+            "grade": r.get("sii_grade"),
+            "chain": r.get("chain", "ethereum"),
+        } for r in rows] if rows else []
+    except Exception as e:
+        logger.warning(f"_get_holdings_with_scores({address}) failed: {e}")
+        return []
+
+
+def _get_wallet_concentration(address: str) -> dict:
+    """HHI, top-5 concentration, weighted SII."""
+    try:
+        risk = fetch_one("""
+            SELECT concentration_hhi, dominant_asset, dominant_asset_pct, risk_score
+            FROM wallet_graph.wallet_risk_scores
+            WHERE LOWER(wallet_address) = LOWER(%s)
+            ORDER BY computed_at DESC LIMIT 1
+        """, (address,))
+        if not risk:
+            return {}
+        return {
+            "hhi": float(risk["concentration_hhi"]) if risk.get("concentration_hhi") else None,
+            "dominant_asset": risk.get("dominant_asset"),
+            "dominant_pct": float(risk["dominant_asset_pct"]) if risk.get("dominant_asset_pct") else None,
+            "weighted_sii": float(risk["risk_score"]) if risk.get("risk_score") else None,
+        }
+    except Exception as e:
+        logger.warning(f"_get_wallet_concentration({address}) failed: {e}")
+        return {}
+
+
+def _get_wallet_contagion(address: str, depth: int = 2) -> dict:
+    """Connected wallets from the relationship graph."""
+    try:
+        edges = fetch_all("""
+            SELECT to_address, total_value_usd, transfer_count
+            FROM wallet_graph.wallet_edges
+            WHERE LOWER(from_address) = LOWER(%s)
+            ORDER BY total_value_usd DESC NULLS LAST
+            LIMIT 10
+        """, (address,))
+        if not edges:
+            return {"edges": [], "note": "No contagion edges captured for this address"}
+        result = []
+        for e in edges:
+            addr = e["to_address"]
+            display = f"{addr[:6]}...{addr[-4:]}" if len(addr) >= 10 else addr
+            risk = fetch_one("""
+                SELECT risk_score FROM wallet_graph.wallet_risk_scores
+                WHERE LOWER(wallet_address) = LOWER(%s) ORDER BY computed_at DESC LIMIT 1
+            """, (addr,))
+            result.append({
+                "address": display,
+                "value_usd": float(e["total_value_usd"]) if e.get("total_value_usd") else None,
+                "transfers": e.get("transfer_count", 0),
+                "risk_score": float(risk["risk_score"]) if risk and risk.get("risk_score") else None,
+            })
+        return {"edges": result}
+    except Exception as e:
+        logger.warning(f"_get_wallet_contagion({address}) failed: {e}")
+        return {"edges": [], "note": f"Contagion query failed: {e}"}
+
+
+def _get_wallet_signal_history(address: str, days: int = 180) -> list:
+    """Assessment events and signals for this wallet."""
+    try:
+        rows = fetch_all("""
+            SELECT event_type, severity, summary, detected_at
+            FROM assessment_events
+            WHERE LOWER(entity_id) = LOWER(%s) OR LOWER(wallet_address) = LOWER(%s)
+            ORDER BY detected_at DESC
+            LIMIT 20
+        """, (address, address))
+        return [{
+            "type": r.get("event_type"),
+            "severity": r.get("severity"),
+            "summary": r.get("summary", ""),
+            "timestamp": r["detected_at"].isoformat() if r.get("detected_at") else None,
+        } for r in rows] if rows else []
+    except Exception as e:
+        logger.warning(f"_get_wallet_signal_history({address}) failed: {e}")
+        return []
