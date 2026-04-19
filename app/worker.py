@@ -550,27 +550,25 @@ def run_cycle_diagnostics():
 
     # 2. Provenance gaps
     try:
-        _configured = fetch_all("SELECT id FROM provenance_sources WHERE enabled = true")
+        _configured = fetch_all("SELECT id, schedule FROM provenance_sources WHERE enabled = true")
         _active = fetch_all(
             "SELECT DISTINCT source_domain FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '24 hours'"
         )
-        _conf_ids = {r["id"] for r in (_configured or [])}
+        _hourly_ids = {r["id"] for r in (_configured or []) if r.get("schedule") == "hourly"}
+        _weekly_ids = {r["id"] for r in (_configured or []) if r.get("schedule") == "weekly"}
         _act_ids = {r["source_domain"] for r in (_active or [])}
-        _missing = sorted(_conf_ids - _act_ids)
-        _extra = sorted(_act_ids - _conf_ids)
+        _missing_hourly = sorted(_hourly_ids - _act_ids)
+        _missing_weekly = sorted(_weekly_ids - _act_ids)
         logger.error(
-            f"[provenance_gap] configured={len(_conf_ids)}, producing={len(_act_ids)}, "
-            f"missing={_missing}"
+            f"[provenance_gap] hourly: {len(_hourly_ids - _missing_hourly)}/{len(_hourly_ids)} producing, "
+            f"weekly: {len(_weekly_ids)}, "
+            f"missing_hourly={_missing_hourly}"
         )
+        if _missing_weekly:
+            logger.error(f"[provenance_gap] weekly sources (not expected in 24h): {_missing_weekly}")
+        _extra = sorted(_act_ids - _hourly_ids - _weekly_ids)
         if _extra:
             logger.error(f"[provenance_gap] producing but not configured: {_extra}")
-        if len(_act_ids) == 0:
-            _total_proofs = fetch_one("SELECT COUNT(*) as cnt FROM provenance_proofs")
-            _recent = fetch_one("SELECT COUNT(*) as cnt FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '24 hours'")
-            logger.error(
-                f"[provenance_gap] debug: total_proofs={_total_proofs['cnt'] if _total_proofs else 0}, "
-                f"proofs_24h={_recent['cnt'] if _recent else 0}"
-            )
     except Exception as _e:
         logger.error(f"[provenance_gap] failed: {_e}")
 
@@ -2789,9 +2787,8 @@ async def main():
         except Exception:
             pass
 
-    # Run diagnostics at startup — immediate snapshot before first cycle
-    logger.error("[startup_diagnostic] running initial stale/provenance/budget check...")
-    run_cycle_diagnostics()
+    # Startup diagnostic fires via the independent loop after 60s
+    logger.error("[startup] schema fixes complete, diagnostics will fire in 60s via independent loop")
 
     # Seed email alert channel if not configured
     try:
