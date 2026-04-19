@@ -692,13 +692,13 @@ def _get_oracle_behavior(slug: str, days: int = 90) -> dict:
                 "mean_latency_s": round(float(agg["mean_latency"]), 1) if agg and agg.get("mean_latency") else None,
             })
 
-        # Stress events in window — filter to ≥25bps (0.0025%) to exclude feed noise
+        # Stress events in window — filter to ≥25bps (0.25% since column stores percentage)
         stress = fetch_all("""
             SELECT oracle_name, asset_symbol, event_type, event_start,
                    duration_seconds, max_deviation_pct, max_latency_seconds
             FROM oracle_stress_events
             WHERE event_start > NOW() - INTERVAL '%s days'
-              AND (max_deviation_pct >= 0.0025 OR max_latency_seconds >= 300)
+              AND (max_deviation_pct >= 0.25 OR max_latency_seconds >= 300)
             ORDER BY event_start DESC
             LIMIT 10
         """, (days,))

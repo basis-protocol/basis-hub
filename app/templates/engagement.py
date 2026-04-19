@@ -281,9 +281,14 @@ def _render_protocol_scores(lines: list, d: dict):
 def _render_protocol_event(lines: list, d: dict):
     entity_id = d.get("entity_id", "")
 
-    # 1. Oracle stress ≥25bps
+    # 1. Oracle stress ≥25bps (0.25% — column stores percentage values)
     stress = (d.get("oracle_behavior") or {}).get("stress_events") or []
-    sig_stress = [s for s in stress if s.get("max_deviation_pct") and abs(s["max_deviation_pct"]) >= 0.0025]
+    sig_stress = [s for s in stress if s.get("max_deviation_pct") and abs(s["max_deviation_pct"]) >= 0.25]
+    logger.info(
+        f"[event_select] {entity_id} bucket1: {len(stress)} raw stress, "
+        f"{len(sig_stress)} above 25bps threshold "
+        f"(values: {[round(s.get('max_deviation_pct', 0), 4) for s in stress[:5]]})"
+    )
     if sig_stress:
         ev = sig_stress[0]
         dur = f", lasted {ev['duration_s']}s" if ev.get("duration_s") else ""
@@ -296,6 +301,7 @@ def _render_protocol_event(lines: list, d: dict):
     # 2. Reactive-high-urgency parameter change
     params = d.get("parameter_changes") or []
     reactive = [p for p in params if p.get("context") == "reactive"]
+    logger.info(f"[event_select] {entity_id} bucket2: {len(params)} params, {len(reactive)} reactive")
     if reactive:
         p = reactive[0]
         lines.append(
@@ -306,6 +312,7 @@ def _render_protocol_event(lines: list, d: dict):
 
     # 3. Post-publication governance edit
     edits = (d.get("governance_activity") or {}).get("edited_after_publication") or []
+    logger.info(f"[event_select] {entity_id} bucket3: {len(edits)} edits")
     if edits:
         ed = edits[0]
         lines.append(
@@ -318,18 +325,21 @@ def _render_protocol_event(lines: list, d: dict):
 
     # 6. Any executed governance event or parameter change proposal
     events = (d.get("governance_activity") or {}).get("recent_high_impact") or []
+    logger.info(f"[event_select] {entity_id} bucket6: {len(events)} events")
     if events:
         ev = events[0]
         title = ev.get("title", "")
         if len(title) > 80:
             title = title[:77] + "..."
         ev_type = ev.get("type", "governance event").replace("_", " ").title()
+        logger.info(f"[event_select] {entity_id} SELECTED bucket6: {ev_type} — {title[:50]}")
         lines.append(
             f"**{ev_type}** ({(ev.get('timestamp') or '')[:10]}): "
             f"\"{title}\" — outcome: {ev.get('outcome', 'unknown')}.")
         return
     if params:
         p = params[0]
+        logger.info(f"[event_select] {entity_id} SELECTED bucket6-fallback: param {p.get('parameter')}")
         lines.append(
             f"**Parameter change** on {p.get('parameter', '')} "
             f"({(p.get('timestamp') or '')[:10]}): "
@@ -337,6 +347,7 @@ def _render_protocol_event(lines: list, d: dict):
         return
 
     # 7. Empty window
+    logger.info(f"[event_select] {entity_id} SELECTED bucket7: empty window")
     lines.append(
         f"No material events affecting your exposure set in the last 90 days. "
         f"Basis will reconstruct any prior event on request — "
