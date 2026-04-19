@@ -968,7 +968,7 @@ async def entity_page(slug: str, request: Request):
 <p class="meta"><a href="/">Basis Protocol</a> › <a href="/rankings">{idx}</a> › {name}</p>
 <h1>{name}{accruing_tag}</h1>
 <div style="display:flex;gap:24px;align-items:baseline;margin:12px 0 20px">
-<div class="score">{score:.1f if score else '—'}</div>
+<div class="score">{f"{score:.1f}" if score else "—"}</div>
 <div style="font-size:24px;font-weight:600">{grade}</div>
 <div class="meta">{idx} · {entity.get('formula_version', '')} · {computed[:10] if computed else ''}</div>
 </div>
