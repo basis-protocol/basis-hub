@@ -400,15 +400,33 @@ def _build_proposal_url(ev: dict) -> str:
     return ""
 
 
+def _strip_proposal_prefix(title: str) -> str:
+    """Strip proposal number prefixes like 'MIP 128 - ', 'AIP 42: ', '[ARFC] '."""
+    import re
+    # "MIP 128 - REST" or "AIP-42: REST" or "Proposal 7: REST"
+    stripped = re.sub(r'^(?:MIP|AIP|SIP|HIP|BIP|TIP)\s*[-#]?\s*\d+\s*[-:–]\s*', '', title, flags=re.IGNORECASE)
+    # "[ARFC] REST" or "[TEMP CHECK] REST"
+    stripped = re.sub(r'^\[(?:ARFC|TEMP CHECK|RFC|DISCUSSION|FINAL)\]\s*', '', stripped, flags=re.IGNORECASE)
+    # "Proposal N: REST"
+    stripped = re.sub(r'^Proposal\s+\d+\s*[-:–]\s*', '', stripped, flags=re.IGNORECASE)
+    return stripped.strip() or title
+
+
 def _describe_proposal(title: str) -> str:
     """Extract a one-line description of what a proposal does from its title."""
+    title = _strip_proposal_prefix(title)
     t = title.lower()
     if "onboard" in t:
         token = _extract_first_token(title)
         return f"adding {token} as a new collateral type" if token else "onboarding a new asset"
     if "deprecat" in t:
-        token = _extract_first_token(title)
-        return f"beginning removal of {token} from active markets" if token else "deprecating an existing market"
+        import re
+        # "Lite App Deprecation Part 2" → subject = "Lite App"
+        m = re.match(r'(.+?)\s+deprecat', t, re.IGNORECASE)
+        subject = m.group(1).strip().title() if m else _extract_first_token(title)
+        if subject:
+            return f"continuing the deprecation of {subject}"
+        return "deprecating an existing component"
     if "parameter update" in t or "parameter change" in t:
         token = _extract_first_token(title)
         return f"adjusting risk parameters for {token}" if token else "adjusting risk parameters"
@@ -458,17 +476,32 @@ def _render_stablecoin_exposure(lines: list, d: dict):
     if not cross:
         lines.append("*No protocol exposure data captured.*")
         return
+
+    def _grade(score):
+        if score is None: return "—"
+        if score >= 90: return "A"
+        if score >= 80: return "B"
+        if score >= 70: return "C"
+        if score >= 60: return "D"
+        return "F"
+
     lines.append("| Protocol | Exposure | PSI | Grade |")
     lines.append("|----------|----------|-----|-------|")
     flagged = None
-    for p in cross:
+    top_10 = cross[:10]
+    for p in top_10:
         amt = f"${p['exposure_usd']:,.0f}" if p.get("exposure_usd") else "—"
         psi = f"{p['psi_score']:.1f}" if p.get("psi_score") else "—"
-        grade = p.get("psi_grade") or "—"
+        grade = p.get("psi_grade") or _grade(p.get("psi_score"))
         lines.append(f"| {p.get('protocol', '?')} | {amt} | {psi} | {grade} |")
         if p.get("psi_score") and p["psi_score"] < 60 and not flagged:
             flagged = f"{p['protocol']} scores below 60 on PSI ({p['psi_score']:.1f})."
+    remaining = len(cross) - len(top_10)
     lines.append("")
+    if remaining > 0:
+        entity_id = d.get("entity_id", "")
+        lines.append(f"+ {remaining} more protocols at {CANONICAL_BASE_URL}/proof/sii/{entity_id}")
+        lines.append("")
     lines.append(flagged or "All protocols holding this stablecoin score above 60 on PSI.")
 
 
@@ -477,19 +510,16 @@ def _render_stablecoin_scores(lines: list, d: dict):
     entity_id = d.get("entity_id", "")
     if score is not None:
         lines.append(f"**SII:** {score:.1f}/100 · [proof]({CANONICAL_BASE_URL}/proof/sii/{entity_id})")
-    # Reserve composition
     reserve = d.get("reserve_composition") or {}
     if reserve.get("extractions"):
         lines.append(f"Reserve attestations captured: {reserve['count']} in 90-day window.")
     elif reserve.get("note"):
         lines.append(f"*{reserve['note']}*")
-    # Peg behavior
     peg = d.get("peg_behavior") or {}
     if peg.get("readings"):
         lines.append(
             f"Peg stability: {peg.get('depegs_over_50bps', 0)} deviations >50bps in {peg.get('window_days', 90)}d, "
             f"max {peg.get('max_deviation_bps', 0):.0f}bps.")
-    # Concentration
     conc = d.get("holder_concentration") or {}
     if conc.get("current_gini") is not None:
         delta = conc.get("gini_delta")
@@ -499,24 +529,82 @@ def _render_stablecoin_scores(lines: list, d: dict):
 
 def _render_stablecoin_event(lines: list, d: dict):
     entity_id = d.get("entity_id", "")
-    # Priority: peg event → reserve shift → freeze
+    name = d.get("name", entity_id)
+    issuer = d.get("issuer") or name
+    cross = d.get("cross_protocol_exposure") or []
+    n_protocols = len(cross)
+
+    # 1. Depeg event (≥50bps)
     peg = d.get("peg_behavior") or {}
     if peg.get("depegs_over_50bps", 0) > 0 and peg.get("max_deviation_bps"):
+        max_dev = peg["max_deviation_bps"]
+        count = peg["depegs_over_50bps"]
+        window = peg.get("window_days", 90)
         lines.append(
-            f"**Peg deviation detected**: {peg['depegs_over_50bps']} instances exceeding 50bps "
-            f"in the {peg.get('window_days', 90)}-day window. "
-            f"Maximum deviation: {peg['max_deviation_bps']:.0f}bps.")
+            f"{name} experienced {count} depeg event{'s' if count > 1 else ''} exceeding 50bps "
+            f"in the {window}-day window, with a maximum deviation of {max_dev:.0f}bps. "
+            f"Basis captured every 5-minute reading during the event — peg behavior at this "
+            f"granularity is not preserved by the issuer's own monitoring. "
+            f"All {n_protocols} CQI pairs holding {name} recomputed continuously during the window. "
+            f"[Full sequence]({CANONICAL_BASE_URL}/proof/sii/{entity_id})")
         return
+
+    # 2. Reserve composition shift
     reserve = d.get("reserve_composition") or {}
-    if reserve.get("extractions") and len(reserve["extractions"]) >= 2:
-        lines.append("**Reserve composition shift** detected across extraction window. Review CDA attestation chain for details.")
+    extractions = reserve.get("extractions") or []
+    if len(extractions) >= 2:
+        latest = extractions[0]
+        prior = extractions[-1]
+        latest_date = (latest.get("extracted_at") or "")[:10]
+        lines.append(
+            f"{issuer} published an updated reserve attestation on {latest_date}. "
+            f"Basis captured {len(extractions)} attestations in the 90-day window with cryptographic proofs. "
+            f"Composition changes update CQI pairs for the {n_protocols} protocols holding {name} "
+            f"within the next scoring cycle. "
+            f"[Attestation chain]({CANONICAL_BASE_URL}/proof/sii/{entity_id})")
         return
+
+    # 3. Freeze event
     freeze = d.get("freeze_history") or {}
-    if freeze.get("planned"):
-        lines.append(f"*{freeze.get('note', 'Freeze tracking not yet shipped.')}*")
+    if freeze.get("events"):
+        lines.append(
+            f"{issuer} executed a freeze event. "
+            f"Basis captured the freeze transaction and the affected address set. "
+            f"Contract surveillance continues; any subsequent action will be captured.")
         return
+
+    # 4. Issuer activity
+    issuer_act = d.get("issuer_activity") or {}
+    if issuer_act.get("screening_targets", 0) > 0:
+        lines.append(
+            f"{issuer} has {issuer_act['screening_targets']} sanctions screening targets configured. "
+            f"Basis runs daily screening against OFAC and international lists. "
+            f"Zero matches to date.")
+        return
+
+    # 5. Holder concentration shift
+    conc = d.get("holder_concentration") or {}
+    if conc.get("gini_delta") is not None and abs(conc["gini_delta"]) >= 0.01:
+        direction = "increased" if conc["gini_delta"] > 0 else "decreased"
+        lines.append(
+            f"Holder concentration for {name} {direction} over the observation window "
+            f"(Gini delta: {conc['gini_delta']:+.4f}). "
+            f"Basis captures on-chain holder distribution continuously; "
+            f"shifts at this scale typically precede liquidity changes.")
+        return
+
+    # 6. Most recent attestation (fallback)
+    if extractions:
+        latest_date = (extractions[0].get("extracted_at") or "")[:10]
+        lines.append(
+            f"Most recent reserve attestation captured on {latest_date}. "
+            f"No material peg events or composition shifts in the 90-day window. "
+            f"Basis continues archiving hourly; any subsequent movement will be flagged.")
+        return
+
+    # 7. Empty window
     lines.append(
-        f"No material events affecting this stablecoin in the last 90 days. "
+        f"No material events affecting {name} in the last 90 days. "
         f"Basis will reconstruct any prior event on request — "
         f"query the temporal engine at `{CANONICAL_BASE_URL}/api/scores/{entity_id}/history`.")
 

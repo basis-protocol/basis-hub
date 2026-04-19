@@ -1024,24 +1024,35 @@ def _get_holder_concentration_trend(symbol: str, days: int = 90) -> dict:
 
 
 def _get_cross_protocol_exposure(symbol: str) -> list:
-    """Protocols holding this stablecoin as collateral — inverse of _get_stablecoin_exposure."""
+    """Protocols holding this stablecoin as collateral (latest snapshot only)."""
     try:
         rows = fetch_all("""
-            SELECT ce.protocol_slug, ce.tvl_usd,
-                   ps.overall_score as psi_score, ps.grade as psi_grade
-            FROM protocol_collateral_exposure ce
+            WITH latest AS (
+                SELECT DISTINCT ON (protocol_slug, chain)
+                       protocol_slug, chain, tvl_usd
+                FROM protocol_collateral_exposure
+                WHERE UPPER(token_symbol) = UPPER(%s) AND is_stablecoin = TRUE
+                ORDER BY protocol_slug, chain, snapshot_date DESC
+            )
+            SELECT l.protocol_slug,
+                   SUM(l.tvl_usd) AS exposure_usd,
+                   MAX(ps.overall_score) AS psi_score,
+                   MAX(ps.grade) AS psi_grade,
+                   COUNT(DISTINCT l.chain) AS chain_count
+            FROM latest l
             LEFT JOIN (
                 SELECT DISTINCT ON (protocol_slug) protocol_slug, overall_score, grade
                 FROM psi_scores ORDER BY protocol_slug, computed_at DESC
-            ) ps ON ps.protocol_slug = ce.protocol_slug
-            WHERE UPPER(ce.token_symbol) = UPPER(%s) AND ce.is_stablecoin = TRUE
-            ORDER BY ce.tvl_usd DESC NULLS LAST
+            ) ps ON ps.protocol_slug = l.protocol_slug
+            GROUP BY l.protocol_slug
+            ORDER BY exposure_usd DESC NULLS LAST
         """, (symbol,))
         return [{
             "protocol": r["protocol_slug"],
-            "exposure_usd": float(r["tvl_usd"]) if r.get("tvl_usd") else None,
+            "exposure_usd": float(r["exposure_usd"]) if r.get("exposure_usd") else None,
             "psi_score": float(r["psi_score"]) if r.get("psi_score") else None,
             "psi_grade": r.get("psi_grade"),
+            "chain_count": r.get("chain_count", 1),
         } for r in rows] if rows else []
     except Exception as e:
         logger.warning(f"_get_cross_protocol_exposure({symbol}) failed: {e}")
