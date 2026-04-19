@@ -197,6 +197,23 @@ def _assemble_protocol(slug: str) -> dict | None:
             })
     _timings["cqi"] = round((_t.monotonic() - _t0) * 1000)
 
+    # Prompt 1 composers — RPI, governance, parameters, oracle
+    _t0 = _t.monotonic()
+    rpi = _get_rpi(slug)
+    _timings["rpi"] = round((_t.monotonic() - _t0) * 1000)
+
+    _t0 = _t.monotonic()
+    governance_activity = _get_governance_activity(slug)
+    _timings["governance"] = round((_t.monotonic() - _t0) * 1000)
+
+    _t0 = _t.monotonic()
+    parameter_changes = _get_parameter_changes(slug)
+    _timings["parameters"] = round((_t.monotonic() - _t0) * 1000)
+
+    _t0 = _t.monotonic()
+    oracle_behavior = _get_oracle_behavior(slug)
+    _timings["oracle"] = round((_t.monotonic() - _t0) * 1000)
+
     _t0 = _t.monotonic()
     score_hashes = _get_score_hashes("protocol", slug)
     _timings["score_hashes"] = round((_t.monotonic() - _t0) * 1000)
@@ -222,6 +239,10 @@ def _assemble_protocol(slug: str) -> dict | None:
         "raw_values": row.get("raw_values") or {},
         "exposure": exposure,
         "cqi_pairs": cqi_pairs,
+        "rpi": rpi,
+        "governance_activity": governance_activity,
+        "parameter_changes": parameter_changes,
+        "oracle_behavior": oracle_behavior,
         "score_hashes": score_hashes,
         "state_hashes": state_hashes,
         "formula_version": row.get("formula_version") or "psi-v0.2.0",
@@ -416,3 +437,201 @@ def _get_score_hashes(entity_type: str, entity_id: str) -> list[str]:
         return []
     except Exception:
         return []
+
+
+# =============================================================================
+# Protocol composers — Prompt 1: RPI, governance, parameters, oracle
+# =============================================================================
+
+def _get_rpi(slug: str) -> dict | None:
+    """Latest RPI score with 30d/90d trajectory."""
+    try:
+        row = fetch_one("""
+            SELECT overall_score, grade, component_scores, raw_values,
+                   inputs_hash, methodology_version, computed_at
+            FROM rpi_scores
+            WHERE protocol_slug = %s
+            ORDER BY computed_at DESC LIMIT 1
+        """, (slug,))
+        if not row:
+            return None
+
+        score = float(row["overall_score"]) if row.get("overall_score") else None
+
+        # Trajectory — fetch prior scores for 30d and 90d deltas
+        trajectory = {}
+        for label, days in [("30d", 30), ("90d", 90)]:
+            prior = fetch_one("""
+                SELECT overall_score FROM rpi_scores
+                WHERE protocol_slug = %s AND computed_at < NOW() - INTERVAL '%s days'
+                ORDER BY computed_at DESC LIMIT 1
+            """, (slug, days))
+            if prior and prior.get("overall_score") and score is not None:
+                trajectory[label] = round(score - float(prior["overall_score"]), 2)
+
+        return {
+            "score": score,
+            "grade": row.get("grade"),
+            "component_scores": row.get("component_scores") or {},
+            "raw_values": row.get("raw_values") or {},
+            "inputs_hash": row.get("inputs_hash"),
+            "methodology_version": row.get("methodology_version"),
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            "trajectory": trajectory,
+        }
+    except Exception as e:
+        logger.warning(f"_get_rpi({slug}) failed: {e}")
+        return None
+
+
+def _get_governance_activity(slug: str, days: int = 30) -> dict:
+    """Governance proposals and events for this protocol in the last N days."""
+    result = {"proposals_count": 0, "edited_after_publication": [], "recent_high_impact": []}
+    try:
+        # Count recent proposals
+        count_row = fetch_one("""
+            SELECT COUNT(*) as cnt FROM governance_proposals
+            WHERE protocol_slug = %s
+              AND COALESCE(captured_at, scraped_at, created_at) > NOW() - INTERVAL '%s days'
+        """, (slug, days))
+        result["proposals_count"] = count_row["cnt"] if count_row else 0
+
+        # Proposals with detected edits after publication
+        edits = fetch_all("""
+            SELECT proposal_id, title, first_capture_body_hash, body_hash, body_changed
+            FROM governance_proposals
+            WHERE protocol_slug = %s AND body_changed = TRUE
+            ORDER BY COALESCE(captured_at, scraped_at, created_at) DESC
+            LIMIT 10
+        """, (slug,))
+        if edits:
+            result["edited_after_publication"] = [
+                {"proposal_id": r["proposal_id"], "title": r.get("title", ""),
+                 "original_hash": r.get("first_capture_body_hash"),
+                 "current_hash": r.get("body_hash")}
+                for r in edits
+            ]
+
+        # Recent high-impact events
+        events = fetch_all("""
+            SELECT event_type, title, description, outcome, event_timestamp
+            FROM governance_events
+            WHERE protocol_slug = %s
+              AND event_timestamp > NOW() - INTERVAL '%s days'
+            ORDER BY event_timestamp DESC
+            LIMIT 5
+        """, (slug, days))
+        if events:
+            result["recent_high_impact"] = [
+                {"type": r["event_type"], "title": r.get("title", ""),
+                 "description": r.get("description", ""), "outcome": r.get("outcome"),
+                 "timestamp": r["event_timestamp"].isoformat() if r.get("event_timestamp") else None}
+                for r in events
+            ]
+    except Exception as e:
+        logger.warning(f"_get_governance_activity({slug}) failed: {e}")
+    return result
+
+
+def _get_parameter_changes(slug: str, days: int = 30) -> list:
+    """Recent on-chain parameter changes for this protocol."""
+    try:
+        rows = fetch_all("""
+            SELECT parameter_name, parameter_key, asset_symbol,
+                   previous_value, new_value, value_unit,
+                   change_magnitude, change_direction, change_context,
+                   transaction_hash, changed_at
+            FROM protocol_parameter_changes
+            WHERE protocol_slug = %s
+              AND changed_at > NOW() - INTERVAL '%s days'
+            ORDER BY changed_at DESC
+            LIMIT 20
+        """, (slug, days))
+        if not rows:
+            return []
+        return [
+            {
+                "parameter": r["parameter_name"],
+                "key": r.get("parameter_key"),
+                "asset": r.get("asset_symbol"),
+                "old_value": float(r["previous_value"]) if r.get("previous_value") is not None else None,
+                "new_value": float(r["new_value"]) if r.get("new_value") is not None else None,
+                "unit": r.get("value_unit"),
+                "magnitude": float(r["change_magnitude"]) if r.get("change_magnitude") is not None else None,
+                "direction": r.get("change_direction"),
+                "context": r.get("change_context"),
+                "tx_hash": r.get("transaction_hash"),
+                "timestamp": r["changed_at"].isoformat() if r.get("changed_at") else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.warning(f"_get_parameter_changes({slug}) failed: {e}")
+        return []
+
+
+def _get_oracle_behavior(slug: str, days: int = 90) -> dict:
+    """Oracle feed behavior for feeds used by this protocol."""
+    result = {"feeds_monitored": [], "stress_events": []}
+    try:
+        # Find feeds mapped to this protocol via oracle_registry
+        feeds = fetch_all("""
+            SELECT oracle_address, oracle_name, oracle_provider, chain, asset_symbol
+            FROM oracle_registry
+            WHERE is_active = TRUE
+              AND (entity_slug = %s OR entity_type = 'stablecoin')
+        """, (slug,))
+
+        if not feeds:
+            result["note"] = "Oracle feed mapping not configured for this protocol"
+            return result
+
+        for feed in feeds:
+            addr = feed["oracle_address"]
+            # Aggregate readings over the window
+            agg = fetch_one("""
+                SELECT COUNT(*) as reading_count,
+                       AVG(ABS(deviation_pct)) as mean_deviation,
+                       MAX(ABS(deviation_pct)) as max_deviation,
+                       AVG(latency_seconds) as mean_latency
+                FROM oracle_price_readings
+                WHERE oracle_address = %s
+                  AND recorded_at > NOW() - INTERVAL '%s days'
+            """, (addr, days))
+
+            result["feeds_monitored"].append({
+                "feed": feed.get("oracle_name", addr),
+                "provider": feed.get("oracle_provider"),
+                "asset": feed["asset_symbol"],
+                "reading_count": agg["reading_count"] if agg else 0,
+                "mean_deviation_pct": round(float(agg["mean_deviation"]), 4) if agg and agg.get("mean_deviation") else None,
+                "max_deviation_pct": round(float(agg["max_deviation"]), 4) if agg and agg.get("max_deviation") else None,
+                "mean_latency_s": round(float(agg["mean_latency"]), 1) if agg and agg.get("mean_latency") else None,
+            })
+
+        # Stress events in window
+        stress = fetch_all("""
+            SELECT oracle_name, asset_symbol, event_type, event_start,
+                   duration_seconds, max_deviation_pct, max_latency_seconds
+            FROM oracle_stress_events
+            WHERE event_start > NOW() - INTERVAL '%s days'
+            ORDER BY event_start DESC
+            LIMIT 10
+        """, (days,))
+        if stress:
+            result["stress_events"] = [
+                {
+                    "feed": r.get("oracle_name"),
+                    "asset": r["asset_symbol"],
+                    "type": r.get("event_type"),
+                    "timestamp": r["event_start"].isoformat() if r.get("event_start") else None,
+                    "duration_s": r.get("duration_seconds"),
+                    "max_deviation_pct": float(r["max_deviation_pct"]) if r.get("max_deviation_pct") else None,
+                    "max_latency_s": r.get("max_latency_seconds"),
+                }
+                for r in stress
+            ]
+    except Exception as e:
+        logger.warning(f"_get_oracle_behavior({slug}) failed: {e}")
+        result["note"] = f"Oracle behavior query failed: {e}"
+    return result
