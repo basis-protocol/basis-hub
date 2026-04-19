@@ -220,21 +220,34 @@ def _render_protocol_exposure(lines: list, d: dict):
     if not exposure:
         lines.append("*No exposure data captured.*")
         return
+    # Count unscored exposure
+    unscored = [e for e in exposure if not e.get("sii_score")]
+    unscored_usd = sum(e.get("exposure_usd") or 0 for e in unscored)
+
     lines.append("| Asset | Exposure | SII | CQI | Proof |")
     lines.append("|-------|----------|-----|-----|-------|")
     cqi_map = {p["asset"]: p for p in cqi_pairs}
     flagged = None
-    for e in exposure:
+    top_10 = exposure[:10]
+    for e in top_10:
         sym = e.get("symbol", "?")
         amt = f"${e['exposure_usd']:,.0f}" if e.get("exposure_usd") else "—"
-        sii = f"{e['sii_score']:.1f}" if e.get("sii_score") else "—"
+        sii = f"{e['sii_score']:.1f}" if e.get("sii_score") else "unscored"
         cqi_entry = cqi_map.get(sym, {})
         cqi_s = f"{cqi_entry['cqi_score']:.1f}" if cqi_entry.get("cqi_score") else "—"
-        proof = f"[verify]({CANONICAL_BASE_URL}/proof/sii/{e.get('stablecoin_id', sym)})"
+        proof = f"[verify]({CANONICAL_BASE_URL}/proof/sii/{e.get('stablecoin_id', sym)})" if e.get("stablecoin_id") else "—"
         lines.append(f"| {sym} | {amt} | {sii} | {cqi_s} | {proof} |")
         if e.get("sii_score") and e["sii_score"] < 60 and not flagged:
             flagged = f"{sym} scores below 60 on SII ({e['sii_score']:.1f}) — weakest asset in the exposure set."
+    remaining = len(exposure) - len(top_10)
     lines.append("")
+    if remaining > 0:
+        slug = d.get("entity_id", "")
+        lines.append(f"+ {remaining} more exposures at {CANONICAL_BASE_URL}/proof/psi/{slug}")
+        lines.append("")
+    if unscored and unscored_usd > 0:
+        lines.append(f"*{len(unscored)} tokens represent ${unscored_usd:,.0f} aggregate exposure not yet covered by SII.*")
+        lines.append("")
     lines.append(flagged or "Exposure set is stable across all counterparties monitored over the last 30 days.")
 
 
@@ -246,44 +259,81 @@ def _render_protocol_scores(lines: list, d: dict):
     rpi = d.get("rpi")
     if rpi and rpi.get("score") is not None:
         traj = rpi.get("trajectory") or {}
-        parts = [f"{k} {'+'if v>=0 else ''}{v:.1f}" for k, v in sorted(traj.items())]
+        delta_30d = traj.get("30d")
+        top_mover = rpi.get("top_mover")
         line = f"**RPI:** {rpi['score']:.1f}/100"
-        if parts:
-            line += f" ({' · '.join(parts)})"
+        if delta_30d is not None:
+            if abs(delta_30d) >= 1:
+                sign = "+" if delta_30d >= 0 else ""
+                traj_str = f"30d {sign}{delta_30d:.1f}"
+                if top_mover:
+                    comp_name = top_mover["component"].replace("_", " ")
+                    comp_sign = "+" if top_mover["delta"] >= 0 else ""
+                    traj_str += f", driven by {comp_name} ({comp_sign}{top_mover['delta']:.1f})"
+                line += f" · {traj_str}"
+            else:
+                line += " · 30d stable"
+        else:
+            line += " · no prior data (bootstrap window)"
         lines.append(line)
-    comp = d.get("component_scores") or {}
-    if comp:
-        top = sorted(comp.items(), key=lambda x: abs(float(x[1] or 0)), reverse=True)
-        if top:
-            lines.append(f"Strongest component: {top[0][0].replace('_', ' ')} at {float(top[0][1]):.1f}.")
 
 
 def _render_protocol_event(lines: list, d: dict):
     entity_id = d.get("entity_id", "")
-    # Priority: oracle stress → reactive parameter → governance edit
+
+    # 1. Oracle stress ≥25bps
     stress = (d.get("oracle_behavior") or {}).get("stress_events") or []
-    if stress:
-        ev = stress[0]
+    sig_stress = [s for s in stress if s.get("max_deviation_pct") and abs(s["max_deviation_pct"]) >= 0.0025]
+    if sig_stress:
+        ev = sig_stress[0]
+        dur = f", lasted {ev['duration_s']}s" if ev.get("duration_s") else ""
         lines.append(
             f"**Oracle stress event** on {ev.get('feed', 'unknown feed')} "
-            f"({(ev.get('timestamp') or '')[:10]}): max deviation {ev.get('max_deviation_pct', '?')}%, "
-            f"lasted {ev.get('duration_s', '?')}s.")
+            f"({(ev.get('timestamp') or '')[:10]}): "
+            f"max deviation {ev.get('max_deviation_pct', 0):.2f}%{dur}.")
         return
+
+    # 2. Reactive-high-urgency parameter change
     params = d.get("parameter_changes") or []
     reactive = [p for p in params if p.get("context") == "reactive"]
     if reactive:
         p = reactive[0]
         lines.append(
             f"**Reactive parameter change** on {p.get('parameter', '')} "
-            f"({(p.get('timestamp') or '')[:10]}): {p.get('old_value', '?')} → {p.get('new_value', '?')} {p.get('unit', '')}.")
+            f"({(p.get('timestamp') or '')[:10]}): "
+            f"{p.get('old_value', '?')} → {p.get('new_value', '?')} {p.get('unit', '')}.")
         return
+
+    # 3. Post-publication governance edit
     edits = (d.get("governance_activity") or {}).get("edited_after_publication") or []
     if edits:
         ed = edits[0]
         lines.append(
             f"**Governance edit detected** on \"{ed.get('title', 'proposal')}\" — "
-            f"body modified after publication. Original hash: `{(ed.get('original_hash') or '?')[:12]}...`")
+            f"body modified after publication. "
+            f"Original hash: `{(ed.get('original_hash') or '?')[:12]}...`")
         return
+
+    # 4-5. Admin key rotation / peg event — not yet wired
+
+    # 6. Any executed governance event or parameter change
+    events = (d.get("governance_activity") or {}).get("recent_high_impact") or []
+    if events:
+        ev = events[0]
+        lines.append(
+            f"**{ev.get('type', 'Governance event')}**: "
+            f"\"{ev.get('title', '')}\" — outcome: {ev.get('outcome', 'unknown')} "
+            f"({(ev.get('timestamp') or '')[:10]}).")
+        return
+    if params:
+        p = params[0]
+        lines.append(
+            f"**Parameter change** on {p.get('parameter', '')} "
+            f"({(p.get('timestamp') or '')[:10]}): "
+            f"{p.get('old_value', '?')} → {p.get('new_value', '?')} {p.get('unit', '')}.")
+        return
+
+    # 7. Empty window
     lines.append(
         f"No material events affecting your exposure set in the last 90 days. "
         f"Basis will reconstruct any prior event on request — "

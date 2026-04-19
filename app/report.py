@@ -426,14 +426,19 @@ def _get_stablecoin_exposure(protocol_slug: str) -> list[dict]:
     """Get stablecoins held/accepted by a protocol."""
     try:
         rows = fetch_all("""
-            SELECT ce.token_symbol AS asset_symbol, ce.tvl_usd AS exposure_usd,
-                   s.overall_score, s.grade, st.id AS stablecoin_id, st.name
+            SELECT ce.token_symbol AS asset_symbol,
+                   SUM(ce.tvl_usd) AS exposure_usd,
+                   MAX(s.overall_score) AS overall_score,
+                   MAX(s.grade) AS grade,
+                   MAX(st.id) AS stablecoin_id,
+                   MAX(st.name) AS name,
+                   COUNT(DISTINCT ce.chain) AS chain_count
             FROM protocol_collateral_exposure ce
             LEFT JOIN stablecoins st ON UPPER(st.symbol) = UPPER(ce.token_symbol)
             LEFT JOIN scores s ON s.stablecoin_id = st.id
-            WHERE ce.protocol_slug = %s
-              AND ce.is_stablecoin = TRUE
-            ORDER BY ce.tvl_usd DESC NULLS LAST
+            WHERE ce.protocol_slug = %s AND ce.is_stablecoin = TRUE
+            GROUP BY ce.token_symbol
+            ORDER BY exposure_usd DESC NULLS LAST
         """, (protocol_slug,))
         return [{
             "symbol": r["asset_symbol"],
@@ -441,6 +446,7 @@ def _get_stablecoin_exposure(protocol_slug: str) -> list[dict]:
             "name": r.get("name"),
             "exposure_usd": float(r["exposure_usd"]) if r.get("exposure_usd") else None,
             "sii_score": float(r["overall_score"]) if r.get("overall_score") else None,
+            "chain_count": r.get("chain_count", 1),
         } for r in rows]
     except Exception:
         return []
@@ -489,16 +495,34 @@ def _get_rpi(slug: str) -> dict | None:
 
         score = float(row["overall_score"]) if row.get("overall_score") else None
 
-        # Trajectory — fetch prior scores for 30d and 90d deltas
+        # Trajectory — fetch prior scores for 30d and 90d deltas + component attribution
         trajectory = {}
+        top_mover = None
         for label, days in [("30d", 30), ("90d", 90)]:
             prior = fetch_one("""
-                SELECT overall_score FROM rpi_scores
+                SELECT overall_score, component_scores FROM rpi_scores
                 WHERE protocol_slug = %s AND computed_at < NOW() - INTERVAL '%s days'
                 ORDER BY computed_at DESC LIMIT 1
             """, (slug, days))
             if prior and prior.get("overall_score") and score is not None:
                 trajectory[label] = round(score - float(prior["overall_score"]), 2)
+                # Component attribution for 30d
+                if label == "30d" and prior.get("component_scores"):
+                    curr_comps = row.get("component_scores") or {}
+                    prev_comps = prior["component_scores"] or {}
+                    if isinstance(prev_comps, str):
+                        import json
+                        prev_comps = json.loads(prev_comps)
+                    if isinstance(curr_comps, str):
+                        import json
+                        curr_comps = json.loads(curr_comps)
+                    deltas = {}
+                    for k, v in curr_comps.items():
+                        if v is not None and prev_comps.get(k) is not None:
+                            deltas[k] = float(v) - float(prev_comps[k])
+                    if deltas:
+                        top_k = max(deltas, key=lambda x: abs(deltas[x]))
+                        top_mover = {"component": top_k, "delta": round(deltas[top_k], 2)}
 
         return {
             "score": score,
@@ -509,6 +533,7 @@ def _get_rpi(slug: str) -> dict | None:
             "methodology_version": row.get("methodology_version"),
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
             "trajectory": trajectory,
+            "top_mover": top_mover,
         }
     except Exception as e:
         logger.warning(f"_get_rpi({slug}) failed: {e}")
@@ -640,12 +665,13 @@ def _get_oracle_behavior(slug: str, days: int = 90) -> dict:
                 "mean_latency_s": round(float(agg["mean_latency"]), 1) if agg and agg.get("mean_latency") else None,
             })
 
-        # Stress events in window
+        # Stress events in window — filter to ≥25bps (0.0025%) to exclude feed noise
         stress = fetch_all("""
             SELECT oracle_name, asset_symbol, event_type, event_start,
                    duration_seconds, max_deviation_pct, max_latency_seconds
             FROM oracle_stress_events
             WHERE event_start > NOW() - INTERVAL '%s days'
+              AND (max_deviation_pct >= 0.0025 OR max_latency_seconds >= 300)
             ORDER BY event_start DESC
             LIMIT 10
         """, (days,))
