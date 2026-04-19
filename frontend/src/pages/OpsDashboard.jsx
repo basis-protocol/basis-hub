@@ -2230,6 +2230,7 @@ function ReportsPanel() {
   const [attestation, setAttestation] = useState(null);
   const [recentReports, setRecentReports] = useState([]);
   const [generating, setGenerating] = useState(false);
+  const [genElapsed, setGenElapsed] = useState(0);
   const [batchResults, setBatchResults] = useState([]);
 
   useEffect(() => {
@@ -2273,6 +2274,10 @@ function ReportsPanel() {
     setGenerating(true);
     setPreview(null);
     setAttestation(null);
+    setGenElapsed(0);
+    const timer = setInterval(() => setGenElapsed(e => e + 1), 1000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
     try {
       const params = new URLSearchParams({ template, format });
       if (lens) params.set("lens", lens);
@@ -2280,6 +2285,7 @@ function ReportsPanel() {
       const key = getAdminKey();
       const resp = await fetch(`/api/reports/${entityType}/${entityId}?${params}`, {
         headers: { "x-admin-key": key },
+        signal: controller.signal,
       });
 
       if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
@@ -2297,10 +2303,14 @@ function ReportsPanel() {
 
       loadRecentReports();
     } catch (e) {
-      setPreview(`Error: ${e.message}`);
+      const msg = e.name === "AbortError" ? "Report generation timed out after 60s" : e.message;
+      setPreview(`Error: ${msg}`);
       setPreviewFormat("error");
+    } finally {
+      clearInterval(timer);
+      clearTimeout(timeout);
+      setGenerating(false);
     }
-    setGenerating(false);
   }
 
   async function generateBatch(batchType) {
@@ -2417,7 +2427,7 @@ function ReportsPanel() {
           <div style={{ display: "flex", alignItems: "flex-end" }}>
             <button onClick={generateReport} disabled={generating || !entityId}
               style={btnActive({ opacity: generating ? 0.5 : 1, padding: "4px 16px" })}>
-              {generating ? "Generating..." : "Generate"}
+              {generating ? `Generating... ${genElapsed}s` : "Generate"}
             </button>
           </div>
         </div>

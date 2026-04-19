@@ -6920,7 +6920,9 @@ async def generate_report(
         if not render_fn:
             raise HTTPException(status_code=400, detail=f"Unknown template: {template}")
 
-        data = assemble_report_data(entity_type, entity_id)
+        from starlette.concurrency import run_in_threadpool
+
+        data = await run_in_threadpool(assemble_report_data, entity_type, entity_id)
         if not data:
             raise HTTPException(status_code=404, detail=f"{entity_type} '{entity_id}' not found")
 

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from app.database import fetch_one, fetch_all
 from app.scoring import FORMULA_VERSION, SII_V1_WEIGHTS, STRUCTURAL_SUBWEIGHTS
-from app.composition import compute_cqi, compose_geometric_mean
+from app.composition import compose_geometric_mean
 
 logger = logging.getLogger(__name__)
 
@@ -162,20 +162,30 @@ def _assemble_protocol(slug: str) -> dict | None:
     # Stablecoin exposure — what stablecoins does this protocol hold/accept?
     exposure = _get_stablecoin_exposure(slug)
 
-    # CQI pairs for each stablecoin in exposure
+    # CQI pairs — batched: one query gets all SII scores, PSI score already in hand
     cqi_pairs = []
-    cqi_hashes = []
-    for coin in exposure:
-        cqi = compute_cqi(coin["symbol"], slug)
-        if "error" not in cqi:
+    if exposure:
+        psi_score = score
+        psi_comp_scores = comp_scores
+        from app.composition import compose_geometric_mean, _sii_confidence, _psi_confidence, _lower_confidence
+        psi_conf = _psi_confidence(psi_comp_scores)
+        for coin in exposure:
+            sii = coin.get("sii_score")
+            if sii is None or sii <= 0 or psi_score <= 0:
+                continue
+            cqi_score_val = compose_geometric_mean([sii, psi_score])
+            if cqi_score_val is None:
+                continue
+            sii_conf = _sii_confidence(39)
+            cqi_conf = _lower_confidence(sii_conf, psi_conf)
             cqi_pairs.append({
                 "asset": coin["symbol"],
                 "protocol": row.get("protocol_name", slug),
-                "sii_score": cqi["inputs"]["sii"]["score"],
-                "psi_score": cqi["inputs"]["psi"]["score"],
-                "cqi_score": cqi["cqi_score"],
-                "confidence": cqi["confidence"],
-                "proof_url": f"/proof/sii/{coin['stablecoin_id']}",
+                "sii_score": sii,
+                "psi_score": psi_score,
+                "cqi_score": cqi_score_val,
+                "confidence": cqi_conf["confidence"],
+                "proof_url": f"/proof/sii/{coin.get('stablecoin_id', coin['symbol'])}",
             })
 
     score_hashes = _get_score_hashes("protocol", slug)
