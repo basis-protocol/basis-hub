@@ -174,13 +174,22 @@ async def run_wallet_graph_expansion(
         f"fetched={stats.items_fetched}, api_ok={_api_ok}, api_empty={_api_empty}, "
         f"api_errors={_api_errors}, discovered={len(discovered_addresses)}"
     )
+    if discovered_addresses:
+        sample = list(discovered_addresses)[:5]
+        logger.error(f"[wallet_expansion] sample new addresses: {sample}")
+    elif _api_ok > 0:
+        logger.error(
+            f"[wallet_expansion] ZERO new addresses despite {_api_ok} successful API calls — "
+            f"all counterparties already in graph ({len(existing_set)} existing)"
+        )
 
-    # 5. Batch insert discovered wallets (per-row commits to avoid all-or-nothing)
+    # 5. Batch insert discovered wallets
     new_wallets_seeded = 0
+    already_existed = 0
     insert_errors = 0
     if discovered_addresses:
         batch = list(discovered_addresses)[:target_new_wallets]
-        logger.error(f"[wallet_expansion] inserting {len(batch)} new addresses")
+        logger.error(f"[wallet_expansion] inserting {len(batch)} discovered addresses")
         for addr in batch:
             try:
                 with get_cursor() as cur:
@@ -190,11 +199,19 @@ async def run_wallet_graph_expansion(
                            ON CONFLICT (address) DO NOTHING""",
                         (addr,),
                     )
-                new_wallets_seeded += 1
+                    if cur.rowcount > 0:
+                        new_wallets_seeded += 1
+                    else:
+                        already_existed += 1
             except Exception as e:
                 insert_errors += 1
                 if insert_errors <= 3:
                     logger.error(f"[wallet_expansion] insert failed: {addr}: {e}")
+        logger.error(
+            f"[wallet_expansion] insert results: new={new_wallets_seeded}, "
+            f"already_existed={already_existed}, errors={insert_errors} "
+            f"(batch={len(batch)})"
+        )
     else:
         logger.error("[wallet_expansion] ZERO new addresses discovered — all counterparties already in graph")
 
