@@ -143,6 +143,11 @@ def _assemble_stablecoin(symbol: str) -> dict | None:
 
 def _assemble_protocol(slug: str) -> dict | None:
     """Assemble PSI report for a protocol, including stablecoin exposure and CQI."""
+    import time as _t
+
+    _timings = {}
+
+    _t0 = _t.monotonic()
     row = fetch_one("""
         SELECT id, protocol_slug, protocol_name, overall_score, grade,
                category_scores, component_scores, raw_values,
@@ -151,6 +156,7 @@ def _assemble_protocol(slug: str) -> dict | None:
         WHERE protocol_slug = %s
         ORDER BY computed_at DESC LIMIT 1
     """, (slug,))
+    _timings["psi_score"] = round((_t.monotonic() - _t0) * 1000)
 
     if not row:
         return None
@@ -159,10 +165,12 @@ def _assemble_protocol(slug: str) -> dict | None:
     cat_scores = row.get("category_scores") or {}
     comp_scores = row.get("component_scores") or {}
 
-    # Stablecoin exposure — what stablecoins does this protocol hold/accept?
+    _t0 = _t.monotonic()
     exposure = _get_stablecoin_exposure(slug)
+    _timings["exposure"] = round((_t.monotonic() - _t0) * 1000)
 
-    # CQI pairs — batched: one query gets all SII scores, PSI score already in hand
+    # CQI pairs — batched: PSI score already in hand, SII scores from exposure query
+    _t0 = _t.monotonic()
     cqi_pairs = []
     if exposure:
         psi_score = score
@@ -187,9 +195,21 @@ def _assemble_protocol(slug: str) -> dict | None:
                 "confidence": cqi_conf["confidence"],
                 "proof_url": f"/proof/sii/{coin.get('stablecoin_id', coin['symbol'])}",
             })
+    _timings["cqi"] = round((_t.monotonic() - _t0) * 1000)
 
+    _t0 = _t.monotonic()
     score_hashes = _get_score_hashes("protocol", slug)
+    _timings["score_hashes"] = round((_t.monotonic() - _t0) * 1000)
+
+    _t0 = _t.monotonic()
     state_hashes = _get_state_hashes(["psi_components", "psi_discoveries"], entity_id=slug)
+    _timings["state_hashes"] = round((_t.monotonic() - _t0) * 1000)
+
+    _total = sum(_timings.values())
+    logger.error(
+        f"[report] _assemble_protocol({slug}): {_total}ms total — "
+        + ", ".join(f"{k}={v}ms" for k, v in _timings.items())
+    )
 
     return {
         "entity_type": "protocol",
@@ -202,13 +222,13 @@ def _assemble_protocol(slug: str) -> dict | None:
         "raw_values": row.get("raw_values") or {},
         "exposure": exposure,
         "cqi_pairs": cqi_pairs,
-        "cqi_hashes": cqi_hashes,
         "score_hashes": score_hashes,
         "state_hashes": state_hashes,
         "formula_version": row.get("formula_version") or "psi-v0.2.0",
         "inputs_hash": row.get("inputs_hash"),
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         "proof_url": f"/proof/psi/{slug}",
+        "_timings": _timings,
     }
 
 
