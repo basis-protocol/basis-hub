@@ -595,6 +595,8 @@ def _get_governance_activity(slug: str, days: int = 30) -> dict:
         if not result["recent_high_impact"]:
             proposals = fetch_all("""
                 SELECT proposal_id, title, state, proposal_state,
+                       discussion_url,
+                       COALESCE(proposal_source, source) as src,
                        COALESCE(captured_at, scraped_at, created_at) as ts
                 FROM governance_proposals
                 WHERE protocol_slug = %s
@@ -606,8 +608,12 @@ def _get_governance_activity(slug: str, days: int = 30) -> dict:
             if proposals:
                 result["recent_high_impact"] = [
                     {"type": "executed_proposal",
-                     "title": (r.get("title") or "")[:80] + ("..." if len(r.get("title") or "") > 80 else ""),
-                     "description": "", "outcome": r.get("state") or r.get("proposal_state"),
+                     "title": r.get("title") or "",
+                     "proposal_id": r.get("proposal_id"),
+                     "description": "",
+                     "outcome": r.get("state") or r.get("proposal_state"),
+                     "discussion_url": r.get("discussion_url"),
+                     "source": r.get("src"),
                      "timestamp": r["ts"].isoformat() if r.get("ts") else None}
                     for r in proposals
                 ]

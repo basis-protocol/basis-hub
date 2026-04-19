@@ -282,6 +282,7 @@ def _render_protocol_event(lines: list, d: dict):
     entity_id = d.get("entity_id", "")
     name = d.get("name", entity_id)
     exposure = d.get("exposure") or []
+    scored_map = {e["symbol"].upper(): e.get("sii_score") for e in exposure if e.get("sii_score")}
     unscored_symbols = {e["symbol"].upper() for e in exposure if not e.get("sii_score")}
 
     # 1. Oracle stress ≥25bps
@@ -298,7 +299,7 @@ def _render_protocol_event(lines: list, d: dict):
             f"{name}'s oracle infrastructure experienced stress on {date}: "
             f"the {feed} deviated {dev} from the CEX reference price{dur}. "
             f"Basis captured the deviation in real time and flagged the reading as a stress event. "
-            f"[Proof]({CANONICAL_BASE_URL}/proof/psi/{entity_id})")
+            f"{feed} continues under continuous monitoring; any further deviation will be captured and attested.")
         return
 
     # 2. Reactive parameter change
@@ -314,9 +315,8 @@ def _render_protocol_event(lines: list, d: dict):
         lines.append(
             f"{name} made a reactive parameter change on {date}: "
             f"{param} moved from {old_v} to {new_v} {unit} in response to market conditions. "
-            f"Basis captured the on-chain transaction and classified this as a reactive adjustment — "
-            f"the kind of change that a point-in-time audit would not have seen. "
-            f"[Proof]({CANONICAL_BASE_URL}/proof/psi/{entity_id})")
+            f"Basis captured the on-chain transaction and classified this as a reactive adjustment. "
+            f"Parameter state is preserved hourly; pre-change configuration is queryable via the temporal engine.")
         return
 
     # 3. Post-publication governance edit
@@ -328,10 +328,8 @@ def _render_protocol_event(lines: list, d: dict):
         lines.append(
             f"Basis detected a post-publication edit to \"{title}\" — "
             f"the proposal body was modified after voting opened. "
-            f"The original text is preserved at hash `{orig_hash}...`; "
-            f"the current text differs. This is the kind of governance transparency gap "
-            f"that continuous monitoring catches. "
-            f"[Proof]({CANONICAL_BASE_URL}/proof/psi/{entity_id})")
+            f"The original text is preserved at hash `{orig_hash}...`; the current text differs. "
+            f"Edit detection runs on every proposal across monitored DAOs; any further changes will be flagged.")
         return
 
     # 4-5. Admin key rotation / peg event — not yet wired
@@ -342,28 +340,34 @@ def _render_protocol_event(lines: list, d: dict):
         ev = events[0]
         title = ev.get("title") or ""
         date = (ev.get("timestamp") or "")[:10]
-        outcome = ev.get("outcome") or "executed"
-
-        # Extract what the proposal does from the title
         description = _describe_proposal(title)
 
-        # Check for coverage gap
-        gap_tokens = _extract_tokens_from_title(title) & unscored_symbols
-        gap_line = ""
-        if gap_tokens:
-            token = next(iter(gap_tokens))
-            gap_line = (
-                f" {token} is not yet in Basis's SII coverage — "
-                f"your exposure to this new collateral will be scored once it crosses the $1M threshold."
-            )
+        # Build proposal URL
+        proposal_url = _build_proposal_url(ev)
 
+        # Coverage implication
+        extracted_tokens = _extract_tokens_from_title(title)
+        implication = ""
+        for token in extracted_tokens:
+            if token in unscored_symbols:
+                implication = (
+                    f" {token} is not yet in Basis's SII coverage — "
+                    f"your exposure to this new collateral will be scored once it hits the $1M threshold.")
+                break
+            elif token in scored_map:
+                sii = scored_map[token]
+                implication = (
+                    f" {token} currently scores {sii:.1f} on SII; "
+                    f"your composition exposure updates continuously as the score moves.")
+                break
+
+        url_suffix = f" [Proposal]({proposal_url})" if proposal_url else ""
         lines.append(
             f"{name} executed a governance proposal on {date}: "
             f"\"{title[:80]}{'...' if len(title) > 80 else ''}\", "
             f"{description}. "
             f"Basis captured the proposal text, the vote sequence, and the execution timestamp."
-            f"{gap_line} "
-            f"[Proposal]({CANONICAL_BASE_URL}/proof/psi/{entity_id})")
+            f"{implication}{url_suffix}")
         return
 
     if params:
@@ -373,7 +377,7 @@ def _render_protocol_event(lines: list, d: dict):
         lines.append(
             f"{name} adjusted {param} on {date}. "
             f"Basis captured the on-chain change with before and after values. "
-            f"[Proof]({CANONICAL_BASE_URL}/proof/psi/{entity_id})")
+            f"Parameter state is preserved hourly; the prior configuration is queryable via the temporal engine.")
         return
 
     # 7. Empty window
@@ -381,6 +385,19 @@ def _render_protocol_event(lines: list, d: dict):
         f"No material events affecting your exposure set in the last 90 days. "
         f"Basis will reconstruct any prior event on request — "
         f"query the temporal engine at `{CANONICAL_BASE_URL}/api/scores/{entity_id}/history`.")
+
+
+def _build_proposal_url(ev: dict) -> str:
+    """Build URL to the proposal from available fields."""
+    if ev.get("discussion_url"):
+        return ev["discussion_url"]
+    source = (ev.get("source") or "").lower()
+    prop_id = ev.get("proposal_id") or ""
+    if source == "snapshot" and prop_id:
+        return f"https://snapshot.org/#/proposal/{prop_id}"
+    if source == "tally" and prop_id:
+        return f"https://www.tally.xyz/proposal/{prop_id}"
+    return ""
 
 
 def _describe_proposal(title: str) -> str:
