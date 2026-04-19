@@ -214,6 +214,23 @@ def _assemble_protocol(slug: str) -> dict | None:
     oracle_behavior = _get_oracle_behavior(slug)
     _timings["oracle"] = round((_t.monotonic() - _t0) * 1000)
 
+    # Prompt 2 composers — contagion, divergence, surveillance, sanctions
+    _t0 = _t.monotonic()
+    contagion = _get_contagion(slug)
+    _timings["contagion"] = round((_t.monotonic() - _t0) * 1000)
+
+    _t0 = _t.monotonic()
+    divergence_signals = _get_divergence_signals(slug)
+    _timings["divergence"] = round((_t.monotonic() - _t0) * 1000)
+
+    _t0 = _t.monotonic()
+    surveillance = _get_surveillance(slug)
+    _timings["surveillance"] = round((_t.monotonic() - _t0) * 1000)
+
+    _t0 = _t.monotonic()
+    sanctions = _get_sanctions(slug)
+    _timings["sanctions"] = round((_t.monotonic() - _t0) * 1000)
+
     _t0 = _t.monotonic()
     score_hashes = _get_score_hashes("protocol", slug)
     _timings["score_hashes"] = round((_t.monotonic() - _t0) * 1000)
@@ -243,6 +260,10 @@ def _assemble_protocol(slug: str) -> dict | None:
         "governance_activity": governance_activity,
         "parameter_changes": parameter_changes,
         "oracle_behavior": oracle_behavior,
+        "contagion": contagion,
+        "divergence_signals": divergence_signals,
+        "surveillance": surveillance,
+        "sanctions": sanctions,
         "score_hashes": score_hashes,
         "state_hashes": state_hashes,
         "formula_version": row.get("formula_version") or "psi-v0.2.0",
@@ -634,4 +655,188 @@ def _get_oracle_behavior(slug: str, days: int = 90) -> dict:
     except Exception as e:
         logger.warning(f"_get_oracle_behavior({slug}) failed: {e}")
         result["note"] = f"Oracle behavior query failed: {e}"
+    return result
+
+
+# =============================================================================
+# Protocol composers — Prompt 2: contagion, divergence, surveillance, sanctions
+# =============================================================================
+
+def _get_contagion(slug: str, top_n: int = 20) -> dict:
+    """Top depositors/LPs for this protocol and their cross-protocol exposure."""
+    result = {"wallets": [], "shared_protocols": {}}
+    try:
+        wallets = fetch_all("""
+            SELECT pw.wallet_address, pw.balance,
+                   r.risk_score, r.total_stablecoin_value
+            FROM protocol_pool_wallets pw
+            LEFT JOIN wallet_graph.wallet_risk_scores r
+                ON LOWER(pw.wallet_address) = LOWER(r.wallet_address)
+            WHERE pw.protocol_slug = %s
+            ORDER BY pw.balance DESC NULLS LAST
+            LIMIT %s
+        """, (slug, top_n))
+
+        if not wallets:
+            result["note"] = "No pool wallet data captured for this protocol"
+            return result
+
+        protocol_overlap = {}
+        for w in wallets:
+            addr = w["wallet_address"]
+            display = f"{addr[:6]}...{addr[-4:]}" if len(addr) >= 10 else addr
+
+            # Cross-protocol exposure for this wallet
+            other_protocols = fetch_all("""
+                SELECT DISTINCT protocol_slug FROM protocol_pool_wallets
+                WHERE LOWER(wallet_address) = LOWER(%s) AND protocol_slug != %s
+            """, (addr, slug))
+            others = [r["protocol_slug"] for r in (other_protocols or [])]
+            for op in others:
+                protocol_overlap[op] = protocol_overlap.get(op, 0) + 1
+
+            result["wallets"].append({
+                "address": display,
+                "exposure_usd": float(w["balance"]) if w.get("balance") else None,
+                "risk_score": float(w["risk_score"]) if w.get("risk_score") else None,
+                "other_protocols": others[:3],
+                "protocol_count": len(others),
+            })
+
+        # Top shared protocols
+        result["shared_protocols"] = dict(
+            sorted(protocol_overlap.items(), key=lambda x: x[1], reverse=True)[:5]
+        )
+        result["wallets_analyzed"] = len(wallets)
+    except Exception as e:
+        logger.warning(f"_get_contagion({slug}) failed: {e}")
+        result["note"] = f"Contagion analysis failed: {e}"
+    return result
+
+
+def _get_divergence_signals(slug: str, days: int = 90) -> list:
+    """Discovery signals referencing this protocol."""
+    try:
+        rows = fetch_all("""
+            SELECT signal_type, severity, detected_at, payload
+            FROM discovery_signals
+            WHERE detected_at > NOW() - INTERVAL '%s days'
+              AND (
+                  payload::text ILIKE %s
+                  OR payload::text ILIKE %s
+              )
+            ORDER BY detected_at DESC
+            LIMIT 20
+        """, (days, f"%{slug}%", f"%{slug.replace('-', '_')}%"))
+        if not rows:
+            return []
+        result = []
+        for r in rows:
+            payload = r.get("payload") or {}
+            if isinstance(payload, str):
+                import json
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            result.append({
+                "type": r.get("signal_type"),
+                "severity": r.get("severity"),
+                "timestamp": r["detected_at"].isoformat() if r.get("detected_at") else None,
+                "summary": payload.get("summary", payload.get("description", "")),
+            })
+        return result
+    except Exception as e:
+        logger.warning(f"_get_divergence_signals({slug}) failed: {e}")
+        return []
+
+
+def _get_surveillance(slug: str) -> dict:
+    """Contract surveillance state for this protocol's contracts."""
+    result = {"contracts": [], "upgrade_events": []}
+    try:
+        contracts = fetch_all("""
+            SELECT entity_id, chain, contract_address,
+                   has_admin_keys, is_upgradeable, has_pause_function,
+                   timelock_hours, multisig_threshold, source_code_hash,
+                   scanned_at
+            FROM contract_surveillance
+            WHERE entity_id = %s OR entity_id LIKE %s
+            ORDER BY scanned_at DESC
+        """, (slug, f"{slug}_%"))
+        if contracts:
+            seen = set()
+            for c in contracts:
+                key = (c["entity_id"], c["chain"], c["contract_address"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                result["contracts"].append({
+                    "entity_id": c["entity_id"],
+                    "chain": c["chain"],
+                    "address": c["contract_address"],
+                    "admin_keys": c.get("has_admin_keys", False),
+                    "upgradeable": c.get("is_upgradeable", False),
+                    "pausable": c.get("has_pause_function", False),
+                    "timelock_hours": float(c["timelock_hours"]) if c.get("timelock_hours") else None,
+                    "multisig": c.get("multisig_threshold"),
+                    "source_hash": c.get("source_code_hash"),
+                    "scanned_at": c["scanned_at"].isoformat() if c.get("scanned_at") else None,
+                })
+
+        # Contract upgrade history
+        upgrades = fetch_all("""
+            SELECT entity_symbol, contract_address, chain,
+                   previous_bytecode_hash, current_bytecode_hash,
+                   upgrade_detected_at
+            FROM contract_upgrade_history
+            WHERE entity_symbol = %s
+               OR contract_address IN (
+                   SELECT contract_address FROM contract_surveillance WHERE entity_id = %s
+               )
+            ORDER BY upgrade_detected_at DESC
+            LIMIT 10
+        """, (slug, slug))
+        if upgrades:
+            result["upgrade_events"] = [
+                {
+                    "contract": u["contract_address"],
+                    "chain": u["chain"],
+                    "previous_hash": u.get("previous_bytecode_hash"),
+                    "current_hash": u.get("current_bytecode_hash"),
+                    "detected_at": u["upgrade_detected_at"].isoformat() if u.get("upgrade_detected_at") else None,
+                }
+                for u in upgrades
+            ]
+    except Exception as e:
+        logger.warning(f"_get_surveillance({slug}) failed: {e}")
+        result["note"] = f"Surveillance query failed: {e}"
+    return result
+
+
+def _get_sanctions(slug: str, days: int = 180) -> dict:
+    """Sanctions screening history for this protocol's contracts and wallets."""
+    result = {"note": "Sanctions screening scoped to issuers/wallets, not protocols directly"}
+    try:
+        # Check if any stablecoins this protocol holds have issuer screening
+        exposure = _get_stablecoin_exposure(slug)
+        related = []
+        for coin in (exposure or []):
+            symbol = coin.get("symbol")
+            if symbol:
+                screening = fetch_one("""
+                    SELECT COUNT(*) as cnt, MAX(created_at) as latest
+                    FROM sanctions_screen_targets
+                    WHERE entity_symbol = %s
+                """, (symbol.lower(),))
+                if screening and screening.get("cnt", 0) > 0:
+                    related.append({
+                        "issuer": symbol,
+                        "targets_configured": screening["cnt"],
+                        "latest": screening["latest"].isoformat() if screening.get("latest") else None,
+                    })
+        if related:
+            result["related_issuer_screenings"] = related
+    except Exception as e:
+        logger.warning(f"_get_sanctions({slug}) failed: {e}")
     return result
