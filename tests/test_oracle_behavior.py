@@ -245,6 +245,28 @@ def test_other_oracle_not_tagged():
             assert r["pre_stress_event_id"] is None
 
 
+def test_tags_all_available_when_fewer_than_72_prior_readings():
+    """Edge case: only 40 prior readings exist. The tagger should tag
+    all 40 without erroring, not try to reach 72 that aren't there."""
+    oracle_addr = "0x" + "f" * 40
+    now = datetime(2026, 4, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+    db = FakeDB()
+    db.readings = _make_readings(oracle_addr, "ethereum", "DAI", now, count=40)
+    db.events.append({
+        "id": 11, "oracle_address": oracle_addr, "chain": "ethereum",
+        "asset_symbol": "DAI", "event_start": now, "event_end": None,
+        "pre_stress_readings_tagged": None,
+    })
+
+    tagged = _run_tag(db, event_id=11, oracle_address=oracle_addr, chain="ethereum",
+                      asset_symbol="DAI", event_start=now, window_hours=72)
+
+    assert tagged == 40, f"expected 40 tagged (all available), got {tagged}"
+    assert all(r["pre_stress_event_id"] == 11 for r in db.readings)
+    assert db.events[0]["pre_stress_readings_tagged"] == 40
+
+
 def test_tagging_never_raises_on_db_error():
     """A DB exception inside tagging is swallowed, returning 0.
     This guarantees stress-event opens never fail because of the tag step."""
@@ -269,5 +291,6 @@ if __name__ == "__main__":
     test_exactly_72_of_100_readings_tagged()
     test_idempotent_no_double_tag()
     test_other_oracle_not_tagged()
+    test_tags_all_available_when_fewer_than_72_prior_readings()
     test_tagging_never_raises_on_db_error()
     print("ALL TESTS PASS")
