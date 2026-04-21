@@ -89,6 +89,23 @@ EXPECTED_COLUMNS = {
         "change_direction", "changed_at", "detected_at",
         "change_context", "content_hash",
     ],
+    "yield_snapshots": [
+        "id", "pool_id", "protocol", "chain", "asset", "apy",
+        "apy_base", "apy_reward", "tvl_usd", "stable_pool", "snapshot_at",
+    ],
+    "peg_snapshots_5m": [
+        "id", "stablecoin_id", "price", "timestamp", "deviation_bps",
+    ],
+    "entity_snapshots_hourly": [
+        "id", "entity_id", "entity_type", "market_cap", "total_volume",
+        "price_usd", "price_change_24h", "circulating_supply", "total_supply",
+        "snapshot_at",
+    ],
+    "exchange_snapshots": [
+        "id", "exchange_id", "name", "trust_score", "trust_score_rank",
+        "trade_volume_24h_btc", "year_established", "country",
+        "trading_pairs", "snapshot_at",
+    ],
 }
 
 
