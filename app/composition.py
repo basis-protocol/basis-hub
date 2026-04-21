@@ -119,7 +119,7 @@ def compute_cqi(asset_symbol, protocol_slug):
 # =============================================================================
 
 
-def compute_rqs(holdings: list[dict]) -> dict:
+def compute_rqs(holdings: list[dict], coverage_threshold: float = 0.0) -> dict:
     """
     Compute Reserve Quality Score from a list of stablecoin holdings.
 
@@ -129,6 +129,15 @@ def compute_rqs(holdings: list[dict]) -> dict:
 
     Fetches current SII score for each stablecoin.
     Returns weighted-average SII as the RQS, plus component breakdown.
+
+    Args:
+        holdings: list of {symbol, weight} dicts.
+        coverage_threshold: minimum `scored_coverage` (0..1) required to
+            return a non-null rqs_score. Default 0.0 preserves pre-registry
+            behavior (always returns a score as long as scored_weight > 0).
+            When scored_coverage < coverage_threshold, rqs_score is None and
+            withheld=True. Parallels `aggregate_coverage_withheld` for the
+            within-index case.
     """
     if not holdings:
         return {"error": "No holdings provided"}
@@ -199,11 +208,23 @@ def compute_rqs(holdings: list[dict]) -> dict:
     from app.scoring_engine import compute_confidence_tag
     conf = compute_confidence_tag(0, 0, scored_coverage)
 
+    # Threshold-gated withhold — honest-coverage guard for portfolio
+    # aggregation, parallels aggregate_coverage_withheld for within-index.
+    withheld = False
+    if coverage_threshold > 0 and scored_coverage < coverage_threshold:
+        withheld = True
+        warnings.append(
+            f"RQS withheld: scored_coverage {scored_coverage} below "
+            f"coverage_threshold {coverage_threshold}"
+        )
+
     result = {
         "composite_id": "rqs",
         "name": "Reserve Quality Score",
-        "rqs_score": rqs_score,
+        "rqs_score": None if withheld else rqs_score,
         "scored_coverage": scored_coverage,
+        "coverage_threshold": coverage_threshold,
+        "withheld": withheld,
         "confidence": conf["confidence"],
         "confidence_tag": conf["tag"],
         "breakdown": sorted(breakdown, key=lambda x: x["contribution"], reverse=True),
@@ -218,12 +239,17 @@ def compute_rqs(holdings: list[dict]) -> dict:
     return result
 
 
-def compute_rqs_for_protocol(protocol_slug: str) -> dict:
+def compute_rqs_for_protocol(protocol_slug: str, coverage_threshold: float = 0.0) -> dict:
     """
     Compute RQS for a specific PSI-scored protocol using its treasury holdings.
 
     Reads from protocol_treasury_holdings table (stablecoin rows with SII scores).
     Weights are proportional to USD value held.
+
+    Args:
+        protocol_slug: PSI protocol slug.
+        coverage_threshold: forwarded to `compute_rqs`. Default 0.0 keeps
+            existing non-threshold behavior.
     """
     # Verify protocol exists in PSI
     psi_row = fetch_one("""
@@ -274,7 +300,7 @@ def compute_rqs_for_protocol(protocol_slug: str) -> dict:
         for sym, usd in by_symbol.items()
     ]
 
-    result = compute_rqs(holdings)
+    result = compute_rqs(holdings, coverage_threshold=coverage_threshold)
 
     if "error" in result and "breakdown" not in result:
         result["protocol"] = psi_row.get("protocol_name", protocol_slug)
