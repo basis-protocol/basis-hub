@@ -514,11 +514,11 @@ async function main(): Promise<void> {
     try {
       await runCycle(config, walletBase, walletArb, providerBase, providerArb);
     } catch (err) {
-      const msg = `Unhandled error in keeper cycle`;
       const errStr = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      logger.error(msg, { error: errStr });
+      const msg = `Unhandled error in keeper cycle\n\n${errStr}`;
+      logger.error("Unhandled error in keeper cycle", { error: errStr });
       cycleErrors.push(errStr);
-      await sendAlert(msg, err);
+      await sendAlert(msg);
     }
 
     if (cycleId != null) {
@@ -534,7 +534,8 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (err) => {
-  logger.error("Fatal keeper error", { error: err instanceof Error ? (err.stack ?? err.message) : String(err) });
-  await sendAlert("Keeper crashed — fatal error", err);
+  const errStr = err instanceof Error ? (err.stack ?? err.message) : String(err);
+  logger.error("Fatal keeper error", { error: errStr });
+  await sendAlert(`Keeper crashed — fatal error\n\n${errStr}`);
   process.exit(1);
 });
