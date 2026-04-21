@@ -35,6 +35,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
 from app.composition import AGGREGATION_FORMULAS, aggregate  # noqa: E402
+from app.database import init_pool  # noqa: E402
 
 
 # =============================================================================
@@ -548,6 +549,7 @@ report.
 
 
 def main() -> None:
+    init_pool()
     _require_db()
 
     print("Loading all scored + accruing entities...", file=sys.stderr)
