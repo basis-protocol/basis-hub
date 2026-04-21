@@ -1731,7 +1731,7 @@ async def run_slow_cycle():
                     from app.indexer.edges import run_edge_builder
                     logger.info(f"Running edge builder for {edge_chain} (top 100 unbuilt wallets by value, 15-min timeout)...")
                     edge_result = await asyncio.wait_for(
-                        run_edge_builder(max_wallets=100, priority="value", chain=edge_chain),
+                        run_edge_builder(max_wallets=500, priority="value", chain=edge_chain),
                         timeout=900,
                     )
                     logger.info(
@@ -2572,6 +2572,45 @@ async def main():
         logger.error("[startup] httpx monkey-patched for API tracking")
     except Exception as e:
         logger.error(f"[startup] httpx monkey-patch failed: {e}")
+
+    # Ensure data layer tables exist (migration 058 may not have been fully applied)
+    _data_layer_ddl = [
+        """CREATE TABLE IF NOT EXISTS governance_voters (
+            id SERIAL PRIMARY KEY, protocol TEXT NOT NULL, source TEXT NOT NULL,
+            proposal_id TEXT, voter_address TEXT NOT NULL, voting_power NUMERIC,
+            choice TEXT, collected_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(protocol, source, proposal_id, voter_address))""",
+        """CREATE TABLE IF NOT EXISTS mint_burn_events (
+            id BIGSERIAL PRIMARY KEY, stablecoin_id TEXT, chain TEXT NOT NULL DEFAULT 'ethereum',
+            event_type TEXT NOT NULL, amount NUMERIC, tx_hash TEXT, block_number BIGINT,
+            from_address TEXT, to_address TEXT, timestamp TIMESTAMPTZ,
+            collected_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(chain, tx_hash, event_type))""",
+        """CREATE TABLE IF NOT EXISTS liquidity_depth (
+            id BIGSERIAL PRIMARY KEY, asset_id TEXT NOT NULL, venue TEXT NOT NULL,
+            chain TEXT NOT NULL DEFAULT 'ethereum', depth_usd_2pct NUMERIC,
+            depth_usd_5pct NUMERIC, bid_depth NUMERIC, ask_depth NUMERIC,
+            spread_bps NUMERIC, raw_data JSONB,
+            snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(asset_id, venue, chain, snapshot_at))""",
+    ]
+    for _ddl in _data_layer_ddl:
+        try:
+            execute(_ddl)
+        except Exception as _de:
+            logger.error(f"[startup] DDL failed: {_de}")
+
+    # Oracle stress_events + price_readings column fixes (migration 075 not applied)
+    _oracle_alters = [
+        "ALTER TABLE oracle_stress_events ADD COLUMN IF NOT EXISTS pre_stress_window_hours INTEGER DEFAULT 72",
+        "ALTER TABLE oracle_stress_events ADD COLUMN IF NOT EXISTS pre_stress_readings_tagged INTEGER",
+        "ALTER TABLE oracle_price_readings ADD COLUMN IF NOT EXISTS pre_stress_event_id BIGINT",
+    ]
+    for _alt in _oracle_alters:
+        try:
+            execute(_alt)
+        except Exception as _ae:
+            logger.error(f"[startup] oracle ALTER failed: {_ae}")
 
     # Ensure API usage tracking tables exist
     try:

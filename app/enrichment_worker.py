@@ -490,7 +490,7 @@ async def run_enrichment_pipeline() -> dict:
                 from app.indexer.edges import run_edge_builder
                 logger.error(f"=== [edge_building] starting chain={chain} ===")
                 result = await asyncio.wait_for(
-                    run_edge_builder(max_wallets=100, priority="value", chain=chain),
+                    run_edge_builder(max_wallets=500, priority="value", chain=chain),
                     timeout=900,
                 )
                 results[chain] = result
