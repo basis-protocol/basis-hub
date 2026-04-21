@@ -9317,28 +9317,6 @@ def _register_spa_catch_all(app_instance):
         except Exception as e:
             logger.warning(f"Report page render failed for /{full_path}: {e}")
 
-        # Audit pages — server-rendered from audits/*.md for all visitors.
-        # No-cache: audit markdown can be updated between deploys; we don't
-        # want a CDN serving the v1.0 version after v1.1 addendum lands.
-        try:
-            if full_path.startswith("audits/"):
-                from app.incidents import render_audit_html
-                slug = full_path.split("audits/")[1].split("/")[0].split("?")[0]
-                if slug:
-                    html = render_audit_html(slug.lower())
-                    if html is not None:
-                        return HTMLResponse(
-                            content=html,
-                            headers={
-                                "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
-                                "Pragma": "no-cache",
-                                "Expires": "0",
-                                "Basis-URL-Stability": "permanent",
-                            },
-                        )
-        except Exception as e:
-            logger.warning(f"Audit page render failed for /{full_path}: {e}")
-
         # Incident pages — SSR shell with OG meta, React renders the body.
         # No-cache: title/summary/og-image are pulled from incident_snapshots,
         # which can update when the populator re-runs.

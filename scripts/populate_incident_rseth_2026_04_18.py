@@ -291,7 +291,7 @@ def main() -> None:
         )
         sys.exit(1)
     metadata = {
-        "audit_path": "audits/lsti_rseth_audit_2026-04-20.md",
+        "audit_path": "audits/internal/lsti_rseth_audit_2026-04-20.md",
         "q4_components": Q4_COMPONENTS,
         "source_of_truth": "api.lsti.scores.raw_values" if api_base else "fallback",
         "captured_iso": datetime.now(timezone.utc).isoformat(),

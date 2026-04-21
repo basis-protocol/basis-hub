@@ -1,4 +1,49 @@
 import { useState, useEffect } from "react";
+import BasisLogo from "../BasisLogo";
+
+// Section 04 — pinned evidence snapshot. Values reflect what production's
+// generic_index_scores.raw_values held for each tracked entity on
+// 2026-04-20. Not fetched from the API at render time; this is pinned
+// record, not live data.
+const SECTION_04_VALUES = {
+  "kelp-rseth":       { audit_status: 7, admin_key_risk: 95, upgradeability_risk: 70,  withdrawal_queue_impl: 60, slashing_insurance: 40, exploit_history_lst: 10  },
+  "lido-steth":       { audit_status: 8, admin_key_risk: 95, upgradeability_risk: 70,  withdrawal_queue_impl: 90, slashing_insurance: 80, exploit_history_lst: 100 },
+  "rocket-pool-reth": { audit_status: 6, admin_key_risk: 95, upgradeability_risk: 100, withdrawal_queue_impl: 85, slashing_insurance: 90, exploit_history_lst: 100 },
+  "etherfi-eeth":     { audit_status: 7, admin_key_risk: 95, upgradeability_risk: 70,  withdrawal_queue_impl: 85, slashing_insurance: 50, exploit_history_lst: 100 },
+};
+
+// Row ordering + labeling for the Section 04 table.
+const SECTION_04_ROWS = [
+  { key: "audit_status",          label: "Audits completed",                          source: "Static config" },
+  { key: "admin_key_risk",        label: "Admin key risk (0–100, higher = safer)",    source: "Live contract analysis" },
+  { key: "upgradeability_risk",   label: "Upgradeability risk",                       source: "Live contract analysis" },
+  { key: "withdrawal_queue_impl", label: "Withdrawal queue",                          source: "Static config + live" },
+  { key: "slashing_insurance",    label: "Slashing insurance",                        source: "Static config" },
+  { key: "exploit_history_lst",   label: "Exploit history (post-event)",              source: "DeFiLlama + static", footnoteDagger: false },
+];
+
+const SECTION_04_PEERS = ["kelp-rseth", "lido-steth", "rocket-pool-reth", "etherfi-eeth"];
+
+// Bolding rule: if rsETH holds the worst value in the row, bold the rsETH
+// cell; otherwise bold the best-performing peer cell. All-equal rows get
+// no bolding. "Worst" and "best" are domain-aware — every component here
+// is higher-is-better except admin_key_risk which all saturate at 95
+// (no bolding needed).
+function section04BoldCell(rowKey, peer) {
+  const values = SECTION_04_PEERS.map((p) => [p, SECTION_04_VALUES[p][rowKey]]);
+  const uniq = new Set(values.map(([, v]) => v));
+  if (uniq.size === 1) return false; // all-equal row (admin_key_risk)
+  const rsEthVal = SECTION_04_VALUES["kelp-rseth"][rowKey];
+  const worst = Math.min(...values.map(([, v]) => v));
+  const best = Math.max(...values.map(([, v]) => v));
+  if (rsEthVal === worst) {
+    return peer === "kelp-rseth";
+  }
+  // rsETH is not worst — bold the best peer (excluding rsETH if it's tied for best)
+  const bestPeers = values.filter(([, v]) => v === best).map(([p]) => p);
+  const nonRsEthBest = bestPeers.find((p) => p !== "kelp-rseth");
+  return peer === (nonRsEthBest || bestPeers[0]);
+}
 
 const T = {
   paper: "#f5f2ec",
@@ -172,6 +217,7 @@ function IncidentBody({ data, mobile }) {
           <WhatHappenedSection mobile={mobile} />
           <ComparisonSection data={data} mobile={mobile} />
           <CapturedMissedSection mobile={mobile} />
+          <Section04Evidence mobile={mobile} />
           <MethodologySection slug={data.slug} mobile={mobile} />
         </div>
         <aside style={{ width: mobile ? "100%" : 300, flexShrink: 0, order: mobile ? -1 : 0 }}>
@@ -381,7 +427,7 @@ function ComparisonSection({ data, mobile }) {
           Methodology note
         </div>
         <p style={{ fontFamily: T.sans, fontSize: 13, lineHeight: 1.65, color: T.inkMid, margin: 0 }}>
-          The original Q4 package included <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_peg_deviation</code> and <code style={{ fontFamily: T.mono, fontSize: 12 }}>dex_pool_depth</code>. Both were removed after verification: <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_peg_deviation</code> conflates rebasing and reward-bearing LST designs and is not cross-peer comparable; <code style={{ fontFamily: T.mono, fontSize: 12 }}>dex_pool_depth</code> has a known collector wiring gap (follow-up PR). Replaced <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_peg_deviation</code> with <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_price_ratio</code>, which shows the raw ETH-denominated price alongside each LST's design type — letting the comparison speak for itself. See <a href="/audits/lsti_rseth_audit_2026-04-20#v1-1-addendum" style={{ color: T.ink, textDecoration: "none", borderBottom: `1px solid ${T.ruleMid}` }}>audit v1.1</a>.
+          The original Q4 package included <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_peg_deviation</code> and <code style={{ fontFamily: T.mono, fontSize: 12 }}>dex_pool_depth</code>. Both were removed after verification: <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_peg_deviation</code> conflates rebasing and reward-bearing LST designs and is not cross-peer comparable; <code style={{ fontFamily: T.mono, fontSize: 12 }}>dex_pool_depth</code> has a known collector wiring gap (follow-up PR). Replaced <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_peg_deviation</code> with <code style={{ fontFamily: T.mono, fontSize: 12 }}>eth_price_ratio</code>, which shows the raw ETH-denominated price alongside each LST's design type — letting the comparison speak for itself. Source for each component is listed in the table's Source column. Live scoring data at <a href="/api/lsti/scores/kelp-rseth" style={{ color: T.ink, textDecoration: "none", borderBottom: `1px solid ${T.ruleMid}` }}>/api/lsti/scores/kelp-rseth</a>.
         </p>
       </div>
     </section>
@@ -431,6 +477,142 @@ function CapturedMissedSection({ mobile }) {
     </section>
   );
 }
+
+function Section04Evidence({ mobile }) {
+  const logoSize = mobile ? 44 : 52;
+  const cellBase = {
+    fontFamily: T.mono,
+    fontSize: 13,
+    color: T.inkMid,
+  };
+  const valueCell = (rowKey, peer) => {
+    const bold = section04BoldCell(rowKey, peer);
+    return {
+      ...cellBase,
+      fontWeight: bold ? 600 : 400,
+      color: bold ? T.ink : T.inkMid,
+    };
+  };
+
+  return (
+    <section style={{ marginBottom: 44 }}>
+      {/* BasisLogo evidentiary stamp — left-aligned, subtle, with rule */}
+      <div style={{
+        borderBottom: `1px solid ${T.ruleMid}`,
+        paddingBottom: 10,
+        marginBottom: 18,
+        opacity: 0.85,
+      }}>
+        <BasisLogo size={logoSize} />
+      </div>
+
+      <SectionTitle n="04" title="What Basis Knew on April 20, 2026" mobile={mobile} />
+
+      <p style={{ fontFamily: T.sans, fontSize: mobile ? 14 : 15, lineHeight: 1.65, color: T.inkMid, maxWidth: 720, marginBottom: 14 }}>
+        Basis's tracked values as of April 20, 2026 did not show broad-based weakness in rsETH. They showed a narrower pattern:
+      </p>
+
+      <ul style={{ margin: "0 0 20px 22px", padding: 0, fontFamily: T.sans, fontSize: mobile ? 14 : 15, lineHeight: 1.7, color: T.inkMid, maxWidth: 720 }}>
+        <li style={{ marginBottom: 6 }}>Relative weakness was concentrated in withdrawal queue design and slashing insurance</li>
+        <li style={{ marginBottom: 6 }}>The rest of the tracked smart-contract profile was broadly in line with peers or better<sup style={{ fontSize: "0.65em", marginLeft: 1 }}>†</sup></li>
+        <li>Exploit history was updated after the fact, moving from 100 to 10 on April 20, 2026 to reflect the April 18 event</li>
+      </ul>
+
+      {/* Table — matches Section 02 component-comparison styling */}
+      <div style={{ border: `1px solid ${T.ruleMid}`, overflowX: "auto" }}>
+        {!mobile && (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1.8fr 0.7fr 0.7fr 0.7fr 0.7fr 1.1fr",
+            padding: "10px 14px",
+            borderBottom: `1px solid ${T.ruleMid}`,
+            background: T.paperWarm,
+            fontFamily: T.mono, fontSize: 10, fontWeight: 600,
+            color: T.inkLight, textTransform: "uppercase", letterSpacing: 1,
+          }}>
+            <span>Component</span>
+            <span>rsETH</span>
+            <span>stETH</span>
+            <span>rETH</span>
+            <span>eETH</span>
+            <span>Source</span>
+          </div>
+        )}
+
+        {SECTION_04_ROWS.map((row, i) => {
+          const rowBorder = i < SECTION_04_ROWS.length - 1 ? `1px dotted ${T.ruleMid}` : "none";
+
+          if (mobile) {
+            return (
+              <div key={row.key} style={{ padding: "12px 14px", borderBottom: rowBorder }}>
+                <div style={{ fontFamily: T.sans, fontSize: 13, fontWeight: 600, color: T.ink, marginBottom: 2 }}>
+                  {row.label}
+                </div>
+                <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                  {row.source}
+                </div>
+                {SECTION_04_PEERS.map((p) => {
+                  const bold = section04BoldCell(row.key, p);
+                  const peerLabelMap = { "kelp-rseth": "rsETH", "lido-steth": "stETH", "rocket-pool-reth": "rETH", "etherfi-eeth": "eETH" };
+                  return (
+                    <div key={p} style={{ display: "flex", justifyContent: "space-between", fontFamily: T.mono, fontSize: 12, padding: "3px 0", color: T.inkMid }}>
+                      <span style={{ color: T.inkLight }}>{peerLabelMap[p]}</span>
+                      <span style={{ fontWeight: bold ? 600 : 400, color: bold ? T.ink : T.inkMid }}>
+                        {SECTION_04_VALUES[p][row.key]}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
+
+          return (
+            <div key={row.key} style={{
+              display: "grid",
+              gridTemplateColumns: "1.8fr 0.7fr 0.7fr 0.7fr 0.7fr 1.1fr",
+              padding: "12px 14px",
+              borderBottom: rowBorder,
+              alignItems: "baseline",
+            }}>
+              <div style={{ fontFamily: T.sans, fontSize: 13, fontWeight: 600, color: T.ink }}>
+                {row.label}
+              </div>
+              {SECTION_04_PEERS.map((p) => (
+                <div key={p} style={valueCell(row.key, p)}>
+                  {SECTION_04_VALUES[p][row.key]}
+                </div>
+              ))}
+              <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkLight, letterSpacing: 0.3 }}>
+                {row.source}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <p style={{
+        marginTop: 12,
+        fontFamily: T.mono, fontSize: 10, color: T.inkFaint,
+        lineHeight: 1.5, maxWidth: 720,
+      }}>
+        This section is evidentiary, not dynamic. Values are pinned to April 20, 2026 and do not update. Source for each component is in the table's Source column. Live scoring data at{" "}
+        <a href="/api/lsti/scores/kelp-rseth" style={{ color: T.inkMid, textDecoration: "none", borderBottom: `1px solid ${T.ruleMid}` }}>
+          /api/lsti/scores/kelp-rseth
+        </a>.
+      </p>
+
+      <p style={{
+        marginTop: 6,
+        fontFamily: T.mono, fontSize: 10, fontStyle: "italic",
+        color: T.inkFaint, lineHeight: 1.5, maxWidth: 720,
+      }}>
+        † admin_key_risk resolves to 95 across all four tracked LSTs because the live contract-analysis override saturates the value when a standard transparent-proxy + timelock pattern is detected. Per-entity differentiation is a follow-up methodology item.
+      </p>
+    </section>
+  );
+}
+
 function MethodologySection({ slug, mobile }) {
   const link = {
     color: T.ink, textDecoration: "none",
@@ -438,15 +620,11 @@ function MethodologySection({ slug, mobile }) {
   };
   return (
     <section style={{ marginBottom: 24 }}>
-      <SectionTitle n="04" title="Methodology & Data Integrity" mobile={mobile} />
+      <SectionTitle n="05" title="Methodology & Data Integrity" mobile={mobile} />
       <p style={{ fontFamily: T.sans, fontSize: mobile ? 14 : 15, lineHeight: 1.65, color: T.inkMid, maxWidth: 720, marginBottom: 14 }}>
-        This page displays component-level readings, not an overall LSTI score. See the full data-defensibility audit, the index methodology, and the live source.
+        This page displays component-level readings, not an overall LSTI score. See the index methodology and the live source.
       </p>
       <ul style={{ listStyle: "none", padding: 0, marginBottom: 18 }}>
-        <li style={{ marginBottom: 6 }}>
-          <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, textTransform: "uppercase", letterSpacing: 1, marginRight: 10 }}>AUDIT</span>
-          <a href={`/audits/lsti_rseth_audit_2026-04-20`} style={link}>/audits/lsti_rseth_audit_2026-04-20</a>
-        </li>
         <li style={{ marginBottom: 6 }}>
           <span style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, textTransform: "uppercase", letterSpacing: 1, marginRight: 10 }}>METHODOLOGY</span>
           <a href="/methodology" style={link}>/methodology</a>
