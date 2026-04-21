@@ -211,47 +211,11 @@ def analyze_psi_rpi(index_id: str, query: str, module_path: str, symbol: str) ->
     return out
 
 
-# Legacy category names declared on SII components (inherited from
-# COMPONENT_NORMALIZATIONS) → SII v1 category names declared on
-# SII_V1_DEFINITION["categories"]. Canonical source: app/scoring_engine.py's
-# is_sii_category_complete_legacy(). Duplicated here so the analyzer is
-# self-contained and the aggregation-registry replay activates all five v1
-# categories. Without this remap, only peg_stability and holder_distribution
-# would contribute (those are the two cat names that happen to overlap
-# between the legacy and v1 vocabularies), and every formula would score
-# SII entities on 40% of the definition, producing results uncomparable
-# across formulas.
-_SII_LEGACY_TO_V1_CATEGORY = {
-    "peg_stability": "peg_stability",
-    "liquidity": "liquidity_depth",
-    "market_activity": "mint_burn_dynamics",
-    "flows": "mint_burn_dynamics",
-    "holder_distribution": "holder_distribution",
-    "smart_contract": "structural_risk_composite",
-    "governance": "structural_risk_composite",
-    "transparency": "structural_risk_composite",
-    "regulatory": "structural_risk_composite",
-    "network": "structural_risk_composite",
-    "reserves": "structural_risk_composite",
-    "oracle": "structural_risk_composite",
-}
-
-
-def _sii_definition_with_v1_categories(definition: dict) -> dict:
-    """Return a shallow-cloned SII definition whose components' `category`
-    field uses v1 category names (matching `definition["categories"]` keys).
-
-    Non-destructive: never mutates the shared SII_V1_DEFINITION object.
-    """
-    new_components = {}
-    for cid, cdef in definition["components"].items():
-        new_cdef = dict(cdef)
-        legacy_cat = cdef.get("category")
-        new_cdef["category"] = _SII_LEGACY_TO_V1_CATEGORY.get(legacy_cat, legacy_cat)
-        new_components[cid] = new_cdef
-    out = dict(definition)
-    out["components"] = new_components
-    return out
+# Legacy→v1 SII category mapping lives on the definition as of SII v1.1.0.
+# Imported here for diagnostic/documentation purposes only; the analyzer's
+# replay reads `SII_V1_DEFINITION["components"][cid]["category"]` directly
+# (which is already the v1 name) and needs no local remapping.
+from app.index_definitions.sii_v1 import SII_LEGACY_TO_V1_CATEGORY as _SII_LEGACY_TO_V1_CATEGORY  # noqa: F401
 
 
 def analyze_sii() -> list[dict]:
@@ -268,22 +232,15 @@ def analyze_sii() -> list[dict]:
     by this replay, which matches production SII scoring behavior — the
     definition is the canonical component universe.
 
-    Note on category semantics: SII_V1_DEFINITION declares 5 v1 categories
-    (peg_stability, liquidity_depth, mint_burn_dynamics, holder_distribution,
-    structural_risk_composite) but its components inherit the 8-way legacy
-    category vocabulary from COMPONENT_NORMALIZATIONS. This analyzer applies
-    the canonical legacy→v1 remapping (see _SII_LEGACY_TO_V1_CATEGORY) to a
-    local copy of the definition so that every v1 category receives its
-    fair share of components during aggregation. Production's SII scorer in
-    app/worker.py::compute_sii_from_components applies the equivalent
-    mapping via aggregate_legacy_to_v1 / DB_TO_STRUCTURAL_MAPPING. Follow-up
-    ticket `sii-component-gap` covers full reconciliation between the
-    collector's 80 component_ids, the scorer's 56 declared components, and
-    the ~37 that overlap end-to-end.
+    Category semantics as of SII v1.1.0: the legacy→v1 category remap lives
+    inside `app/index_definitions/sii_v1.py::_build_components` so
+    `SII_V1_DEFINITION` presents v1 category labels on its components. No
+    local wrapping is required here; aggregate() activates all five v1
+    categories directly. Follow-up ticket `sii-component-gap` covers full
+    reconciliation between the collector's 80 component_ids, the scorer's 56
+    declared components, and the ~37 that overlap end-to-end.
     """
     from app.index_definitions.sii_v1 import SII_V1_DEFINITION
-
-    sii_definition = _sii_definition_with_v1_categories(SII_V1_DEFINITION)
 
     entities = _fetch_all(INDEX_SOURCES[0][3])
 
@@ -305,7 +262,7 @@ def analyze_sii() -> list[dict]:
             if r.get("normalized_score") is not None
         }
         rescored = rescore_entity_under_formulas(
-            sii_definition, component_scores, raw_values
+            SII_V1_DEFINITION, component_scores, raw_values
         )
         out.append({
             "index": "sii",

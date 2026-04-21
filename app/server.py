@@ -83,6 +83,21 @@ class _ResponseCache:
 _cache = _ResponseCache()
 
 
+def _parse_jsonb(v):
+    """Safely decode a JSONB column value. psycopg2 usually returns dicts/
+    lists directly for JSONB, but some code paths stringify; accept both
+    and return None on parse failure."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        import json as _j
+        try:
+            return _j.loads(v)
+        except Exception:
+            return None
+    return v
+
+
 app = FastAPI(
     title="Basis Protocol API",
     description="Standardized risk surfaces for on-chain finance",
@@ -1356,6 +1371,10 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
 
         comp_count = comp_populated
 
+        # Aggregation envelope (columns from migration 084; populated by the
+        # SII v1.1.0 wiring). Historical rows return None.
+        eff_weights = _parse_jsonb(row.get("effective_category_weights"))
+        agg_params = _parse_jsonb(row.get("aggregation_params"))
         results.append({
             "id": row["stablecoin_id"],
             "name": row["name"],
@@ -1390,6 +1409,12 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
             },
             "component_count": comp_count,
             "formula_version": row.get("formula_version"),
+            "aggregation_method": row.get("aggregation_method"),
+            "aggregation_params": agg_params,
+            "aggregation_formula_version": row.get("aggregation_formula_version"),
+            "effective_category_weights": eff_weights,
+            "coverage": float(row["coverage"]) if row.get("coverage") is not None else None,
+            "withheld": bool(row.get("withheld")) if row.get("withheld") is not None else False,
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         })
     
@@ -1541,6 +1566,12 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
         "formula_version": row.get("formula_version"),
         "methodology_version": FORMULA_VERSION,
         "methodology_version_pinned": pinned,
+        "aggregation_method": row.get("aggregation_method"),
+        "aggregation_params": _parse_jsonb(row.get("aggregation_params")),
+        "aggregation_formula_version": row.get("aggregation_formula_version"),
+        "effective_category_weights": _parse_jsonb(row.get("effective_category_weights")),
+        "coverage": float(row["coverage"]) if row.get("coverage") is not None else None,
+        "withheld": bool(row.get("withheld")) if row.get("withheld") is not None else False,
         "daily_change": float(row["daily_change"]) if row.get("daily_change") else None,
         "weekly_change": float(row["weekly_change"]) if row.get("weekly_change") else None,
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
@@ -1918,6 +1949,7 @@ async def get_all_indices():
             "description": idx["description"],
             "entity_type": idx["entity_type"],
             "formula": formula,
+            "aggregation": idx.get("aggregation"),
             "categories": categories,
             "total_components": len(idx.get("components", {})),
             "structural_subcategories": idx.get("structural_subcategories"),

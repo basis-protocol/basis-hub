@@ -64,6 +64,14 @@ def compute_cqi(asset_symbol, protocol_slug):
     """
     Compute Collateral Quality Index for an asset-in-protocol pair.
     Fetches SII and PSI scores from the database on demand.
+
+    Note: SII inputs now reflect coverage_weighted aggregation as of the
+    SII v1.1.0 wiring PR (see docs/methodology/sii_wiring_acceptance.md).
+    CQI pairs computed before that PR landed were correct against the
+    pre-wiring SII basis but require re-attestation if a consumer wants
+    them to reflect the new SII output. Tracked as
+    basis-hub#cqi-rqs-reattestation — deliberately deferred so CQI's own
+    methodology doesn't shift in the same commit as SII's wiring.
     """
     # Get SII score from scores table joined to stablecoins
     sii_row = fetch_one("""
@@ -122,6 +130,14 @@ def compute_cqi(asset_symbol, protocol_slug):
 def compute_rqs(holdings: list[dict], coverage_threshold: float = 0.0) -> dict:
     """
     Compute Reserve Quality Score from a list of stablecoin holdings.
+
+    Note: the per-holding SII lookups inside this path pull from the `scores`
+    table, which as of the SII v1.1.0 wiring PR reflects coverage_weighted
+    aggregation. Historical RQS values computed before that PR landed are
+    still correct against their timestamped inputs; consumers who want RQS
+    recomputed under the new SII basis need the re-attestation pipeline
+    tracked by basis-hub#cqi-rqs-reattestation. See
+    docs/methodology/sii_wiring_acceptance.md.
 
     Each holding dict must have:
       - symbol: stablecoin ticker (e.g. "USDC")

@@ -170,86 +170,130 @@ async def collect_all_components(
 
 def compute_sii_from_components(components: list[dict]) -> dict:
     """
-    Given a flat list of component readings, compute the SII score.
-    Returns dict with overall score, category scores, structural breakdown.
+    Given a flat list of component readings, compute the SII score via the
+    aggregation registry.
+
+    As of SII v1.1.0, overall and category scores are produced by
+    ``app.composition.aggregate(SII_V1_DEFINITION, component_scores,
+    raw_values)`` — the same dispatch path every other index uses. The
+    formula declared on the definition (``coverage_weighted`` with
+    ``min_coverage=0.0``) governs how categories combine.
+
+    The structural subcategory breakdown (reserves/contract/oracle/
+    governance/network) is preserved as **derived informational** output,
+    computed from per-legacy-category averages via ``DB_TO_STRUCTURAL_MAPPING``.
+    These sub-scores continue to populate their dedicated columns on the
+    ``scores`` table but no longer drive the overall. The legacy
+    three-level path (``calculate_sii`` + ``calculate_structural_composite``
+    + ``aggregate_legacy_to_v1``) remains callable as the reference
+    implementation for ``legacy_sii_v1`` in the formula registry so
+    historical scores stay reproducible.
+
+    See docs/methodology/sii_changelog.md and
+    docs/methodology/sii_wiring_acceptance.md.
     """
-    # Group by category → average normalized scores
-    category_scores: dict[str, list[float]] = {}
-    for comp in components:
-        cat = comp.get("category", "unknown")
-        score = comp.get("normalized_score")
-        if score is not None:
-            category_scores.setdefault(cat, []).append(score)
-    
-    cat_avgs = {cat: sum(s) / len(s) for cat, s in category_scores.items()}
-    
-    # Map legacy categories to v1.0.0 structure
-    v1_scores = aggregate_legacy_to_v1(cat_avgs)
-    
-    # Calculate final SII
-    overall = calculate_sii(v1_scores)
+    import json as _json
+    from app.composition import aggregate
+    from app.index_definitions.sii_v1 import SII_V1_DEFINITION
+    from app.scoring import (
+        COMPONENT_NORMALIZATIONS,
+        DB_TO_STRUCTURAL_MAPPING,
+    )
+    from app.scoring_engine import compute_confidence_tag
+
+    # Build the (component_scores, raw_values) dicts keyed by component_id.
+    # Only components declared in the definition participate; collector-only
+    # ids (e.g., Solana-chain-specific variants) are ignored to match the
+    # analyzer's Section B behavior.
+    component_scores: dict[str, float] = {}
+    raw_values: dict[str, float] = {}
+    for c in components:
+        cid = c.get("component_id")
+        if cid is None or cid not in SII_V1_DEFINITION["components"]:
+            continue
+        rv = c.get("raw_value")
+        if rv is not None:
+            raw_values[cid] = rv
+        ns = c.get("normalized_score")
+        if ns is not None:
+            component_scores[cid] = float(ns)
+
+    agg = aggregate(SII_V1_DEFINITION, component_scores, raw_values)
+
+    overall = agg.get("overall_score")
     if overall is None:
         overall = 0.0
-    
-    # Extract structural subscores for storage
-    from app.scoring import DB_TO_STRUCTURAL_MAPPING, STRUCTURAL_SUBWEIGHTS
-    structural_buckets: dict[str, list[float]] = {}
-    for legacy_cat, sub in DB_TO_STRUCTURAL_MAPPING.items():
-        if legacy_cat in cat_avgs:
-            structural_buckets.setdefault(sub, []).append(cat_avgs[legacy_cat])
-    structural_subs = {
-        sub: sum(s) / len(s)
-        for sub, s in structural_buckets.items()
-    }
-    
     rounded_overall = round(overall, 2)
 
-    # V7.3 confidence tag fields — derived from actual populated components
-    # against the SII v1 component definition. components_total is the total
-    # number of components in COMPONENT_NORMALIZATIONS (56 as of v1.0.0).
-    # components_populated counts only components whose normalized_score is
-    # not None and whose component_id is part of the v1 definition.
-    from app.scoring import COMPONENT_NORMALIZATIONS
-    from app.scoring_engine import compute_confidence_tag
-    sii_comp_total = len(COMPONENT_NORMALIZATIONS)
-    sii_comp_populated = sum(
-        1 for c in components
-        if c.get("component_id") in COMPONENT_NORMALIZATIONS
-        and c.get("normalized_score") is not None
-    )
-    sii_coverage = round(sii_comp_populated / max(sii_comp_total, 1), 4)
+    cat_scores = agg.get("category_scores") or {}
 
-    # Missing categories (V1 names): any weighted v1 category whose aggregate
-    # score is None/zero because no component produced a normalized value.
-    _v1_missing = [
-        cat for cat, val in v1_scores.items()
-        if val is None or val == 0
-    ]
+    # Per-legacy-category averages — used only for the informational structural
+    # sub-scores (reserves_score, contract_score, oracle_score,
+    # governance_score, network_score). These columns are preserved on the
+    # scores table for methodology-page display and do not drive overall as of
+    # SII v1.1.0.
+    legacy_bucket: dict[str, list[float]] = {}
+    for c in components:
+        legacy_cat = c.get("category", "unknown")
+        ns = c.get("normalized_score")
+        if ns is None:
+            continue
+        legacy_bucket.setdefault(legacy_cat, []).append(float(ns))
+    legacy_avgs = {k: sum(v) / len(v) for k, v in legacy_bucket.items()}
+    structural_buckets: dict[str, list[float]] = {}
+    for legacy_cat, sub in DB_TO_STRUCTURAL_MAPPING.items():
+        if legacy_cat in legacy_avgs:
+            structural_buckets.setdefault(sub, []).append(legacy_avgs[legacy_cat])
+    structural_subs = {
+        sub: sum(s) / len(s) for sub, s in structural_buckets.items()
+    }
+
+    # V7.3 confidence tag fields — derived from actual populated components
+    # against the SII v1 component definition. Mirrors the behavior the
+    # pre-wiring path produced.
+    sii_comp_total = len(COMPONENT_NORMALIZATIONS)
+    sii_comp_populated = len(component_scores)
+    sii_coverage = round(sii_comp_populated / max(sii_comp_total, 1), 4)
+    _v1_missing = sorted(
+        set(SII_V1_DEFINITION["categories"].keys()) - set(cat_scores.keys())
+    )
     _conf = compute_confidence_tag(
         5 - len(_v1_missing), 5, sii_coverage, _v1_missing,
     )
 
+    # Aggregation envelope — six fields persisted on the scores table per
+    # migration 084, now populated on every cycle.
+    aggregation_params = (SII_V1_DEFINITION.get("aggregation") or {}).get("params", {})
+
     return {
         "overall_score": rounded_overall,
         "grade": score_to_grade(rounded_overall),
-        "peg_score": round(v1_scores.get("peg_stability") or 0, 2),
-        "liquidity_score": round(v1_scores.get("liquidity_depth") or 0, 2),
-        "mint_burn_score": round(v1_scores.get("mint_burn_dynamics") or 0, 2),
-        "distribution_score": round(v1_scores.get("holder_distribution") or 0, 2),
-        "structural_score": round(v1_scores.get("structural_risk_composite") or 0, 2),
+        "peg_score": round(cat_scores.get("peg_stability") or 0, 2),
+        "liquidity_score": round(cat_scores.get("liquidity_depth") or 0, 2),
+        "mint_burn_score": round(cat_scores.get("mint_burn_dynamics") or 0, 2),
+        "distribution_score": round(cat_scores.get("holder_distribution") or 0, 2),
+        "structural_score": round(cat_scores.get("structural_risk_composite") or 0, 2),
         "reserves_score": round(structural_subs.get("reserves_collateral") or 0, 2),
         "contract_score": round(structural_subs.get("smart_contract_risk") or 0, 2),
         "oracle_score": round(structural_subs.get("oracle_integrity") or 0, 2),
         "governance_score": round(structural_subs.get("governance_operations") or 0, 2),
         "network_score": round(structural_subs.get("network_chain_risk") or 0, 2),
         "component_count": len(components),
-        "formula_version": FORMULA_VERSION,
+        "formula_version": SII_V1_DEFINITION["version"],
         "components_populated": sii_comp_populated,
         "components_total": sii_comp_total,
         "component_coverage": sii_coverage,
         "missing_categories": _v1_missing,
         "confidence": _conf["confidence"],
         "confidence_tag": _conf["tag"],
+        # Aggregation envelope — persisted by store_score into the columns
+        # added by migration 084.
+        "aggregation_method": agg.get("method"),
+        "aggregation_params": aggregation_params,
+        "aggregation_formula_version": agg.get("formula_version"),
+        "effective_category_weights": agg.get("effective_category_weights") or {},
+        "coverage": agg.get("coverage"),
+        "withheld": bool(agg.get("withheld")),
     }
 
 
@@ -307,6 +351,8 @@ def store_score(stablecoin_id: str, score_data: dict, price_ctx: dict):
     
     import json as _json
     missing_cats = score_data.get("missing_categories") or []
+    eff_weights = score_data.get("effective_category_weights") or {}
+    agg_params = score_data.get("aggregation_params") or {}
 
     with get_cursor() as cur:
         cur.execute("""
@@ -319,6 +365,8 @@ def store_score(stablecoin_id: str, score_data: dict, price_ctx: dict):
                 daily_change, weekly_change,
                 confidence, confidence_tag, component_coverage,
                 components_populated, components_total, missing_categories,
+                aggregation_method, aggregation_params, aggregation_formula_version,
+                effective_category_weights, coverage, withheld,
                 computed_at, updated_at
             ) VALUES (
                 %s, %s, %s,
@@ -327,6 +375,8 @@ def store_score(stablecoin_id: str, score_data: dict, price_ctx: dict):
                 %s, %s, %s,
                 %s, %s, %s,
                 %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s,
                 NOW(), NOW()
@@ -358,6 +408,12 @@ def store_score(stablecoin_id: str, score_data: dict, price_ctx: dict):
                 components_populated = EXCLUDED.components_populated,
                 components_total = EXCLUDED.components_total,
                 missing_categories = EXCLUDED.missing_categories,
+                aggregation_method = EXCLUDED.aggregation_method,
+                aggregation_params = EXCLUDED.aggregation_params,
+                aggregation_formula_version = EXCLUDED.aggregation_formula_version,
+                effective_category_weights = EXCLUDED.effective_category_weights,
+                coverage = EXCLUDED.coverage,
+                withheld = EXCLUDED.withheld,
                 computed_at = NOW(),
                 updated_at = NOW()
         """, (
@@ -380,6 +436,12 @@ def store_score(stablecoin_id: str, score_data: dict, price_ctx: dict):
             score_data.get("components_populated"),
             score_data.get("components_total"),
             _json.dumps(missing_cats),
+            score_data.get("aggregation_method"),
+            _json.dumps(agg_params),
+            score_data.get("aggregation_formula_version"),
+            _json.dumps(eff_weights),
+            score_data.get("coverage"),
+            bool(score_data.get("withheld")),
         ))
 
 

@@ -12,23 +12,27 @@ All normalization functions preserved exactly from the original codebase.
 
 Aggregation-registry note
 -------------------------
-SII predates the generic scoring engine (`app.scoring_engine.score_entity`)
-and its named-formula aggregation registry (`app.composition.aggregate`).
-The weighted-sum renormalization in `calculate_sii` and
-`calculate_structural_composite` is the SII-v1.0.0 equivalent of
-`aggregate_legacy_renormalize`, but with subtly different rounding —
-intermediate categories are not rounded here, whereas
-`aggregate_legacy_renormalize` rounds to 2 decimals per category.
+SII production scoring dispatches through `app.composition.aggregate`
+(SII v1.1.0 wiring). `app.worker.compute_sii_from_components` builds the
+`component_scores` and `raw_values` dicts and calls `aggregate()` with
+`SII_V1_DEFINITION`, which declares `coverage_weighted` with
+`min_coverage=0.0`. Overall and category scores come from that dispatch.
 
-The `legacy_sii_v1` formula in `app.composition.AGGREGATION_FORMULAS`
-reserves SII's slot and preserves this rounding semantics. Wiring SII's
-call sites to dispatch through that formula is deferred to a follow-up PR
-so this infrastructure PR carries zero risk of shifting stored SII values.
+The functions in this module — `calculate_sii`,
+`calculate_structural_composite`, `aggregate_legacy_to_v1` — are the
+reference implementation of the pre-wiring **three-level** SII path
+(components → legacy categories simple-averaged → structural subcategories
+simple-averaged → `STRUCTURAL_SUBWEIGHTS`-weighted composite → v1
+categories via `SII_V1_WEIGHTS` → overall). They remain callable so the
+`legacy_sii_v1` formula in `app.composition.AGGREGATION_FORMULAS` has a
+reference for historical reproducibility, and so the structural
+subcategory scores (reserves_score / contract_score / oracle_score /
+governance_score / network_score) can be produced alongside the dispatch
+path's overall as derived informational outputs on the `scores` table.
 
-Until that follow-up lands, `calculate_sii` and
-`calculate_structural_composite` remain the canonical SII overall
-computation paths. Callers are `app.worker.compute_sii_for_coin` (line 190)
-and `app.data_layer.component_replay` (line 127).
+`STRUCTURAL_SUBWEIGHTS` and `DB_TO_STRUCTURAL_MAPPING` are legacy-only —
+they do not participate in current SII overall computation. See
+docs/methodology/sii_changelog.md and docs/methodology/sii_wiring_acceptance.md.
 """
 
 import math
@@ -148,20 +152,25 @@ def score_to_grade(score: float) -> str:
 
 def calculate_structural_composite(subscores: Dict[str, Optional[float]]) -> Optional[float]:
     """
-    Calculate Structural Risk Composite from its 5 subcategories.
+    Calculate Structural Risk Composite from its 5 subcategories (legacy path).
 
     Formula:
       Structural = 0.30×Reserves + 0.20×SmartContract + 0.15×Oracle + 0.20×Governance + 0.15×Network
 
     Returns None if no subcategory data is available.
 
-    TODO(aggregation-migration): route through
-      app.composition.aggregate(definition, component_scores,
-                                 raw_values=..., params={})
-    with formula=legacy_sii_v1 once a synthetic structural-composite
-    definition is wired into the dispatch path. Preserved verbatim here to
-    avoid shifting stored SII values during the aggregation-infrastructure
-    PR. See the module docstring for context.
+    Legacy-only as of SII v1.1.0 wiring. This function produces the
+    structural_risk_composite value that the **three-level** pre-wiring
+    SII path used as an input to `calculate_sii`. Current SII scoring
+    dispatches through `app.composition.aggregate` with the
+    `coverage_weighted` formula, which aggregates structural components
+    directly by their per-component `COMPONENT_NORMALIZATIONS` weights
+    — `STRUCTURAL_SUBWEIGHTS` no longer participates in overall
+    computation. This function is retained (a) as the reference
+    implementation backing `legacy_sii_v1` in the aggregation registry
+    so historical scores remain reproducible, and (b) to produce the 5
+    derived structural sub-scores persisted to the `scores` table as
+    informational outputs. See the module docstring.
     """
     total = 0.0
     weight_used = 0.0
@@ -184,21 +193,23 @@ def calculate_structural_composite(subscores: Dict[str, Optional[float]]) -> Opt
 
 def calculate_sii(category_scores: Dict[str, Optional[float]]) -> Optional[float]:
     """
-    Calculate SII using the canonical v1.0.0 formula.
+    Calculate SII using the legacy v1.0.0 three-level formula.
 
     Formula:
       SII = 0.30×Peg + 0.25×Liquidity + 0.15×MintBurn + 0.10×Distribution + 0.20×Structural
 
     Args:
-        category_scores: Dict with scores (0-100) for each canonical category.
+        category_scores: Dict with scores (0-100) for each canonical v1 category.
 
     Returns:
         SII score (0-100), or None if no data available.
 
-    TODO(aggregation-migration): route through app.composition.aggregate with
-    formula=legacy_sii_v1 once a synthetic SII-level definition is wired in.
-    Preserved verbatim here to avoid rounding-induced SII drift during the
-    aggregation-infrastructure PR. See module docstring.
+    Legacy-only as of SII v1.1.0 wiring. Current SII scoring dispatches
+    through `app.composition.aggregate` with the `coverage_weighted`
+    formula in `app.worker.compute_sii_from_components`. This function
+    remains the reference implementation backing the `legacy_sii_v1`
+    formula in the aggregation registry so historical scores stay
+    reproducible. See module docstring and docs/methodology/sii_wiring_acceptance.md.
     """
     total = 0.0
     weight_used = 0.0
