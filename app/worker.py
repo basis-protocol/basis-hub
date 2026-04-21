@@ -2574,31 +2574,39 @@ async def main():
         logger.error(f"[startup] httpx monkey-patch failed: {e}")
 
     # Ensure data layer tables exist (migration 058 may not have been fully applied)
-    _data_layer_ddl = [
-        """CREATE TABLE IF NOT EXISTS governance_voters (
-            id SERIAL PRIMARY KEY, protocol TEXT NOT NULL, source TEXT NOT NULL,
-            proposal_id TEXT, voter_address TEXT NOT NULL, voting_power NUMERIC,
-            choice TEXT, collected_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(protocol, source, proposal_id, voter_address))""",
-        """CREATE TABLE IF NOT EXISTS mint_burn_events (
-            id BIGSERIAL PRIMARY KEY, stablecoin_id TEXT, chain TEXT NOT NULL DEFAULT 'ethereum',
-            event_type TEXT NOT NULL, amount NUMERIC, tx_hash TEXT, block_number BIGINT,
-            from_address TEXT, to_address TEXT, timestamp TIMESTAMPTZ,
-            collected_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(chain, tx_hash, event_type))""",
-        """CREATE TABLE IF NOT EXISTS liquidity_depth (
-            id BIGSERIAL PRIMARY KEY, asset_id TEXT NOT NULL, venue TEXT NOT NULL,
-            chain TEXT NOT NULL DEFAULT 'ethereum', depth_usd_2pct NUMERIC,
-            depth_usd_5pct NUMERIC, bid_depth NUMERIC, ask_depth NUMERIC,
-            spread_bps NUMERIC, raw_data JSONB,
-            snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            UNIQUE(asset_id, venue, chain, snapshot_at))""",
+    # Ensure data layer tables exist + column alignment
+    _data_layer_creates = [
+        "CREATE TABLE IF NOT EXISTS governance_voters (id BIGSERIAL PRIMARY KEY, protocol TEXT NOT NULL, source TEXT, proposal_id TEXT, voter_address TEXT NOT NULL, voting_power NUMERIC, choice INTEGER, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(protocol, proposal_id, voter_address))",
+        "CREATE TABLE IF NOT EXISTS mint_burn_events (id BIGSERIAL PRIMARY KEY, stablecoin_id TEXT, chain TEXT NOT NULL DEFAULT 'ethereum', event_type TEXT NOT NULL, amount NUMERIC, tx_hash TEXT, block_number BIGINT, from_address TEXT, to_address TEXT, timestamp TIMESTAMPTZ, collected_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(chain, tx_hash, event_type))",
+        "CREATE TABLE IF NOT EXISTS liquidity_depth (id BIGSERIAL PRIMARY KEY, asset_id TEXT NOT NULL, venue TEXT NOT NULL, chain TEXT NOT NULL DEFAULT 'ethereum', depth_usd_2pct NUMERIC, depth_usd_5pct NUMERIC, bid_depth NUMERIC, ask_depth NUMERIC, spread_bps NUMERIC, raw_data JSONB, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(asset_id, venue, chain, snapshot_at))",
     ]
-    for _ddl in _data_layer_ddl:
+    _data_layer_alters = [
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS source TEXT",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ DEFAULT NOW()",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS voting_power NUMERIC",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS choice INTEGER",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS stablecoin_id TEXT",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ DEFAULT NOW()",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS from_address TEXT",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS to_address TEXT",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS timestamp TIMESTAMPTZ",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS depth_usd_2pct NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS depth_usd_5pct NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS bid_depth NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS ask_depth NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS spread_bps NUMERIC",
+    ]
+    for _ddl in _data_layer_creates:
         try:
             execute(_ddl)
         except Exception as _de:
-            logger.error(f"[startup] DDL failed: {_de}")
+            logger.error(f"[startup] DDL failed: {str(_de)[:100]}")
+    for _alt in _data_layer_alters:
+        try:
+            execute(_alt)
+        except Exception as _ae:
+            logger.error(f"[startup] ALTER failed: {_alt[:80]} — {_ae}")
 
     # Oracle stress_events + price_readings column fixes (migration 075 not applied)
     _oracle_alters = [

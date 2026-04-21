@@ -66,7 +66,7 @@ EXPECTED_COLUMNS = {
     ],
     "governance_voters": [
         "id", "protocol", "source", "proposal_id", "voter_address",
-        "voting_power", "choice", "collected_at",
+        "voting_power", "choice", "created_at", "collected_at",
     ],
     "mint_burn_events": [
         "id", "stablecoin_id", "chain", "event_type", "amount", "tx_hash",
