@@ -115,6 +115,16 @@ EXPECTED_COLUMNS = {
         "address", "first_seen_at", "last_indexed_at", "total_stablecoin_value",
         "size_tier", "source", "is_contract", "label", "created_at",
     ],
+    "correlation_matrices": [
+        "id", "matrix_type", "window_days", "entity_ids", "matrix_data", "computed_at",
+    ],
+    "wallet_behavior_tags": [
+        "id", "wallet_address", "behavior_type", "confidence", "metrics", "computed_at",
+    ],
+    "dex_pool_ohlcv": [
+        "id", "pool_address", "chain", "dex", "asset_id", "timestamp",
+        "open", "high", "low", "close", "volume", "trades_count",
+    ],
 }
 
 

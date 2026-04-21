@@ -1112,8 +1112,8 @@ async def run_fast_cycle():
                                     except: pass
                                 with _dl_gc() as _c:
                                     _c.execute("""INSERT INTO governance_voters
-                                        (protocol,proposal_id,voter_address,voting_power,choice,created_at,collected_at)
-                                        VALUES(%s,%s,%s,%s,%s,%s,NOW())
+                                        (protocol,source,proposal_id,voter_address,voting_power,choice,created_at,collected_at)
+                                        VALUES(%s,'snapshot',%s,%s,%s,%s,%s,NOW())
                                         ON CONFLICT(protocol,proposal_id,voter_address) DO UPDATE SET collected_at=NOW()""",
                                         (_proto,_pid,_v.get("voter",""),_sn(_v.get("vp")),
                                          _v.get("choice"),_vts))
@@ -2585,6 +2585,9 @@ async def main():
         "CREATE TABLE IF NOT EXISTS yield_snapshots (id BIGSERIAL PRIMARY KEY, pool_id TEXT NOT NULL, protocol TEXT, chain TEXT, asset TEXT, apy NUMERIC, apy_base NUMERIC, apy_reward NUMERIC, tvl_usd NUMERIC, stable_pool BOOLEAN, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(pool_id, snapshot_at))",
         "CREATE TABLE IF NOT EXISTS peg_snapshots_5m (id BIGSERIAL PRIMARY KEY, stablecoin_id TEXT NOT NULL, price NUMERIC, timestamp TIMESTAMPTZ NOT NULL, deviation_bps NUMERIC, UNIQUE(stablecoin_id, timestamp))",
         "CREATE TABLE IF NOT EXISTS entity_snapshots_hourly (id BIGSERIAL PRIMARY KEY, entity_id TEXT NOT NULL, entity_type TEXT, market_cap NUMERIC, total_volume NUMERIC, price_usd NUMERIC, price_change_24h NUMERIC, circulating_supply NUMERIC, total_supply NUMERIC, exchange_tickers_count INTEGER, developer_data JSONB, community_data JSONB, raw_data JSONB, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        "CREATE TABLE IF NOT EXISTS correlation_matrices (id BIGSERIAL PRIMARY KEY, matrix_type TEXT NOT NULL, window_days INTEGER NOT NULL, entity_ids JSONB, matrix_data JSONB, computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(matrix_type, window_days, computed_at))",
+        "CREATE TABLE IF NOT EXISTS wallet_behavior_tags (id BIGSERIAL PRIMARY KEY, wallet_address TEXT NOT NULL, behavior_type TEXT NOT NULL, confidence NUMERIC, metrics JSONB, computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(wallet_address, behavior_type, computed_at))",
+        "CREATE TABLE IF NOT EXISTS dex_pool_ohlcv (id BIGSERIAL PRIMARY KEY, pool_address TEXT NOT NULL, chain TEXT NOT NULL, dex TEXT, asset_id TEXT, timestamp TIMESTAMPTZ NOT NULL, open NUMERIC, high NUMERIC, low NUMERIC, close NUMERIC, volume NUMERIC, trades_count INTEGER, UNIQUE(pool_address, chain, timestamp))",
     ]
     _data_layer_alters = [
         "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS source TEXT",
@@ -2637,6 +2640,9 @@ async def main():
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_peg_5m_unique ON peg_snapshots_5m (stablecoin_id, timestamp)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_snap_unique ON entity_snapshots_hourly (entity_id, entity_type, snapshot_at)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_surv_unique ON contract_surveillance (entity_id, chain, contract_address, scanned_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_corr_matrix_unique ON correlation_matrices (matrix_type, window_days, computed_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_behavior_unique ON wallet_behavior_tags (wallet_address, behavior_type, computed_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ohlcv_unique ON dex_pool_ohlcv (pool_address, chain, timestamp)",
     ]
     for _ui in _unique_indexes:
         try:
