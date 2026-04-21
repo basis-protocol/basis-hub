@@ -53,6 +53,14 @@ ALL_DOMAINS = [
     "sanctions_screening",
     "enforcement_records",
     "parent_company_financials",
+    "governance_proposals",
+    "contract_dependencies",
+    "contract_dependencies_snapshot",
+    "protocol_parameter_changes",
+    "protocol_parameter_snapshots",
+    "clustered_concentration",
+    "oracle_readings",
+    "oracle_stress_events",
 ]
 
 DOMAIN_FREQUENCIES = {
@@ -84,6 +92,14 @@ DOMAIN_FREQUENCIES = {
     "sanctions_screening": 24,
     "enforcement_records": 168,    # weekly
     "parent_company_financials": 168,  # weekly
+    "governance_proposals": 24,
+    "contract_dependencies": 24,
+    "contract_dependencies_snapshot": 24,
+    "protocol_parameter_changes": 4,   # checked every fast cycle (~hourly)
+    "protocol_parameter_snapshots": 24,
+    "clustered_concentration": 24,
+    "oracle_readings": 2,             # fast-cycle pipeline, alert if >2h stale
+    "oracle_stress_events": 168,      # event-driven, check weekly
 }
 
 
@@ -179,9 +195,9 @@ def _check_sii_psi_alignment() -> list[dict]:
     try:
         stale_sii = fetch_all(
             """
-            SELECT stablecoin_id, calculated_at
+            SELECT stablecoin_id, computed_at
             FROM scores
-            WHERE calculated_at < NOW() - INTERVAL '6 hours'
+            WHERE computed_at < NOW() - INTERVAL '6 hours'
             """
         )
         for row in stale_sii:

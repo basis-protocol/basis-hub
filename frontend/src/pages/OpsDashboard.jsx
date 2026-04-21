@@ -1106,18 +1106,31 @@ function StateGrowthPanel() {
               )}
 
               {/* Provenance */}
-              {prov.total > 0 && (
-                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
-                  <div>
-                    <Lbl>Provenance</Lbl>
-                    <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 600, color: prov.coverage_pct >= 100 ? "#27ae60" : "#f39c12" }}>{prov.coverage_pct}%</div>
+              {(() => {
+                const provLive = dl.provenance?.live || {};
+                const provReg = dl.provenance?.sources || prov;
+                const hasProv = provLive.total_proofs > 0 || provReg.total > 0;
+                return hasProv ? (
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                    <div>
+                      <Lbl>Provenance</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 600, color: (provLive.coverage_pct || 0) >= 80 ? "#27ae60" : "#f39c12" }}>{provLive.coverage_pct || provReg.coverage_pct || 0}%</div>
+                    </div>
+                    <div>
+                      <Lbl>Sources 24h</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{provLive.sources_proved_24h || 0}/{provLive.registered_sources || provReg.total || 0}</div>
+                    </div>
+                    <div>
+                      <Lbl>Proofs 24h</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: "#27ae60" }}>+{provLive.proofs_24h || 0}</div>
+                    </div>
+                    <div>
+                      <Lbl>Total Proofs</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{fmtNum(provLive.total_proofs || 0)}</div>
+                    </div>
                   </div>
-                  <div>
-                    <Lbl>Sources</Lbl>
-                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{prov.proven + prov.attested}/{prov.total}</div>
-                  </div>
-                </div>
-              )}
+                ) : null;
+              })()}
 
               {/* Data quality */}
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
@@ -1134,6 +1147,266 @@ function StateGrowthPanel() {
                   <div style={{ fontSize: 14, fontFamily: T.mono, color: dq.stale_count > 0 ? "#e74c3c" : "#27ae60" }}>{dq.stale_count || 0}</div>
                 </div>
               </div>
+
+              {/* Collector Health */}
+              {dl.collector_health && dl.collector_health.length > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>COLLECTOR HEALTH ({dl.collector_health.length})</summary>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono, marginTop: 4 }}>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Collector</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>OK</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Err</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Latency</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Rate</span>
+                    {dl.collector_health.map((c) => (
+                      <div key={c.name} style={{ display: "contents" }}>
+                        <span style={{ color: T.inkMid }}>{c.name}</span>
+                        <span style={{ textAlign: "right", color: "#27ae60" }}>{c.ok}</span>
+                        <span style={{ textAlign: "right", color: c.error > 0 ? "#e74c3c" : T.inkFaint }}>{c.error + c.timeout}</span>
+                        <span style={{ textAlign: "right", color: T.inkMid }}>{c.avg_latency_ms}ms</span>
+                        <span style={{ textAlign: "right", color: c.success_rate >= 90 ? "#27ae60" : c.success_rate >= 50 ? "#f39c12" : "#e74c3c" }}>{c.success_rate}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Active Alerts */}
+              {dl.active_alerts && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>ACTIVE ALERTS</div>
+                  <div>
+                    <Lbl>Oracle Stress</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: dl.active_alerts.oracle_stress_open > 0 ? "#e74c3c" : "#27ae60" }}>{dl.active_alerts.oracle_stress_open || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Upgrades 7d</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: dl.active_alerts.contract_upgrades_7d > 0 ? "#f39c12" : T.inkFaint }}>{dl.active_alerts.contract_upgrades_7d || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Param Changes 7d</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: dl.active_alerts.parameter_changes_7d > 0 ? "#f39c12" : T.inkFaint }}>{dl.active_alerts.parameter_changes_7d || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Signals 24h</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.inkMid }}>{dl.active_alerts.discovery_signals_24h || 0}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Keeper Status */}
+              {dl.keeper_status && dl.keeper_status.total_cycles > 0 && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>KEEPER STATUS</div>
+                  <div>
+                    <Lbl>Cycles 24h</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.keeper_status.cycles_24h || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>Total Cycles</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.keeper_status.total_cycles}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Base</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.keeper_status.sii_updates_base || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Arb</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.keeper_status.sii_updates_arb || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>State Root</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: dl.keeper_status.state_root_published ? "#27ae60" : T.inkFaint }}>{dl.keeper_status.state_root_published ? "Yes" : "No"}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Scoring Performance */}
+              {dl.scoring_performance && dl.scoring_performance.daily_trend && dl.scoring_performance.daily_trend.length > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>SCORING PERFORMANCE</summary>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+                    <div>
+                      <Lbl>Avg Components/Coin</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.scoring_performance.avg_components_per_coin || 0}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto auto auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono }}>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Day</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Latency</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Components</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Coins</span>
+                    {dl.scoring_performance.daily_trend.map((d) => (
+                      <div key={d.day} style={{ display: "contents" }}>
+                        <span style={{ color: T.inkMid }}>{d.day}</span>
+                        <span style={{ textAlign: "right" }}>{d.avg_latency_ms}ms</span>
+                        <span style={{ textAlign: "right" }}>{fmtNum(d.total_components)}</span>
+                        <span style={{ textAlign: "right" }}>{d.coins_scored}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* CDA Freshness */}
+              {dl.cda_freshness && dl.cda_freshness.length > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>
+                    CDA FRESHNESS ({dl.cda_freshness.filter(c => c.stale).length} stale / {dl.cda_freshness.length})
+                  </summary>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono, marginTop: 4 }}>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Asset</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight }}>Issuer</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Days</span>
+                    <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Status</span>
+                    {dl.cda_freshness.map((c) => (
+                      <div key={c.asset} style={{ display: "contents" }}>
+                        <span style={{ color: T.inkMid }}>{c.asset}</span>
+                        <span style={{ color: T.inkFaint, overflow: "hidden", textOverflow: "ellipsis" }}>{c.issuer || "—"}</span>
+                        <span style={{ textAlign: "right", color: T.inkMid }}>{c.days_since != null ? c.days_since : "—"}</span>
+                        <span style={{ textAlign: "right", color: c.stale ? "#e74c3c" : "#27ae60", fontSize: 9 }}>{c.stale ? "STALE" : "OK"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Component Coverage */}
+              {dl.component_coverage && dl.component_coverage.sii && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>COMPONENT COVERAGE</div>
+                  <div>
+                    <Lbl>SII Avg Components</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.component_coverage.sii.avg_components || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Populated</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: "#27ae60" }}>{dl.component_coverage.sii.avg_populated || 0}</div>
+                  </div>
+                  <div>
+                    <Lbl>SII Empty</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: dl.component_coverage.sii.avg_empty > 0 ? "#f39c12" : T.inkFaint }}>{dl.component_coverage.sii.avg_empty || 0}</div>
+                  </div>
+                  {dl.component_coverage.psi && (
+                    <div>
+                      <Lbl>PSI Components</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.component_coverage.psi.unique_components || 0}</div>
+                    </div>
+                  )}
+                  {dl.component_coverage.rpi && (
+                    <div>
+                      <Lbl>RPI Components</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.component_coverage.rpi.unique_components || 0}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* CQI Contagion */}
+              {dl.cqi_contagion && dl.cqi_contagion.protocols_total > 0 && (
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <div style={{ width: "100%", fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, marginBottom: 2 }}>CQI CONTAGION</div>
+                  <div>
+                    <Lbl>Pool Coverage</Lbl>
+                    <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.cqi_contagion.coverage_pct}%</div>
+                  </div>
+                  <div>
+                    <Lbl>With Pool Data</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.cqi_contagion.protocols_with_pool_data}/{dl.cqi_contagion.protocols_total}</div>
+                  </div>
+                  <div>
+                    <Lbl>Pool Wallets</Lbl>
+                    <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{fmtNum(dl.cqi_contagion.pool_wallets_discovered)}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* x402 Revenue */}
+              {dl.x402_revenue && dl.x402_revenue.total_payments > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>x402 REVENUE</summary>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+                    <div>
+                      <Lbl>Total Revenue</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>${dl.x402_revenue.total_revenue_usd?.toFixed(4) || "0"}</div>
+                    </div>
+                    <div>
+                      <Lbl>Revenue 7d</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: "#27ae60" }}>${dl.x402_revenue.revenue_7d_usd?.toFixed(4) || "0"}</div>
+                    </div>
+                    <div>
+                      <Lbl>Total Payments</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.x402_revenue.total_payments}</div>
+                    </div>
+                    <div>
+                      <Lbl>Unique Payers</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.x402_revenue.unique_payers || 0}</div>
+                    </div>
+                  </div>
+                  {dl.x402_revenue.top_endpoints && dl.x402_revenue.top_endpoints.length > 0 && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono }}>
+                      <span style={{ fontWeight: 600, color: T.inkLight }}>Endpoint</span>
+                      <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Calls</span>
+                      <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Revenue</span>
+                      {dl.x402_revenue.top_endpoints.map((ep) => (
+                        <div key={ep.endpoint} style={{ display: "contents" }}>
+                          <span style={{ color: T.inkMid, overflow: "hidden", textOverflow: "ellipsis" }}>{ep.endpoint}</span>
+                          <span style={{ textAlign: "right" }}>{ep.calls}</span>
+                          <span style={{ textAlign: "right", color: "#27ae60" }}>${ep.revenue_usd}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </details>
+              )}
+
+              {/* Security Scanning */}
+              {dl.security_scanning && dl.security_scanning.contracts_monitored > 0 && (
+                <details style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                  <summary style={{ fontSize: 10, fontWeight: 700, color: T.inkLight, letterSpacing: 1.2, cursor: "pointer", marginBottom: 4 }}>
+                    SECURITY SCANNING ({dl.security_scanning.contracts_monitored} contracts)
+                  </summary>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+                    <div>
+                      <Lbl>Monitored</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, color: T.ink }}>{dl.security_scanning.contracts_monitored}</div>
+                    </div>
+                    <div>
+                      <Lbl>Scan Coverage</Lbl>
+                      <div style={{ fontSize: 14, fontFamily: T.mono, color: (dl.security_scanning.scan_coverage?.coverage_pct || 0) >= 80 ? "#27ae60" : "#f39c12" }}>{dl.security_scanning.scan_coverage?.coverage_pct || 0}%</div>
+                    </div>
+                    <div>
+                      <Lbl>Upgrades 7d</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: dl.security_scanning.upgrade_alerts_7d > 0 ? "#f39c12" : T.inkFaint }}>{dl.security_scanning.upgrade_alerts_7d || 0}</div>
+                    </div>
+                    <div>
+                      <Lbl>Total Diffs</Lbl>
+                      <div style={{ fontSize: 12, fontFamily: T.mono, color: T.inkMid }}>{dl.security_scanning.total_diffs_detected || 0}</div>
+                    </div>
+                  </div>
+                  {dl.security_scanning.admin_key_risk && (
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        Admin Keys: <span style={{ color: dl.security_scanning.admin_key_risk.contracts_with_admin_keys > 0 ? "#f39c12" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.contracts_with_admin_keys}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        Timelock {"<"}24h: <span style={{ color: dl.security_scanning.admin_key_risk.timelock_under_24h > 0 ? "#e74c3c" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.timelock_under_24h}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        No Multisig: <span style={{ color: dl.security_scanning.admin_key_risk.no_multisig > 0 ? "#e74c3c" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.no_multisig}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: T.inkFaint }}>
+                        Pause w/o Lock: <span style={{ color: dl.security_scanning.admin_key_risk.pausable_without_timelock > 0 ? "#e74c3c" : "#27ae60" }}>{dl.security_scanning.admin_key_risk.pausable_without_timelock}</span>
+                      </div>
+                    </div>
+                  )}
+                  {dl.security_scanning.scan_coverage?.unmonitored_entities?.length > 0 && (
+                    <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 4 }}>
+                      Unmonitored: <span style={{ color: "#e74c3c" }}>{dl.security_scanning.scan_coverage.unmonitored_entities.join(", ")}</span>
+                    </div>
+                  )}
+                </details>
+              )}
 
               {/* Per-category table breakdown */}
               <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, marginBottom: 4 }}>BY CATEGORY</div>
@@ -1957,7 +2230,11 @@ function ReportsPanel() {
   const [attestation, setAttestation] = useState(null);
   const [recentReports, setRecentReports] = useState([]);
   const [generating, setGenerating] = useState(false);
+  const [genElapsed, setGenElapsed] = useState(0);
   const [batchResults, setBatchResults] = useState([]);
+  const [emailDraft, setEmailDraft] = useState(null);
+  const [emailDraftOpen, setEmailDraftOpen] = useState(false);
+  const [copyMsg, setCopyMsg] = useState("");
 
   useEffect(() => {
     loadEntities();
@@ -2000,6 +2277,10 @@ function ReportsPanel() {
     setGenerating(true);
     setPreview(null);
     setAttestation(null);
+    setGenElapsed(0);
+    const timer = setInterval(() => setGenElapsed(e => e + 1), 1000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
     try {
       const params = new URLSearchParams({ template, format });
       if (lens) params.set("lens", lens);
@@ -2007,6 +2288,7 @@ function ReportsPanel() {
       const key = getAdminKey();
       const resp = await fetch(`/api/reports/${entityType}/${entityId}?${params}`, {
         headers: { "x-admin-key": key },
+        signal: controller.signal,
       });
 
       if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
@@ -2024,10 +2306,14 @@ function ReportsPanel() {
 
       loadRecentReports();
     } catch (e) {
-      setPreview(`Error: ${e.message}`);
+      const msg = e.name === "AbortError" ? "Report generation timed out after 60s" : e.message;
+      setPreview(`Error: ${msg}`);
       setPreviewFormat("error");
+    } finally {
+      clearInterval(timer);
+      clearTimeout(timeout);
+      setGenerating(false);
     }
-    setGenerating(false);
   }
 
   async function generateBatch(batchType) {
@@ -2075,8 +2361,8 @@ function ReportsPanel() {
   }
 
   const templateOptions = entityType === "wallet"
-    ? ["wallet_risk"]
-    : ["protocol_risk", "compliance", "underwriting", "sbt_metadata"];
+    ? ["wallet_risk", "engagement"]
+    : ["protocol_risk", "compliance", "underwriting", "sbt_metadata", "engagement"];
 
   const lensOptions = ["", "SCO60", "MICA67", "GENIUS"];
   const showLens = template === "compliance";
@@ -2144,7 +2430,7 @@ function ReportsPanel() {
           <div style={{ display: "flex", alignItems: "flex-end" }}>
             <button onClick={generateReport} disabled={generating || !entityId}
               style={btnActive({ opacity: generating ? 0.5 : 1, padding: "4px 16px" })}>
-              {generating ? "Generating..." : "Generate"}
+              {generating ? `Generating... ${genElapsed}s` : "Generate"}
             </button>
           </div>
         </div>
@@ -2165,6 +2451,16 @@ function ReportsPanel() {
             style={btn()}>Batch: Top 5 Basel SCO60</button>
           <button onClick={() => generateBatch("all_protocols")} disabled={generating}
             style={btn()}>Batch: All Protocol Risk</button>
+          <button onClick={() => { setEntityType("protocol"); setEntityId("aave"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
+            style={btn()}>Engagement: Aave</button>
+          <button onClick={() => { setEntityType("protocol"); setEntityId("morpho"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
+            style={btn()}>Engagement: Morpho</button>
+          <button onClick={() => { setEntityType("stablecoin"); setEntityId("usdc"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
+            style={btn()}>Engagement: USDC</button>
+          <button onClick={() => { setEntityType("stablecoin"); setEntityId("usde"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
+            style={btn()}>Engagement: USDe</button>
+          <button onClick={() => { setEntityType("stablecoin"); setEntityId("dai"); setTemplate("engagement"); setLens(""); setFormat("markdown"); setTimeout(generateReport, 100); }}
+            style={btn()}>Engagement: DAI</button>
         </div>
         {batchResults.length > 0 && (
           <div style={{ marginTop: 12 }}>
@@ -2203,6 +2499,55 @@ function ReportsPanel() {
                 <a href={`/api/reports/verify/${attestation.report_hash}`} target="_blank" rel="noopener"
                   style={{ color: T.accent, fontSize: 10 }}>Verify attestation →</a>
               </div>
+            </div>
+          )}
+          {/* Engagement sharing tools */}
+          <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => {
+              const url = `https://basisprotocol.xyz/engagement/${entityType}/${entityId}`;
+              navigator.clipboard.writeText(url).then(() => { setCopyMsg("URL copied"); setTimeout(() => setCopyMsg(""), 2000); });
+            }} style={btn()}>Copy Shareable URL</button>
+            <button onClick={async () => {
+              try {
+                const key = getAdminKey();
+                const params = new URLSearchParams({ template: "engagement", format: "json" });
+                const resp = await fetch(`/api/reports/${entityType}/${entityId}?${params}`, {
+                  headers: { "x-admin-key": key },
+                });
+                if (!resp.ok) throw new Error(`${resp.status}`);
+                const data = await resp.json();
+                const draft = data.email_draft;
+                if (draft) {
+                  const text = `Subject: ${draft.subject}\n\n${draft.body}`;
+                  navigator.clipboard.writeText(text).then(() => { setCopyMsg("Email draft copied"); setTimeout(() => setCopyMsg(""), 2000); });
+                  setEmailDraft(draft);
+                  setEmailDraftOpen(true);
+                } else {
+                  setCopyMsg("No email draft in response");
+                  setTimeout(() => setCopyMsg(""), 2000);
+                }
+              } catch (e) {
+                setCopyMsg(`Error: ${e.message}`);
+                setTimeout(() => setCopyMsg(""), 3000);
+              }
+            }} style={btn()}>Copy Email Draft</button>
+            {copyMsg && <span style={{ fontSize: 10, fontFamily: T.mono, color: "#27ae60" }}>{copyMsg}</span>}
+          </div>
+          {/* Collapsible email draft */}
+          {emailDraft && (
+            <div style={{ marginTop: 12 }}>
+              <button onClick={() => setEmailDraftOpen(!emailDraftOpen)}
+                style={{ ...btn(), fontSize: 10, marginBottom: 8 }}>
+                {emailDraftOpen ? "Hide" : "Show"} Email Draft
+              </button>
+              {emailDraftOpen && (
+                <div style={{ padding: 12, background: T.paperWarm, border: `1px solid ${T.ruleLight}`, fontSize: 11, fontFamily: T.mono }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <strong>Subject:</strong> {emailDraft.subject}
+                  </div>
+                  <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 10, lineHeight: 1.5 }}>{emailDraft.body}</pre>
+                </div>
+              )}
             </div>
           )}
         </Section>
@@ -2751,6 +3096,103 @@ function AbmStateBadge({ state }) {
     </span>
   );
 }
+
+function TrackRecordPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [flash, showFlash] = useFlash();
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await opsFetch("/api/ops/track-record/summary");
+      setData(res);
+    } catch (e) {
+      showFlash(e.message, false);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <Section title="TRACK RECORD" actions={
+      <button onClick={load} disabled={loading} style={{ fontSize: 9, fontFamily: T.mono, padding: "2px 6px", border: `1px solid ${T.paper}44`, background: "transparent", color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+        {loading ? "Loading..." : "Refresh"}
+      </button>
+    }>
+      <Flash flash={flash} />
+      <div style={{ padding: "0 10px" }}>
+        {!data && !loading && <div style={{ color: T.inkFaint, fontSize: 12 }}>No entries yet. The first entry will appear when the next slow cycle detects a qualifying signal.</div>}
+
+        {data && (
+          <>
+            {/* Summary bar */}
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12, padding: "8px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+              <div>
+                <Lbl>Total Entries</Lbl>
+                <div style={{ fontSize: 18, fontFamily: T.mono, fontWeight: 700, color: T.ink }}>{data.total_entries || 0}</div>
+              </div>
+              <div>
+                <Lbl>Featured</Lbl>
+                <div style={{ fontSize: 14, fontFamily: T.mono, color: "#f39c12" }}>{(data.featured || []).length}</div>
+              </div>
+              <div>
+                <Lbl>Pending Followups</Lbl>
+                <div style={{ fontSize: 14, fontFamily: T.mono, color: (data.pending_followups || []).length > 0 ? "#e74c3c" : T.inkFaint }}>{(data.pending_followups || []).length}</div>
+              </div>
+            </div>
+
+            {/* By trigger kind (30 days) */}
+            {data.by_trigger_kind_30d && data.by_trigger_kind_30d.length > 0 && (
+              <div style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, marginBottom: 4 }}>AUTO ENTRIES (30D)</div>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11, fontFamily: T.mono }}>
+                  {data.by_trigger_kind_30d.map(r => (
+                    <div key={r.trigger_kind}>
+                      <span style={{ color: T.inkMid }}>{r.trigger_kind}: </span>
+                      <span style={{ fontWeight: 600 }}>{r.cnt}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Featured entries */}
+            {data.featured && data.featured.length > 0 && (
+              <div style={{ marginBottom: 10, padding: "6px 0", borderBottom: `1px solid ${T.ruleLight}` }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, marginBottom: 4 }}>FEATURED CALLS</div>
+                {data.featured.map(f => (
+                  <div key={f.entry_id} style={{ fontSize: 11, fontFamily: T.mono, padding: "2px 0", color: T.inkMid }}>
+                    <span style={{ color: "#f39c12" }}>★</span> {f.entity_slug} ({f.index_name}) — {f.trigger_kind}
+                    {f.narrative_markdown && <div style={{ fontSize: 10, color: T.inkFaint, marginLeft: 14 }}>{f.narrative_markdown.substring(0, 100)}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Calibration */}
+            {data.calibration && data.calibration.length > 0 && (
+              <div style={{ marginBottom: 10, padding: "6px 0" }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: T.inkLight, marginBottom: 4 }}>CALIBRATION</div>
+                <div style={{ display: "grid", gridTemplateColumns: "auto auto auto", gap: "2px 12px", fontSize: 11, fontFamily: T.mono }}>
+                  {data.calibration.map((c, i) => (
+                    <div key={i} style={{ display: "contents" }}>
+                      <span style={{ color: T.inkMid }}>{c.trigger_kind}</span>
+                      <span style={{ color: c.outcome_category === "validated" ? "#27ae60" : c.outcome_category === "not_borne_out" ? "#e74c3c" : T.inkFaint }}>{c.outcome_category}</span>
+                      <span>{c.cnt}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </Section>
+  );
+}
+
 
 function ABMPanel() {
   const [campaigns, setCampaigns] = useState([]);
@@ -3599,6 +4041,153 @@ function AbmLogSection({ campaignId, log, onAddLog, busy }) {
   );
 }
 
+function PlaygroundPanel() {
+  const [portfolio, setPortfolio] = useState('[{"asset_symbol":"USDC","amount":500000},{"asset_symbol":"USDT","amount":300000},{"asset_symbol":"DAI","amount":200000}]');
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState("");
+  const [emailSent, setEmailSent] = useState(false);
+  const [submissions, setSubmissions] = useState([]);
+  const [flash, showFlash] = useFlash();
+
+  const compute = async () => {
+    setLoading(true);
+    setResult(null);
+    setEmailSent(false);
+    try {
+      let parsed;
+      try { parsed = JSON.parse(portfolio); } catch { showFlash("Invalid JSON", false); setLoading(false); return; }
+      const res = await opsFetch("/api/ops/playground/compute", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ portfolio: parsed }),
+      });
+      setResult(res);
+      loadSubmissions();
+    } catch (e) { showFlash(e.message, false); }
+    setLoading(false);
+  };
+
+  const requestReport = async () => {
+    if (!result?.submission_id || !email) return;
+    try {
+      await opsFetch("/api/ops/playground/request-report", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submission_id: result.submission_id, email }),
+      });
+      setEmailSent(true);
+      showFlash(`Report link sent to ${email}`, true);
+    } catch (e) { showFlash(e.message, false); }
+  };
+
+  const loadSubmissions = async () => {
+    try {
+      const res = await opsFetch("/api/ops/playground/submissions?limit=20");
+      setSubmissions(res.submissions || []);
+    } catch {}
+  };
+
+  useEffect(() => { loadSubmissions(); }, []);
+
+  const cqi = result?.cqi;
+  const stress = result?.stress;
+
+  return (
+    <>
+      <Section title="COMPOSITION PLAYGROUND">
+        <Flash flash={flash} />
+        <div style={{ padding: "0 10px" }}>
+          <Lbl>Portfolio (JSON array)</Lbl>
+          <textarea value={portfolio} onChange={e => setPortfolio(e.target.value)}
+            style={{ width: "100%", height: 100, fontFamily: T.mono, fontSize: 11, padding: 8,
+              border: `1px solid ${T.ruleMid}`, background: T.paper, resize: "vertical" }} />
+          <div style={{ margin: "8px 0" }}>
+            <button onClick={compute} disabled={loading}
+              style={{ fontSize: 11, fontFamily: T.mono, padding: "4px 16px", border: `1px solid ${T.ink}`,
+                background: T.ink, color: T.paper, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+              {loading ? "Computing..." : "Compute CQI + Stress"}
+            </button>
+          </div>
+          <p style={{ fontSize: 9, color: T.inkFaint, fontFamily: T.mono }}>
+            We'll send you one email with a link to your report. We won't use your email for anything else.
+            Your portfolio data is retained for product analytics; to delete it, email shlok@basisprotocol.xyz.
+          </p>
+
+          {cqi && (
+            <div style={{ marginTop: 12, borderTop: `1px solid ${T.ruleLight}`, paddingTop: 12 }}>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 8 }}>
+                <div><Lbl>Aggregate CQI</Lbl><div style={{ fontSize: 24, fontFamily: T.mono, fontWeight: 700 }}>{cqi.aggregate_cqi?.toFixed(1)}</div></div>
+                <div><Lbl>Grade</Lbl><div style={{ fontSize: 18, fontFamily: T.mono }}>{cqi.grade}</div></div>
+                <div><Lbl>Positions</Lbl><div style={{ fontSize: 14, fontFamily: T.mono }}>{cqi.position_count}</div></div>
+              </div>
+              {stress && (
+                <div style={{ marginBottom: 8 }}>
+                  <Lbl>Stress Scenarios</Lbl>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {stress.scenarios?.map((s, i) => (
+                      <div key={i} style={{ fontSize: 10, fontFamily: T.mono, padding: "2px 8px",
+                        background: s.pass ? "rgba(45,107,69,0.1)" : "rgba(192,57,43,0.1)",
+                        color: s.pass ? "#2d6b45" : "#c0392b", borderRadius: 2 }}>
+                        {s.name}: {s.pass ? "PASS" : "FAIL"} ({s.post_shock_cqi?.toFixed(1)})
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {result?.preview_markdown && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ fontSize: 10, color: T.inkFaint, cursor: "pointer" }}>Basel SCO60 Preview</summary>
+                  <pre style={{ fontSize: 10, fontFamily: T.mono, whiteSpace: "pre-wrap", marginTop: 4,
+                    background: T.paperWarm, padding: 8, maxHeight: 300, overflow: "auto" }}>
+                    {result.preview_markdown}
+                  </pre>
+                </details>
+              )}
+              {!emailSent && (
+                <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="email" placeholder="Email for full report" value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    style={{ fontFamily: T.mono, fontSize: 11, padding: "4px 8px", border: `1px solid ${T.ruleMid}`,
+                      background: T.paper, width: 250 }} />
+                  <button onClick={requestReport} disabled={!email}
+                    style={{ fontSize: 11, fontFamily: T.mono, padding: "4px 12px", border: `1px solid ${T.ink}`,
+                      background: "transparent", cursor: "pointer" }}>
+                    Get Full Report
+                  </button>
+                </div>
+              )}
+              {emailSent && <p style={{ fontSize: 11, color: "#2d6b45", fontFamily: T.mono, marginTop: 8 }}>Report link sent to {email}. Check your inbox.</p>}
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {submissions.length > 0 && (
+        <Section title="RECENT SUBMISSIONS">
+          <div style={{ padding: "0 10px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "auto auto auto auto auto", gap: "2px 10px", fontSize: 10, fontFamily: T.mono }}>
+              <span style={{ fontWeight: 600, color: T.inkLight }}>Time</span>
+              <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Positions</span>
+              <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>CQI</span>
+              <span style={{ fontWeight: 600, color: T.inkLight }}>Report</span>
+              <span style={{ fontWeight: 600, color: T.inkLight, textAlign: "right" }}>Views</span>
+              {submissions.map(s => (
+                <div key={s.id} style={{ display: "contents" }}>
+                  <span style={{ color: T.inkMid }}>{(s.submitted_at || "").slice(5, 16)}</span>
+                  <span style={{ textAlign: "right" }}>{s.position_count}</span>
+                  <span style={{ textAlign: "right" }}>{s.aggregate_cqi?.toFixed(1) || "—"}</span>
+                  <span style={{ color: s.report_requested ? "#2d6b45" : T.inkFaint }}>{s.report_requested ? "sent" : "—"}</span>
+                  <span style={{ textAlign: "right" }}>{s.access_count || 0}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Section>
+      )}
+    </>
+  );
+}
+
+
 export default function OpsDashboard() {
   // Check for protocol deep-dive route
   const pathMatch = window.location.pathname.match(/^\/ops\/protocol\/([^/]+)/);
@@ -3711,6 +4300,7 @@ export default function OpsDashboard() {
     { id: "metrics", label: "Metrics" },
     { id: "reports", label: "Reports" },
     { id: "tools", label: "Tools" },
+    { id: "playground", label: "Playground" },
   ];
 
   return (
@@ -3876,6 +4466,12 @@ export default function OpsDashboard() {
                 <GraphPanel />
                 <BacktestPanel />
                 <ABMPanel />
+                <TrackRecordPanel />
+              </div>
+            )}
+            {tab === "playground" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PlaygroundPanel />
               </div>
             )}
           </div>

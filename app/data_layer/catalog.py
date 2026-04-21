@@ -191,7 +191,7 @@ def update_catalog():
             time_cols = {
                 "liquidity_depth": "snapshot_at",
                 "yield_snapshots": "snapshot_at",
-                "governance_proposals": "collected_at",
+                "governance_proposals": "captured_at",
                 "governance_voters": "collected_at",
                 "bridge_flows": "snapshot_at",
                 "exchange_snapshots": "snapshot_at",

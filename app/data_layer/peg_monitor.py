@@ -82,47 +82,65 @@ async def _fetch_market_chart(
 
 
 def _store_peg_snapshots(stablecoin_id: str, price_points: list[tuple]):
-    """Store 5-minute peg snapshots (per-row transactions)."""
+    """Store 5-minute peg snapshots — batched into one transaction."""
     if not price_points:
         return
 
+    import time as _t
     from app.database import get_cursor
 
-    stored = 0
-    errors = 0
+    _start = _t.monotonic()
 
+    # Build batch, filtering invalid values
+    rows = []
+    skipped = 0
     for ts_ms, price in price_points:
-        try:
-            safe_price = _safe_float(price)
-            if safe_price is None:
-                errors += 1
-                if errors <= 3:
-                    logger.error(f"Skipping peg snapshot with invalid price={price} for {stablecoin_id}")
-                continue
+        safe_price = _safe_float(price)
+        if safe_price is None:
+            skipped += 1
+            continue
+        ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        deviation_bps = round(abs(safe_price - 1.0) * 10000, 2)
+        rows.append((stablecoin_id, safe_price, ts, deviation_bps))
 
-            ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-            deviation_bps = round(abs(safe_price - 1.0) * 10000, 2)
+    if not rows:
+        return
 
-            with get_cursor() as cur:
-                cur.execute(
-                    """INSERT INTO peg_snapshots_5m
-                       (stablecoin_id, price, timestamp, deviation_bps)
-                       VALUES (%s, %s, %s, %s)
-                       ON CONFLICT (stablecoin_id, timestamp) DO UPDATE SET
-                           price = EXCLUDED.price,
-                           deviation_bps = EXCLUDED.deviation_bps""",
-                    (stablecoin_id, safe_price, ts, deviation_bps),
-                )
-            stored += 1
-        except Exception as e:
-            errors += 1
-            if errors <= 3:
-                logger.error(f"Failed to store peg snapshot for {stablecoin_id} ts={ts_ms}: {e}")
+    # Batch insert — single round-trip via execute_values
+    stored = 0
+    try:
+        from psycopg2.extras import execute_values
+        with get_cursor() as cur:
+            execute_values(cur,
+                """INSERT INTO peg_snapshots_5m
+                   (stablecoin_id, price, timestamp, deviation_bps)
+                   VALUES %s
+                   ON CONFLICT (stablecoin_id, timestamp) DO UPDATE SET
+                       price = EXCLUDED.price,
+                       deviation_bps = EXCLUDED.deviation_bps""",
+                rows, page_size=500,
+            )
+        stored = len(rows)
+    except Exception as batch_err:
+        # Fall back to per-row on batch failure
+        logger.error(f"peg batch insert failed for {stablecoin_id}, falling back to per-row: {batch_err}")
+        for row in rows:
+            try:
+                with get_cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO peg_snapshots_5m
+                           (stablecoin_id, price, timestamp, deviation_bps)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (stablecoin_id, timestamp) DO UPDATE SET
+                               price = EXCLUDED.price, deviation_bps = EXCLUDED.deviation_bps""",
+                        row,
+                    )
+                stored += 1
+            except Exception:
+                pass
 
-    if errors:
-        logger.error(f"peg_snapshots_5m: stored={stored}, errors={errors} out of {len(price_points)}")
-    else:
-        logger.info(f"Stored {stored} peg snapshots for {stablecoin_id}")
+    elapsed = _t.monotonic() - _start
+    logger.error(f"peg {stablecoin_id}: {stored} rows in {elapsed:.1f}s (skipped={skipped})")
 
 
 def _compute_volatility_surface(

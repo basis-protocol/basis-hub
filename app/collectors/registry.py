@@ -296,7 +296,12 @@ async def run_all_collectors(
     Run every registered SII collector for one stablecoin.
     Returns flat list of component dicts (not yet tagged with stablecoin_id).
     """
-    cg_id = cfg["coingecko_id"]
+    # CoinGecko ID corrections — map delisted/renamed IDs to current ones
+    CG_ID_CORRECTIONS = {
+        "susd": "nusd",              # Synthetix USD — CoinGecko lists as 'nusd'
+        "spark": "spark-protocol",   # Spark Protocol — CoinGecko renamed to 'spark-protocol'
+    }
+    cg_id = CG_ID_CORRECTIONS.get(cfg["coingecko_id"], cfg["coingecko_id"])
     all_components: list[dict] = []
 
     # --- async collectors (parallel with per-collector timeout) ---

@@ -470,7 +470,8 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
     score_data = compute_sii_from_components(components)
 
     # 3. Get price context
-    current = await fetch_current(client, cfg["coingecko_id"])
+    _cg_fix_score = {"susd": "nusd", "spark": "spark-protocol"}
+    current = await fetch_current(client, _cg_fix_score.get(cfg["coingecko_id"], cfg["coingecko_id"]))
     price_ctx = extract_price_context(current) if current else {}
 
     # 4. Store everything
@@ -501,6 +502,127 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
         "components": score_data["component_count"],
         "elapsed": round(elapsed, 1),
     }
+
+
+# =============================================================================
+# Cycle diagnostics — runs at startup and end of every fast cycle
+# =============================================================================
+
+def run_cycle_diagnostics():
+    """Log stale types, provenance gaps, API budget, and usage stats."""
+    # 1. Stale types
+    try:
+        _stale_thresholds = {
+            "liquidity_depth": ("snapshot_at", 3),
+            "exchange_snapshots": ("snapshot_at", 3),
+            "entity_snapshots_hourly": ("snapshot_at", 3),
+            "yield_snapshots": ("snapshot_at", 26),
+            "governance_proposals": ("captured_at", 26),
+            "peg_snapshots_5m": ("timestamp", 26),
+            "mint_burn_events": ("collected_at", 26),
+            "contract_surveillance": ("scanned_at", 170),
+            "dex_pool_ohlcv": ("timestamp", 6),
+            "market_chart_history": ("timestamp", 26),
+            "scores": ("computed_at", 3),
+            "psi_scores": ("computed_at", 26),
+        }
+        _stale_found = []
+        for _tbl, (_col, _max_h) in _stale_thresholds.items():
+            try:
+                _row = fetch_one(f"SELECT MAX({_col}) as latest FROM {_tbl}")
+                if _row and _row.get("latest"):
+                    _lt = _row["latest"]
+                    if _lt.tzinfo is None:
+                        _lt = _lt.replace(tzinfo=timezone.utc)
+                    _age = (datetime.now(timezone.utc) - _lt).total_seconds() / 3600
+                    if _age > _max_h:
+                        _stale_found.append(f"{_tbl} (age={_age:.1f}h, threshold={_max_h}h)")
+                else:
+                    _stale_found.append(f"{_tbl} (empty, threshold={_max_h}h)")
+            except Exception as _e:
+                _stale_found.append(f"{_tbl} (error: {_e})")
+        if _stale_found:
+            logger.error(f"[stale_diagnostic] stale={len(_stale_found)}: {', '.join(_stale_found)}")
+        else:
+            logger.error("[stale_diagnostic] all data types fresh")
+    except Exception as _e:
+        logger.error(f"[stale_diagnostic] failed: {_e}")
+
+    # 2. Provenance gaps
+    try:
+        _configured = fetch_all("SELECT id, schedule FROM provenance_sources WHERE enabled = true")
+        _active = fetch_all(
+            "SELECT DISTINCT source_domain FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '24 hours'"
+        )
+        _hourly_ids = {r["id"] for r in (_configured or []) if r.get("schedule") == "hourly"}
+        _weekly_ids = {r["id"] for r in (_configured or []) if r.get("schedule") == "weekly"}
+        _act_ids = {r["source_domain"] for r in (_active or [])}
+        _missing_hourly = sorted(_hourly_ids - _act_ids)
+        _missing_weekly = sorted(_weekly_ids - _act_ids)
+        _producing_hourly = len(_hourly_ids) - len(_missing_hourly)
+        logger.error(
+            f"[provenance_gap] hourly: {_producing_hourly}/{len(_hourly_ids)} producing, "
+            f"weekly: {len(_weekly_ids)}, "
+            f"missing_hourly={_missing_hourly}"
+        )
+        if _missing_weekly:
+            logger.error(f"[provenance_gap] weekly sources (not expected in 24h): {_missing_weekly}")
+        _extra = sorted(_act_ids - _hourly_ids - _weekly_ids)
+        if _extra:
+            logger.error(f"[provenance_gap] producing but not configured: {_extra}")
+    except Exception as _e:
+        logger.error(f"[provenance_gap] failed: {_e}")
+
+    # 3. API budget — read from new tracker (in-memory) + DB fallback
+    try:
+        _limits = {"coingecko": 16_600, "etherscan": 200_000, "blockscout": 100_000}
+        _parts = []
+        # Try new tracker first
+        try:
+            from app.utils.api_tracker import tracker as _bt
+            _budget = _bt.get_budget_summary()
+            for _p, _today in sorted(_budget.items()):
+                _lim = _limits.get(_p)
+                if _lim:
+                    _parts.append(f"{_p}={_today:,}/{_lim:,} ({round(_today/_lim*100)}%)")
+                else:
+                    _parts.append(f"{_p}={_today:,}")
+        except Exception:
+            pass
+        # Fallback to DB
+        if not _parts:
+            try:
+                _db_budget = fetch_all("""
+                    SELECT provider, SUM(total_calls) as total
+                    FROM api_usage_hourly
+                    WHERE hour > NOW() - INTERVAL '24 hours'
+                    GROUP BY provider ORDER BY total DESC
+                """)
+                for _r in (_db_budget or []):
+                    _p, _today = _r["provider"], int(_r["total"])
+                    _lim = _limits.get(_p)
+                    if _lim:
+                        _parts.append(f"{_p}={_today:,}/{_lim:,} ({round(_today/_lim*100)}%)")
+                    else:
+                        _parts.append(f"{_p}={_today:,}")
+            except Exception:
+                pass
+        logger.error(f"[api_budget] {', '.join(_parts) if _parts else 'no calls tracked yet'}")
+    except Exception as _e:
+        logger.error(f"[api_budget] failed: {_e}")
+
+    # 4. API usage table verification
+    try:
+        _hourly = fetch_one("SELECT COUNT(*) as cnt, MAX(hour) as latest FROM api_usage_hourly")
+        _tracker = fetch_one("SELECT COUNT(*) as cnt, MAX(recorded_at) as latest FROM api_usage_tracker")
+        logger.error(
+            f"[api_usage_verify] hourly: {_hourly['cnt'] if _hourly else 0} rows, "
+            f"latest={_hourly.get('latest') if _hourly else 'none'} | "
+            f"tracker: {_tracker['cnt'] if _tracker else 0} rows, "
+            f"latest={_tracker.get('latest') if _tracker else 'none'}"
+        )
+    except Exception as _e:
+        logger.error(f"[api_usage_verify] failed: {_e}")
 
 
 # =============================================================================
@@ -588,6 +710,22 @@ async def run_fast_cycle():
         logger.warning(f"PSI scoring failed: {e}")
 
     # -------------------------------------------------------------------------
+    # Morpho Blue isolated-market exposure — fills protocol_collateral_exposure
+    # for Morpho (DeFiLlama yields API doesn't index isolated markets).
+    # -------------------------------------------------------------------------
+    try:
+        from app.collectors.morpho_blue import run_morpho_blue_collection
+        morpho_result = run_morpho_blue_collection()
+        if morpho_result.get("enabled"):
+            logger.info(
+                f"Morpho Blue exposure: {morpho_result.get('exposure_rows', 0)} rows "
+                f"({morpho_result.get('stablecoin_rows', 0)} stablecoin) "
+                f"from {morpho_result.get('markets', 0)} markets"
+            )
+    except Exception as e:
+        logger.warning(f"Morpho Blue collection failed: {e}")
+
+    # -------------------------------------------------------------------------
     # Bridge monitoring — every cycle (lightweight HTTP checks)
     # -------------------------------------------------------------------------
     try:
@@ -634,11 +772,12 @@ async def run_fast_cycle():
     # ==== 1. ENTITY SNAPSHOTS — all scored entities ====
     try:
         _coins = _dl_fa("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
-        _entities = [(r["id"], r["coingecko_id"], "stablecoin") for r in _coins]
+        _cg_fix = {"susd": "nusd", "spark": "spark-protocol"}
+        _entities = [(r["id"], _cg_fix.get(r["coingecko_id"], r["coingecko_id"]), "stablecoin") for r in _coins]
         _psi = {"aave":"aave","compound-finance":"compound-governance-token","morpho":"morpho",
                 "lido":"lido-dao","uniswap":"uniswap","curve-finance":"curve-dao-token",
                 "convex-finance":"convex-finance","eigenlayer":"eigenlayer","sky":"maker",
-                "spark":"spark","pendle":"pendle","ethena":"ethena"}
+                "spark":"spark-protocol","pendle":"pendle","ethena":"ethena"}
         for s,c in _psi.items(): _entities.append((s,c,"protocol_token"))
 
         _es_ok, _es_err = 0, 0
@@ -672,11 +811,19 @@ async def run_fast_cycle():
     try:
         _EX = ["binance","coinbase-exchange","okx","bybit_spot","kraken","kucoin","gate",
                "bitget","htx","crypto_com","mexc","bitfinex","bitstamp","gemini","lbank"]
+        # CoinGecko exchange ID corrections (IDs that 404)
+        _EX_FIX = {
+            "coinbase-exchange": "gdax",   # CoinGecko still uses legacy 'gdax' for Coinbase
+            "okx": "okex",                 # OKX listed as 'okex' on CoinGecko
+            "htx": "huobi",                # HTX rebranded from Huobi, CG still uses 'huobi'
+            "mexc": "mxc",                 # CoinGecko slug is 'mxc'
+        }
         _ex_ok, _ex_err = 0, 0
         async with httpx.AsyncClient(timeout=30) as _xc:
             for _xid in _EX:
+                _cg_xid = _EX_FIX.get(_xid, _xid)
                 try:
-                    _r = await _xc.get(f"{CG_BASE}/exchanges/{_xid}", headers=CG_HDR)
+                    _r = await _xc.get(f"{CG_BASE}/exchanges/{_cg_xid}", headers=CG_HDR)
                     if _r.status_code != 200: continue
                     _d = _r.json()
                     with _dl_gc() as _c:
@@ -703,73 +850,97 @@ async def run_fast_cycle():
         _rel = [p for p in _pools if (p.get("stablecoin") or any(
             s in (p.get("symbol","").upper()) for s in ["USDC","USDT","DAI","FRAX"]
         )) and (p.get("tvlUsd") or 0) >= 1_000_000][:200]
-        _ys_ok, _ys_err = 0, 0
+        _ys_start = time.time()
+        _ys_rows = []
         for _p in _rel:
-            try:
-                with _dl_gc() as _c:
-                    _c.execute("""INSERT INTO yield_snapshots
-                        (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
-                        ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
-                        (_p.get("pool",""),_p.get("project",""),_p.get("chain",""),_p.get("symbol",""),
-                         _sn(_p.get("apy")),_sn(_p.get("apyBase")),_sn(_p.get("apyReward")),
-                         _sn(_p.get("tvlUsd")),_p.get("stablecoin",False)))
-                _ys_ok += 1
-            except Exception as _e:
-                _ys_err += 1
-                if _ys_err <= 3: logger.error(f"yield fail: {_e}")
-        logger.error(f"=== YIELDS: {_ys_ok} ok, {_ys_err} err, total={_dl_fo('SELECT COUNT(*) as c FROM yield_snapshots')} ===")
+            _ys_rows.append((
+                _p.get("pool",""), _p.get("project",""), _p.get("chain",""), _p.get("symbol",""),
+                _sn(_p.get("apy")), _sn(_p.get("apyBase")), _sn(_p.get("apyReward")),
+                _sn(_p.get("tvlUsd")), _p.get("stablecoin", False),
+            ))
+        _ys_ok = 0
+        try:
+            # Build single multi-row INSERT (one round-trip instead of 200)
+            _ys_now = datetime.now(timezone.utc)
+            _ys_rows_with_ts = [r + (_ys_now,) for r in _ys_rows]
+            from psycopg2.extras import execute_values as _ev_ys
+            with _dl_gc() as _c:
+                _ev_ys(_c,
+                    """INSERT INTO yield_snapshots
+                       (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
+                       VALUES %s
+                       ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
+                    _ys_rows_with_ts, page_size=500,
+                )
+            _ys_ok = len(_ys_rows)
+        except Exception as _yb:
+            logger.error(f"yield batch failed, falling back to per-row: {_yb}")
+            for _yr in _ys_rows:
+                try:
+                    with _dl_gc() as _c:
+                        _c.execute(
+                            """INSERT INTO yield_snapshots
+                               (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
+                               VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                               ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
+                            _yr,
+                        )
+                    _ys_ok += 1
+                except Exception:
+                    pass
+        logger.error(f"=== YIELDS: {_ys_ok}/{len(_ys_rows)} in {time.time()-_ys_start:.1f}s ===")
     except Exception as _e3: logger.error(f"=== YIELDS FAILED: {_e3} ===")
 
-    # ==== 4. BRIDGE FLOWS (DeFiLlama) ====
-    try:
-        async with httpx.AsyncClient(timeout=30) as _bc:
-            _r = await _bc.get("https://bridges.llama.fi/bridges", params={"includeChains":"true"})
-            _brs = _r.json().get("bridges",[]) if _r.status_code == 200 else []
-        _bf_ok, _bf_err = 0, 0
-        for _b in sorted(_brs, key=lambda x: x.get("lastDayVolume",0) or 0, reverse=True)[:20]:
-            try:
-                with _dl_gc() as _c:
-                    _c.execute("""INSERT INTO bridge_flows
-                        (bridge_id,bridge_name,source_chain,dest_chain,volume_usd,period,snapshot_at)
-                        VALUES(%s,%s,'all','all',%s,'24h',NOW())""",
-                        (str(_b.get("id","")),_b.get("displayName") or _b.get("name",""),
-                         _sn(_b.get("lastDayVolume"))))
-                _bf_ok += 1
-            except Exception as _e:
-                _bf_err += 1
-                if _bf_err <= 3: logger.error(f"bridge fail: {_e}")
-        logger.error(f"=== BRIDGES: {_bf_ok} ok, {_bf_err} err, total={_dl_fo('SELECT COUNT(*) as c FROM bridge_flows')} ===")
-    except Exception as _e4: logger.error(f"=== BRIDGES FAILED: {_e4} ===")
+    # ==== 4. BRIDGE FLOWS — DEFERRED (constitution v9.3) ====
+    # DeFiLlama paywalled all bridges endpoints (402/404) circa April 2026.
+    # Deferred to Phase 2: direct contract monitoring using existing Etherscan quota.
+    # Table schema retained for future backfill. See basis_protocol_v9_3_constitution_amendment.md.
 
     # ==== 5. PEG 5-MIN + MARKET CHART ====
     try:
         _pg_ok, _mc_ok = 0, 0
+        _mc_start = time.time()
         _peg_coins = _dl_fa("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
+        _cg_fix_mc = {"susd": "nusd", "spark": "spark-protocol"}
         async with httpx.AsyncClient(timeout=30) as _pc:
             for _sc in _peg_coins:
+                _coin_start = time.time()
+                _cg = _cg_fix_mc.get(_sc["coingecko_id"], _sc["coingecko_id"])
                 try:
-                    _r = await _pc.get(f"{CG_BASE}/coins/{_sc['coingecko_id']}/market_chart",
+                    _r = await _pc.get(f"{CG_BASE}/coins/{_cg}/market_chart",
                         params={"vs_currency":"usd","days":1}, headers=CG_HDR)
-                    if _r.status_code != 200: continue
+                    if _r.status_code != 200:
+                        await asyncio.sleep(0.15)
+                        continue
                     from datetime import datetime as _pdt
+                    from psycopg2.extras import execute_values as _ev
+                    _peg_rows = []
+                    _mc_rows = []
                     for _pt in _r.json().get("prices",[]):
                         _ts = _pdt.fromtimestamp(_pt[0]/1000, tz=timezone.utc)
+                        _peg_rows.append((_sc["id"], _pt[1], _ts, round(abs(_pt[1]-1.0)*10000, 2)))
+                        _mc_rows.append((_sc["coingecko_id"], _sc["id"], _ts, _pt[1]))
+                    if _peg_rows:
                         try:
                             with _dl_gc() as _c:
-                                _c.execute("INSERT INTO peg_snapshots_5m(stablecoin_id,price,timestamp,deviation_bps) VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                                    (_sc["id"],_pt[1],_ts,round(abs(_pt[1]-1.0)*10000,2)))
-                            _pg_ok += 1
-                        except Exception: pass
-                        try:
-                            with _dl_gc() as _c:
-                                _c.execute("INSERT INTO market_chart_history(coin_id,stablecoin_id,timestamp,price,granularity) VALUES(%s,%s,%s,%s,'5min') ON CONFLICT DO NOTHING",
-                                    (_sc["coingecko_id"],_sc["id"],_ts,_pt[1]))
-                            _mc_ok += 1
-                        except Exception: pass
+                                _ev(_c,
+                                    "INSERT INTO peg_snapshots_5m(stablecoin_id,price,timestamp,deviation_bps) "
+                                    "VALUES %s ON CONFLICT DO NOTHING",
+                                    _peg_rows, page_size=500,
+                                )
+                                _ev(_c,
+                                    "INSERT INTO market_chart_history(coin_id,stablecoin_id,timestamp,price,granularity) "
+                                    "VALUES %s ON CONFLICT DO NOTHING",
+                                    [r + ('5min',) for r in _mc_rows], page_size=500,
+                                )
+                            _pg_ok += len(_peg_rows)
+                            _mc_ok += len(_mc_rows)
+                        except Exception as _ei:
+                            logger.error(f"peg/mchart bulk insert fail {_sc['id']}: {_ei}")
+                    logger.error(f"peg/mchart {_sc['id']}: {len(_peg_rows)} rows in {time.time()-_coin_start:.1f}s")
                 except Exception as _e: logger.error(f"peg fail {_sc['id']}: {_e}")
                 await asyncio.sleep(0.15)
-        logger.error(f"=== PEG: {_pg_ok}, MCHART: {_mc_ok} ===")
+        logger.error(f"=== PEG: {_pg_ok}, MCHART: {_mc_ok}, elapsed={time.time()-_mc_start:.1f}s ===")
     except Exception as _e5: logger.error(f"=== PEG FAILED: {_e5} ===")
 
     # ==== 6. LIQUIDITY DEPTH (CEX tickers) ====
@@ -811,8 +982,9 @@ async def run_fast_cycle():
         if _mb_age >= 20:
             ETH_KEY = os.environ.get("ETHERSCAN_API_KEY", "")
             _mb_ok, _mb_err = 0, 0
+            _mb_coins = _dl_fa("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []
             async with httpx.AsyncClient(timeout=15) as _mbc:
-                for _sc in (_peg_coins if '_peg_coins' in dir() else _dl_fa("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []):
+                for _sc in _mb_coins:
                     _contract = _sc.get("contract","")
                     if not _contract or not _contract.startswith("0x"): continue
                     try:
@@ -854,7 +1026,7 @@ async def run_fast_cycle():
                     except Exception as _e:
                         logger.error(f"mintburn fetch fail {_sc['id']}: {_e}")
                     await asyncio.sleep(0.15)
-            logger.error(f"=== MINTBURN: {_mb_ok} ok, {_mb_err} err ===")
+            logger.error(f"=== MINTBURN: {_mb_ok} ok, {_mb_err} err, coins={len(_mb_coins)}, total={_dl_fo('SELECT COUNT(*) as c FROM mint_burn_events')} ===")
         else:
             logger.error(f"=== MINTBURN: skipped (last {_mb_age:.0f}h ago) ===")
     except Exception as _e7: logger.error(f"=== MINTBURN FAILED: {_e7} ===")
@@ -940,8 +1112,8 @@ async def run_fast_cycle():
                                     except: pass
                                 with _dl_gc() as _c:
                                     _c.execute("""INSERT INTO governance_voters
-                                        (protocol,proposal_id,voter_address,voting_power,choice,created_at,collected_at)
-                                        VALUES(%s,%s,%s,%s,%s,%s,NOW())
+                                        (protocol,source,proposal_id,voter_address,voting_power,choice,created_at,collected_at)
+                                        VALUES(%s,'snapshot',%s,%s,%s,%s,%s,NOW())
                                         ON CONFLICT(protocol,proposal_id,voter_address) DO UPDATE SET collected_at=NOW()""",
                                         (_proto,_pid,_v.get("voter",""),_sn(_v.get("vp")),
                                          _v.get("choice"),_vts))
@@ -1069,7 +1241,7 @@ async def run_fast_cycle():
             total_cnt = len(health)
             failing = [r for r in health if r.get("status") in ("degraded", "down")]
 
-            sii_row = fetch_one("SELECT COUNT(*) as cnt, MAX(calculated_at) as latest FROM scores")
+            sii_row = fetch_one("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM scores")
             sii_count = sii_row["cnt"] if sii_row else 0
             sii_age = "?"
             if sii_row and sii_row.get("latest"):
@@ -1078,7 +1250,7 @@ async def run_fast_cycle():
                     _sii_ts = _sii_ts.replace(tzinfo=timezone.utc)
                 sii_age = f"{(datetime.now(timezone.utc) - _sii_ts).total_seconds() / 3600:.1f}"
 
-            psi_row = fetch_one("SELECT COUNT(*) as cnt, MAX(scored_at) as latest FROM psi_scores")
+            psi_row = fetch_one("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM psi_scores")
             psi_count = psi_row["cnt"] if psi_row else 0
             psi_age = "?"
             if psi_row and psi_row.get("latest"):
@@ -1113,14 +1285,103 @@ async def run_fast_cycle():
     except Exception as e:
         logger.warning(f"Daily digest failed: {e}")
 
+    # Pipeline 9: Parameter change check (lightweight — every cycle)
+    try:
+        from app.collectors.parameter_history import check_parameter_changes
+        param_result = check_parameter_changes()
+        if param_result.get("changes_detected", 0) > 0:
+            logger.warning(f"Parameter changes detected: {param_result['changes_detected']}")
+        elif param_result.get("parameters_checked", 0) > 0:
+            logger.info(f"Parameter check: {param_result['parameters_checked']} params, no changes")
+    except Exception as e:
+        logger.error(f"Parameter change check failed: {e}")
+
+    # Pipeline 10: Oracle deviation and latency behavioral record (every cycle)
+    try:
+        from app.collectors.oracle_behavior import collect_oracle_readings
+        oracle_result = await collect_oracle_readings()
+        logger.error(
+            f"=== ORACLE: {oracle_result.get('oracles_read', 0)} read, "
+            f"{oracle_result.get('readings_stored', 0)} stored, "
+            f"{oracle_result.get('stress_events_detected', 0)} stress, "
+            f"errors={oracle_result.get('errors', [])} ==="
+        )
+    except Exception as e:
+        logger.error(f"Oracle behavior collector failed: {e}")
+
     # Log and persist collector performance stats
     if _current_cycle_stats:
         _current_cycle_stats.log_summary()
         _current_cycle_stats.store()
         _current_cycle_stats = None
 
+    # Flush API trackers
+    try:
+        from app.api_usage_tracker import flush as _fast_flush
+        _fast_flush()
+    except Exception:
+        pass
+    try:
+        from app.utils.api_tracker import tracker as _cycle_tracker
+        _flushed = _cycle_tracker.flush()
+        if _flushed:
+            logger.error(f"[api_tracker] flushed {_flushed} rows to api_usage_hourly")
+    except Exception:
+        pass
+
+    # Snapshot row counts for dashboard delta computation (pg_stat, instant)
+    try:
+        from app.data_layer.state_growth import snapshot_row_counts
+        snapshot_row_counts()
+    except Exception:
+        pass
+
+    # Gate status diagnostic — log whether expansion and edge gates are open
+    try:
+        from app.database import fetch_one as _gate_fo
+        _edge_ts = _gate_fo("SELECT EXTRACT(EPOCH FROM MAX(last_built_at)) AS ts FROM wallet_graph.edge_build_status")
+        _edge_last = float(_edge_ts["ts"]) if _edge_ts and _edge_ts.get("ts") else 0
+        _edge_age_h = (time.time() - _edge_last) / 3600 if _edge_last > 0 else 999
+        _wallet_max = _gate_fo("SELECT MAX(created_at) AS latest FROM wallet_graph.wallets WHERE created_at > NOW() - INTERVAL '48 hours'")
+        _wallet_latest = _wallet_max.get("latest") if _wallet_max else None
+        _wallet_age_h = 999
+        if _wallet_latest:
+            if _wallet_latest.tzinfo is None:
+                _wallet_latest = _wallet_latest.replace(tzinfo=timezone.utc)
+            _wallet_age_h = (datetime.now(timezone.utc) - _wallet_latest).total_seconds() / 3600
+        logger.error(
+            f"=== GATE STATUS: edge_age={_edge_age_h:.1f}h (open={_edge_age_h >= 10}), "
+            f"wallet_expansion_age={_wallet_age_h:.1f}h (open={_wallet_age_h >= 24 or _wallet_latest is None}) ==="
+        )
+    except Exception as _ge:
+        logger.error(f"=== GATE STATUS FAILED: {_ge} ===")
+
+    # One-time diagnostic: data layer table row counts via pg_stat (instant, no scan)
+    try:
+        from app.database import fetch_all as _diag_fa
+        _diag_rows = _diag_fa("""
+            SELECT relname AS table_name, n_live_tup
+            FROM pg_stat_user_tables
+            WHERE relname IN (
+                'entity_snapshots_hourly', 'liquidity_depth', 'yield_snapshots',
+                'exchange_snapshots', 'bridge_flows', 'mint_burn_events',
+                'peg_snapshots_5m', 'dex_pool_ohlcv', 'market_chart_history',
+                'volatility_surfaces', 'correlation_matrices', 'contract_surveillance',
+                'wallet_behavior_tags', 'protocol_pool_wallets', 'coherence_violations',
+                'incident_events', 'oracle_price_readings', 'oracle_stress_events',
+                'holder_clusters', 'concentration_snapshots',
+                'protocol_parameter_changes', 'protocol_parameter_snapshots',
+                'contract_upgrade_history'
+            )
+            ORDER BY n_live_tup DESC
+        """)
+        _diag_lines = [f"  {r['table_name']:35s} {r['n_live_tup']:>10,}" for r in (_diag_rows or [])]
+        logger.error("=== DATA LAYER ROW COUNTS (pg_stat) ===\n" + "\n".join(_diag_lines))
+    except Exception as _de:
+        logger.error(f"=== DATA LAYER DIAGNOSTIC FAILED: {_de} ===")
+
     elapsed = time.time() - fast_start
-    logger.info(f"=== Fast cycle complete in {elapsed:.0f}s ===")
+    logger.error(f"=== Fast cycle complete in {elapsed:.0f}s ===")
 
     return {
         "results": results,
@@ -1411,49 +1672,37 @@ async def run_slow_cycle():
     # Wallet expansion + profile rebuild — daily gate via DB timestamp
     # -------------------------------------------------------------------------
     try:
-        last_expansion_row = fetch_one(
-            "SELECT MAX(created_at) AS latest FROM wallet_graph.wallets WHERE created_at > NOW() - INTERVAL '48 hours'"
+        current_wallet_count = fetch_one("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
+        _wc = current_wallet_count["cnt"] if current_wallet_count else 0
+
+        # Always run expansion — no gate. The expansion function itself is idempotent
+        # and the graph needs to grow from 44K to 500K.
+        from app.data_layer.wallet_expansion import run_wallet_graph_expansion
+        logger.error(f"=== WALLET EXPANSION: started, target=10000, current={_wc} ===")
+        expansion_result = await run_wallet_graph_expansion(
+            target_new_wallets=10_000, max_etherscan_calls=5_000
         )
-        wallet_expansion_age = 25
-        if last_expansion_row and last_expansion_row.get("latest"):
-            latest = last_expansion_row["latest"]
-            if latest.tzinfo is None:
-                latest = latest.replace(tzinfo=timezone.utc)
-            wallet_expansion_age = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
-
-        if wallet_expansion_age >= 24:
-            # Wallet expansion — seed new addresses from under-covered stablecoins
-            try:
-                from app.indexer.expander import run_wallet_expansion
-                logger.info("Running wallet expansion pipeline...")
-                expansion_result = await run_wallet_expansion(max_etherscan_calls=50)
-                logger.info(
-                    f"Wallet expansion complete: {expansion_result.get('new_wallets_seeded', 0)} seeded, "
-                    f"{expansion_result.get('etherscan_calls_used', 0)} Etherscan calls used"
-                )
-            except Exception as e:
-                logger.warning(f"Wallet expansion failed: {e}")
-
-            # Profile rebuild — cap at 2000 stalest wallets, 30-min timeout
-            try:
-                from app.indexer.profiles import rebuild_all_profiles
-                logger.info("Rebuilding wallet profiles (max 2000, 30-min timeout)...")
-                profile_result = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, rebuild_all_profiles, 2000),
-                    timeout=1800,
-                )
-                logger.info(
-                    f"Profile rebuild complete: {profile_result.get('built', 0)} built, "
-                    f"{profile_result.get('errors', 0)} errors out of {profile_result.get('total', 0)} addresses"
-                )
-            except asyncio.TimeoutError:
-                logger.warning("Profile rebuild hit 30-minute timeout — will continue next cycle")
-            except Exception as e:
-                logger.warning(f"Profile rebuild failed: {e}")
-        else:
-            logger.info(f"Wallet expansion skipped — last ran {wallet_expansion_age:.1f}h ago")
+        new_wallets = expansion_result.get('new_wallets_seeded', 0)
+        logger.error(f"=== WALLET EXPANSION: {new_wallets} new wallets discovered, result={expansion_result} ===")
     except Exception as e:
-        logger.warning(f"Wallet expansion gate check failed: {e}")
+        logger.error(f"=== WALLET EXPANSION FAILED: {e} ===")
+
+    # Profile rebuild — cap at 2000 stalest wallets, 30-min timeout
+    try:
+        from app.indexer.profiles import rebuild_all_profiles
+        logger.info("Rebuilding wallet profiles (max 2000, 30-min timeout)...")
+        profile_result = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, rebuild_all_profiles, 2000),
+            timeout=1800,
+        )
+        logger.info(
+            f"Profile rebuild complete: {profile_result.get('built', 0)} built, "
+            f"{profile_result.get('errors', 0)} errors out of {profile_result.get('total', 0)} addresses"
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Profile rebuild hit 30-minute timeout — will continue next cycle")
+    except Exception as e:
+        logger.warning(f"Profile rebuild failed: {e}")
 
     # -------------------------------------------------------------------------
     # Treasury flow detection — every cycle, minimal API budget
@@ -1482,7 +1731,7 @@ async def run_slow_cycle():
                     from app.indexer.edges import run_edge_builder
                     logger.info(f"Running edge builder for {edge_chain} (top 100 unbuilt wallets by value, 15-min timeout)...")
                     edge_result = await asyncio.wait_for(
-                        run_edge_builder(max_wallets=100, priority="value", chain=edge_chain),
+                        run_edge_builder(max_wallets=500, priority="value", chain=edge_chain),
                         timeout=900,
                     )
                     logger.info(
@@ -1508,6 +1757,69 @@ async def run_slow_cycle():
     except Exception as e:
         logger.warning(f"Edge build gate check failed: {e}")
 
+    # -------------------------------------------------------------------------
+    # Correlation matrices — daily, needs 30+ days of score history
+    # -------------------------------------------------------------------------
+    try:
+        from app.data_layer.correlation_engine import run_correlation_computation
+        logger.info("Running correlation computation...")
+        corr_result = run_correlation_computation()
+        logger.info(f"Correlation computation: {corr_result}")
+    except Exception as e:
+        logger.warning(f"Correlation computation failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Incident detection — every cycle, computed from existing data
+    # -------------------------------------------------------------------------
+    try:
+        from app.data_layer.incident_detector import run_incident_detection
+        logger.info("Running incident detection...")
+        incident_result = run_incident_detection()
+        total_incidents = sum(v for v in incident_result.values() if isinstance(v, int))
+        logger.info(f"Incident detection: {total_incidents} incidents detected")
+    except Exception as e:
+        logger.warning(f"Incident detection failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # DEX pool OHLCV — 6-hour gate, GeckoTerminal API
+    # -------------------------------------------------------------------------
+    try:
+        ohlcv_last = fetch_one("SELECT MAX(timestamp) as t FROM dex_pool_ohlcv")
+        ohlcv_age = 7
+        if ohlcv_last and ohlcv_last.get("t"):
+            _ot = ohlcv_last["t"]
+            if hasattr(_ot, 'tzinfo') and _ot.tzinfo is None:
+                _ot = _ot.replace(tzinfo=timezone.utc)
+            if hasattr(_ot, 'timestamp'):
+                ohlcv_age = (datetime.now(timezone.utc) - _ot).total_seconds() / 3600
+        if ohlcv_age >= 6:
+            from app.data_layer.ohlcv_collector import run_ohlcv_collection
+            logger.info("Running DEX pool OHLCV collection...")
+            ohlcv_result = await run_ohlcv_collection()
+            logger.info(
+                f"OHLCV collection: {ohlcv_result.get('records_stored', 0)} records, "
+                f"{ohlcv_result.get('pools_found', 0)} pools"
+            )
+        else:
+            logger.info(f"OHLCV collection skipped — last ran {ohlcv_age:.1f}h ago")
+    except Exception as e:
+        logger.warning(f"OHLCV collection failed: {e}")
+
+    # -------------------------------------------------------------------------
+    # Wallet behavior tagging — every cycle, computed from existing data
+    # -------------------------------------------------------------------------
+    try:
+        from app.data_layer.wallet_behavior import run_behavioral_classification
+        logger.info("Running wallet behavior classification...")
+        behavior_result = run_behavioral_classification(batch_size=2000)
+        tagged = behavior_result.get("wallets_classified", 0)
+        skipped = behavior_result.get("skipped", 0)
+        logger.error(
+            f"=== WALLET BEHAVIOR: {tagged} wallets tagged, {skipped} skipped (insufficient history) ==="
+        )
+    except Exception as e:
+        logger.warning(f"Wallet behavior classification failed: {e}")
+
     # =========================================================================
     # State-building pipelines — permanent historical record
     # These run daily and must never block other pipeline tasks.
@@ -1518,7 +1830,11 @@ async def run_slow_cycle():
         from app.collectors.contract_upgrades import collect_contract_upgrades
         logger.info("Running contract upgrade tracker...")
         upgrade_result = collect_contract_upgrades()
-        logger.info(f"Contract upgrades: {upgrade_result}")
+        logger.error(
+            f"=== CONTRACT UPGRADES: {upgrade_result.get('entities_checked', 0)} checked, "
+            f"{upgrade_result.get('upgrades_detected', 0)} upgrades, "
+            f"{upgrade_result.get('first_captures', 0)} first captures ==="
+        )
     except Exception as e:
         logger.error(f"Contract upgrade collector failed: {e}")
 
@@ -1556,6 +1872,56 @@ async def run_slow_cycle():
 
     # Pipeline 16 (contagion archive) integrates directly into divergence
     # signal emission below — not a separate worker task.
+
+    # Pipeline 8: Governance proposal corpus (daily-gated internally)
+    try:
+        from app.collectors.governance_proposals import collect_governance_proposals
+        logger.info("Running governance proposal collector...")
+        gov_result = await collect_governance_proposals()
+        logger.info(f"Governance proposals: {gov_result}")
+        if gov_result.get("edits_detected", 0) > 0:
+            logger.warning(f"Governance body edits detected: {gov_result['edits_detected']}")
+    except Exception as e:
+        logger.error(f"Governance proposal collector failed: {e}")
+
+    # Pipeline 6: Contract dependency graph (daily-gated via snapshot table)
+    try:
+        from app.collectors.contract_dependencies import collect_contract_dependencies
+        logger.info("Running contract dependency collector...")
+        dep_result = await collect_contract_dependencies()
+        logger.info(f"Contract dependencies: {dep_result}")
+        if dep_result.get("removed_dependencies", 0) > 0:
+            logger.warning(f"Contract dependencies removed: {dep_result['removed_dependencies']}")
+    except Exception as e:
+        logger.error(f"Contract dependency collector failed: {e}")
+
+    # Pipeline 9: Parameter history (full run with daily snapshots)
+    try:
+        from app.collectors.parameter_history import collect_parameter_history
+        logger.info("Running parameter history collector...")
+        param_full_result = await collect_parameter_history()
+        logger.error(
+            f"=== PARAMETERS: {param_full_result.get('protocols_checked', 0)} protocols, "
+            f"{param_full_result.get('changes_detected', 0)} changes, "
+            f"{param_full_result.get('snapshots_stored', 0)} snapshots ==="
+        )
+    except Exception as e:
+        logger.error(f"Parameter history collector failed: {e}")
+
+    # Pipeline 14: Graph-clustered holder concentration (daily, computationally heavy)
+    try:
+        from app.collectors.clustered_concentration import collect_clustered_concentration
+        logger.info("Running clustered concentration analysis...")
+        _conc_t0 = time.time()
+        conc_result = await collect_clustered_concentration()
+        _conc_elapsed = time.time() - _conc_t0
+        logger.error(
+            f"=== CONCENTRATION: {conc_result.get('stablecoins_analyzed', 0)} stablecoins, "
+            f"{conc_result.get('clusters_computed', 0)} clusters, "
+            f"{conc_result.get('snapshots_stored', 0)} snapshots ({_conc_elapsed:.0f}s) ==="
+        )
+    except Exception as e:
+        logger.error(f"Clustered concentration failed: {e}")
 
     # -------------------------------------------------------------------------
     # Divergence detection — every cycle, store all signals
@@ -1922,6 +2288,190 @@ async def run_slow_cycle_parallel():
     except Exception as e:
         logger.warning(f"Coherence sweep failed: {e}")
 
+    # Wallet expansion — run every cycle, no gate
+    try:
+        async def _wallet_expansion():
+            from app.data_layer.wallet_expansion import run_wallet_graph_expansion
+            from app.database import fetch_one as _wfe
+            _wc = _wfe("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
+            _count = _wc["cnt"] if _wc else 0
+            logger.error(f"=== WALLET EXPANSION: started, target=10000, current={_count} ===")
+            result = await run_wallet_graph_expansion(target_new_wallets=10_000, max_etherscan_calls=5_000)
+            logger.error(f"=== WALLET EXPANSION: {result.get('new_wallets_seeded', 0)} new wallets, result={result} ===")
+        await asyncio.wait_for(_wallet_expansion(), timeout=POST_TASK_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.error("=== WALLET EXPANSION: timed out after %ds ===" % POST_TASK_TIMEOUT)
+    except Exception as e:
+        logger.error(f"=== WALLET EXPANSION FAILED: {e} ===")
+
+    # Clustered concentration — daily
+    try:
+        async def _concentration():
+            from app.collectors.clustered_concentration import collect_clustered_concentration
+            result = await collect_clustered_concentration()
+            logger.error(
+                f"=== CONCENTRATION: {result.get('stablecoins_analyzed', 0)} stablecoins, "
+                f"{result.get('clusters_computed', 0)} clusters, "
+                f"{result.get('snapshots_stored', 0)} snapshots ==="
+            )
+        await asyncio.wait_for(_concentration(), timeout=POST_TASK_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Concentration analysis timed out after %ds", POST_TASK_TIMEOUT)
+    except Exception as e:
+        logger.error(f"Concentration analysis failed: {e}")
+
+    # Ensure oracle_registry table exists (migration may not have run)
+    try:
+        from app.database import execute as _exec_mig
+        _exec_mig("""
+            CREATE TABLE IF NOT EXISTS oracle_registry (
+                id SERIAL PRIMARY KEY,
+                oracle_address VARCHAR(42) NOT NULL,
+                oracle_name VARCHAR(200) NOT NULL,
+                oracle_provider VARCHAR(50) NOT NULL,
+                chain VARCHAR(20) NOT NULL,
+                asset_symbol VARCHAR(20) NOT NULL,
+                quote_symbol VARCHAR(20) NOT NULL DEFAULT 'usd',
+                decimals INTEGER NOT NULL DEFAULT 8,
+                read_function VARCHAR(100),
+                is_active BOOLEAN DEFAULT TRUE,
+                entity_type VARCHAR(20),
+                entity_slug VARCHAR(100),
+                added_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (oracle_address, chain, asset_symbol)
+            )
+        """)
+        _exec_mig("""
+            CREATE TABLE IF NOT EXISTS oracle_price_readings (
+                id SERIAL PRIMARY KEY,
+                oracle_address VARCHAR(42) NOT NULL,
+                oracle_name VARCHAR(200),
+                oracle_provider VARCHAR(50),
+                chain VARCHAR(20) NOT NULL,
+                asset_symbol VARCHAR(20) NOT NULL,
+                quote_symbol VARCHAR(20) NOT NULL DEFAULT 'usd',
+                oracle_price DECIMAL(30,8) NOT NULL,
+                oracle_price_raw VARCHAR(200),
+                oracle_decimals INTEGER,
+                cex_price DECIMAL(30,8),
+                deviation_pct DECIMAL(10,6),
+                deviation_abs DECIMAL(20,8),
+                latency_seconds INTEGER,
+                round_id VARCHAR(100),
+                answer_timestamp TIMESTAMPTZ,
+                recorded_at TIMESTAMPTZ DEFAULT NOW(),
+                is_stress_event BOOLEAN DEFAULT FALSE,
+                content_hash VARCHAR(66),
+                attested_at TIMESTAMPTZ
+            )
+        """)
+        _exec_mig("""
+            CREATE TABLE IF NOT EXISTS oracle_stress_events (
+                id SERIAL PRIMARY KEY,
+                oracle_address VARCHAR(42) NOT NULL,
+                oracle_name VARCHAR(200),
+                asset_symbol VARCHAR(20) NOT NULL,
+                chain VARCHAR(20) NOT NULL,
+                event_type VARCHAR(50),
+                event_start TIMESTAMPTZ NOT NULL,
+                event_end TIMESTAMPTZ,
+                duration_seconds INTEGER,
+                max_deviation_pct DECIMAL(10,6),
+                max_latency_seconds INTEGER,
+                reading_count INTEGER DEFAULT 1,
+                concurrent_sii_score DECIMAL(6,2),
+                concurrent_psi_scores JSONB,
+                affected_protocols JSONB,
+                content_hash VARCHAR(66),
+                attested_at TIMESTAMPTZ
+            )
+        """)
+        # Seed oracle feeds if empty
+        from app.database import fetch_one as _ofe
+        _ocount = _ofe("SELECT COUNT(*) as cnt FROM oracle_registry")
+        if _ocount and _ocount["cnt"] == 0:
+            _exec_mig("""
+                INSERT INTO oracle_registry
+                    (oracle_address, oracle_name, oracle_provider, chain, asset_symbol, quote_symbol,
+                     decimals, read_function, entity_type, entity_slug)
+                VALUES
+                    ('0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6', 'Chainlink USDC/USD', 'chainlink',
+                     'ethereum', 'USDC', 'usd', 8, 'latestRoundData', 'stablecoin', 'usdc'),
+                    ('0x3E7d1eAB13ad0104d2750B8863b489D65364e32D', 'Chainlink USDT/USD', 'chainlink',
+                     'ethereum', 'USDT', 'usd', 8, 'latestRoundData', 'stablecoin', 'usdt'),
+                    ('0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9', 'Chainlink DAI/USD', 'chainlink',
+                     'ethereum', 'DAI', 'usd', 8, 'latestRoundData', 'stablecoin', 'dai'),
+                    ('0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', 'Chainlink ETH/USD', 'chainlink',
+                     'ethereum', 'ETH', 'usd', 8, 'latestRoundData', NULL, NULL),
+                    ('0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', 'Chainlink BTC/USD', 'chainlink',
+                     'ethereum', 'BTC', 'usd', 8, 'latestRoundData', NULL, NULL),
+                    ('0x86392dC19c0b719886221c78AB11eb8Cf5c52812', 'Chainlink stETH/ETH', 'chainlink',
+                     'ethereum', 'stETH', 'eth', 18, 'latestRoundData', 'stablecoin', 'steth')
+                ON CONFLICT (oracle_address, chain, asset_symbol) DO NOTHING
+            """)
+            # Remove Pyth — pull-oracle ABI incompatible with Chainlink read path
+            _exec_mig("DELETE FROM oracle_registry WHERE oracle_provider = 'pyth'")
+            logger.error("=== ORACLE: seeded 6 oracle feeds into oracle_registry ===")
+    except Exception as e:
+        logger.warning(f"Oracle table creation/seeding failed (non-critical): {e}")
+
+    # Mark non-attesting CDA issuers so they don't show as stale
+    try:
+        from app.database import execute as _cda_exec
+        # USDD (TRON): minimal attestation practices, no standard reserve reports
+        # DAI (MakerDAO/Sky): crypto-backed, uses on-chain collateral not attestation PDFs
+        # FRAX (Frax Finance): algorithmic/hybrid, no standard attestation reports
+        for _symbol, _method in [("USDD", "no_attestation"), ("DAI", "crypto_backed"), ("FRAX", "algorithmic")]:
+            _cda_exec("""
+                UPDATE cda_issuer_registry
+                SET collection_method = %s, updated_at = NOW()
+                WHERE UPPER(asset_symbol) = %s
+                  AND collection_method NOT IN ('no_attestation', 'crypto_backed', 'algorithmic')
+            """, (_method, _symbol))
+    except Exception as e:
+        logger.debug(f"CDA issuer method update skipped: {e}")
+
+    # Contract surveillance re-scan — force if no scans in 24h
+    try:
+        from app.database import fetch_one as _csf
+        _cs_latest = _csf("SELECT MAX(scanned_at) as latest FROM contract_surveillance")
+        _cs_age = 999
+        if _cs_latest and _cs_latest.get("latest"):
+            _cslt = _cs_latest["latest"]
+            if _cslt.tzinfo is None:
+                _cslt = _cslt.replace(tzinfo=timezone.utc)
+            _cs_age = (datetime.now(timezone.utc) - _cslt).total_seconds() / 3600
+        if _cs_age >= 24:
+            from app.data_layer.contract_surveillance import run_contract_surveillance
+            logger.info("Running contract surveillance re-scan...")
+            _cs_result = await run_contract_surveillance()
+            logger.error(f"=== CONTRACT SURVEILLANCE: {_cs_result} ===")
+    except Exception as e:
+        logger.warning(f"Contract surveillance re-scan failed: {e}")
+
+    # On-chain CDA verification — crypto-backed stablecoins (DAI, LUSD)
+    try:
+        from app.collectors.on_chain_cda import run_on_chain_cda_verification
+        cda_result = await run_on_chain_cda_verification()
+        logger.error(
+            f"=== ON-CHAIN CDA: {cda_result.get('assets_read', 0)} read, "
+            f"{cda_result.get('stored', 0)} stored ==="
+        )
+    except Exception as e:
+        logger.warning(f"On-chain CDA verification failed: {e}")
+
+    # Solana program monitoring — Drift, Jupiter, Raydium
+    try:
+        from app.collectors.solana_program_monitor import run_solana_program_monitoring
+        sol_result = await run_solana_program_monitoring()
+        logger.error(
+            f"=== SOLANA PROGRAMS: {sol_result.get('programs_checked', 0)} checked, "
+            f"{sol_result.get('upgrades_detected', 0)} upgrades, "
+            f"{sol_result.get('immutable', 0)} immutable ==="
+        )
+    except Exception as e:
+        logger.warning(f"Solana program monitoring failed: {e}")
+
     # Provenance health re-check (disabled sources)
     try:
         async def _provenance_recheck():
@@ -1936,6 +2486,22 @@ async def run_slow_cycle_parallel():
         logger.warning("Provenance recheck timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
         logger.warning(f"Provenance recheck failed: {e}")
+
+    # Track record: auto-log qualifying entries from this cycle's signals
+    try:
+        from app.track_record import detect_and_log_entries
+        tr_result = detect_and_log_entries()
+        logger.info(f"Track record: {tr_result.get('entries_logged', 0)} entries logged")
+    except Exception as e:
+        logger.error(f"track_record auto-log failed: {e}", exc_info=True)
+
+    # Track record: evaluate pending followups (daily)
+    try:
+        from app.track_record_followups import evaluate_pending_followups
+        fu_result = evaluate_pending_followups()
+        logger.info(f"Track record followups: {fu_result.get('evaluated', 0)} evaluated")
+    except Exception as e:
+        logger.error(f"track_record followup eval failed: {e}", exc_info=True)
 
     # Flush API usage tracker
     try:
@@ -1972,8 +2538,400 @@ async def main():
     parser.add_argument("--coin", type=str, help="Score single coin")
     parser.add_argument("--interval", type=int, default=COLLECTION_INTERVAL_MINUTES, help="Minutes between cycles")
     args = parser.parse_args()
-    
+
+    logger.error("[startup] worker main() entered — initializing pool")
     init_pool()
+    logger.error("[startup] pool initialized — running schema fixes")
+
+    # Wire API call tracking via httpx monkey-patch
+    try:
+        import httpx as _httpx_mod
+        from app.utils.api_tracker import tracker as _api_tracker
+        _orig_send = _httpx_mod.AsyncClient.send
+        _patch_call_count = [0]
+        async def _tracked_send(self, request, **kwargs):
+            _t0 = time.monotonic()
+            try:
+                _resp = await _orig_send(self, request, **kwargs)
+                _host = request.url.host or ""
+                _provider = _host.split(".")[-2] if "." in _host else _host
+                _api_tracker.record(_provider, str(request.url.path)[:100], _resp.status_code,
+                                    int((time.monotonic() - _t0) * 1000))
+                _patch_call_count[0] += 1
+                if _patch_call_count[0] <= 3:
+                    logger.error(f"[api_tracker] recorded: {_provider} {request.url.path} → {_resp.status_code}")
+                return _resp
+            except Exception as _te:
+                _host = request.url.host or ""
+                _provider = _host.split(".")[-2] if "." in _host else _host
+                _api_tracker.record(_provider, str(request.url.path)[:100], 599,
+                                    int((time.monotonic() - _t0) * 1000))
+                _patch_call_count[0] += 1
+                raise
+        _httpx_mod.AsyncClient.send = _tracked_send
+        logger.error("[startup] httpx monkey-patched for API tracking")
+    except Exception as e:
+        logger.error(f"[startup] httpx monkey-patch failed: {e}")
+
+    # Ensure data layer tables exist (migration 058 may not have been fully applied)
+    # Ensure data layer tables exist + column alignment
+    _data_layer_creates = [
+        "CREATE TABLE IF NOT EXISTS governance_voters (id BIGSERIAL PRIMARY KEY, protocol TEXT NOT NULL, source TEXT, proposal_id TEXT, voter_address TEXT NOT NULL, voting_power NUMERIC, choice INTEGER, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(protocol, proposal_id, voter_address))",
+        "CREATE TABLE IF NOT EXISTS mint_burn_events (id BIGSERIAL PRIMARY KEY, stablecoin_id TEXT, chain TEXT NOT NULL DEFAULT 'ethereum', event_type TEXT NOT NULL, amount NUMERIC, tx_hash TEXT, block_number BIGINT, from_address TEXT, to_address TEXT, timestamp TIMESTAMPTZ, collected_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(chain, tx_hash, event_type))",
+        "CREATE TABLE IF NOT EXISTS liquidity_depth (id BIGSERIAL PRIMARY KEY, asset_id TEXT NOT NULL, venue TEXT NOT NULL, chain TEXT NOT NULL DEFAULT 'ethereum', depth_usd_2pct NUMERIC, depth_usd_5pct NUMERIC, bid_depth NUMERIC, ask_depth NUMERIC, spread_bps NUMERIC, raw_data JSONB, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(asset_id, venue, chain, snapshot_at))",
+        "CREATE TABLE IF NOT EXISTS contract_surveillance (id SERIAL PRIMARY KEY, entity_id TEXT NOT NULL, chain TEXT NOT NULL, contract_address TEXT NOT NULL, has_admin_keys BOOLEAN, is_upgradeable BOOLEAN, has_pause_function BOOLEAN, has_blacklist BOOLEAN, timelock_hours NUMERIC, multisig_threshold TEXT, source_code_hash TEXT, analysis JSONB, scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(entity_id, chain, contract_address, scanned_at))",
+        "CREATE TABLE IF NOT EXISTS protocol_parameter_changes (id SERIAL PRIMARY KEY, protocol_slug VARCHAR(100) NOT NULL, protocol_id INTEGER, parameter_name VARCHAR(200) NOT NULL, parameter_key VARCHAR(200) NOT NULL, asset_address VARCHAR(42), asset_symbol VARCHAR(20), contract_address VARCHAR(42) NOT NULL, chain VARCHAR(20) NOT NULL, previous_value DECIMAL(30,8), previous_value_raw VARCHAR(200), new_value DECIMAL(30,8), new_value_raw VARCHAR(200), value_unit VARCHAR(50), change_magnitude DECIMAL(10,4), change_direction VARCHAR(10), changed_at TIMESTAMPTZ NOT NULL, detected_at TIMESTAMPTZ DEFAULT NOW(), concurrent_sii_score DECIMAL(6,2), concurrent_psi_score DECIMAL(6,2), hours_since_last_sii_change DECIMAL(8,2), sii_trend_7d DECIMAL(6,2), change_context VARCHAR(100), content_hash VARCHAR(66), attested_at TIMESTAMPTZ)",
+        "CREATE TABLE IF NOT EXISTS exchange_snapshots (id BIGSERIAL PRIMARY KEY, exchange_id TEXT NOT NULL, name TEXT, trust_score INTEGER, trust_score_rank INTEGER, trade_volume_24h_btc NUMERIC, year_established INTEGER, country TEXT, trading_pairs INTEGER, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        "CREATE TABLE IF NOT EXISTS yield_snapshots (id BIGSERIAL PRIMARY KEY, pool_id TEXT NOT NULL, protocol TEXT, chain TEXT, asset TEXT, apy NUMERIC, apy_base NUMERIC, apy_reward NUMERIC, tvl_usd NUMERIC, stable_pool BOOLEAN, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(pool_id, snapshot_at))",
+        "CREATE TABLE IF NOT EXISTS peg_snapshots_5m (id BIGSERIAL PRIMARY KEY, stablecoin_id TEXT NOT NULL, price NUMERIC, timestamp TIMESTAMPTZ NOT NULL, deviation_bps NUMERIC, UNIQUE(stablecoin_id, timestamp))",
+        "CREATE TABLE IF NOT EXISTS entity_snapshots_hourly (id BIGSERIAL PRIMARY KEY, entity_id TEXT NOT NULL, entity_type TEXT, market_cap NUMERIC, total_volume NUMERIC, price_usd NUMERIC, price_change_24h NUMERIC, circulating_supply NUMERIC, total_supply NUMERIC, exchange_tickers_count INTEGER, developer_data JSONB, community_data JSONB, raw_data JSONB, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        "CREATE TABLE IF NOT EXISTS correlation_matrices (id BIGSERIAL PRIMARY KEY, matrix_type TEXT NOT NULL, window_days INTEGER NOT NULL, entity_ids JSONB, matrix_data JSONB, computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(matrix_type, window_days, computed_at))",
+        "CREATE TABLE IF NOT EXISTS wallet_behavior_tags (id BIGSERIAL PRIMARY KEY, wallet_address TEXT NOT NULL, behavior_type TEXT NOT NULL, confidence NUMERIC, metrics JSONB, computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(wallet_address, behavior_type, computed_at))",
+        "CREATE TABLE IF NOT EXISTS dex_pool_ohlcv (id BIGSERIAL PRIMARY KEY, pool_address TEXT NOT NULL, chain TEXT NOT NULL, dex TEXT, asset_id TEXT, timestamp TIMESTAMPTZ NOT NULL, open NUMERIC, high NUMERIC, low NUMERIC, close NUMERIC, volume NUMERIC, trades_count INTEGER, UNIQUE(pool_address, chain, timestamp))",
+    ]
+    _data_layer_alters = [
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS source TEXT",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ DEFAULT NOW()",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS voting_power NUMERIC",
+        "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS choice INTEGER",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS stablecoin_id TEXT",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ DEFAULT NOW()",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS from_address TEXT",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS to_address TEXT",
+        "ALTER TABLE mint_burn_events ADD COLUMN IF NOT EXISTS timestamp TIMESTAMPTZ",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS depth_usd_2pct NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS depth_usd_5pct NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS bid_depth NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS ask_depth NUMERIC",
+        "ALTER TABLE liquidity_depth ADD COLUMN IF NOT EXISTS spread_bps NUMERIC",
+    ]
+    for _ddl in _data_layer_creates:
+        try:
+            execute(_ddl)
+        except Exception as _de:
+            logger.error(f"[startup] DDL failed: {str(_de)[:100]}")
+
+    # Ensure incident_events table exists
+    try:
+        execute("""CREATE TABLE IF NOT EXISTS incident_events (
+            id SERIAL PRIMARY KEY, entity_id TEXT NOT NULL, entity_type TEXT,
+            incident_type TEXT NOT NULL, severity TEXT, title TEXT, description TEXT,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ended_at TIMESTAMPTZ,
+            detection_method TEXT DEFAULT 'automated', raw_data JSONB,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(entity_id, incident_type, started_at))""")
+    except Exception as _ie:
+        logger.error(f"[startup] incident_events DDL failed: {_ie}")
+
+    # Ensure wallet_graph.wallets has a unique constraint on address
+    try:
+        execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallets_address_unique ON wallet_graph.wallets (address)")
+    except Exception as _we:
+        logger.error(f"[startup] wallets unique index failed: {_we}")
+
+    # Ensure unique constraints exist for all ON CONFLICT targets
+    _unique_indexes = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_voters_unique ON governance_voters (protocol, proposal_id, voter_address)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mint_burn_unique ON mint_burn_events (chain, tx_hash, event_type)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_liq_depth_unique ON liquidity_depth (asset_id, venue, chain, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_exchange_snap_unique ON exchange_snapshots (exchange_id, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_yield_snap_unique ON yield_snapshots (pool_id, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_peg_5m_unique ON peg_snapshots_5m (stablecoin_id, timestamp)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_snap_unique ON entity_snapshots_hourly (entity_id, entity_type, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_surv_unique ON contract_surveillance (entity_id, chain, contract_address, scanned_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_corr_matrix_unique ON correlation_matrices (matrix_type, window_days, computed_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_behavior_unique ON wallet_behavior_tags (wallet_address, behavior_type, computed_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ohlcv_unique ON dex_pool_ohlcv (pool_address, chain, timestamp)",
+    ]
+    for _ui in _unique_indexes:
+        try:
+            execute(_ui)
+        except Exception as _ue:
+            logger.error(f"[startup] unique index failed: {_ui[:80]} — {_ue}")
+
+    for _alt in _data_layer_alters:
+        try:
+            execute(_alt)
+        except Exception as _ae:
+            logger.error(f"[startup] ALTER failed: {_alt[:80]} — {_ae}")
+
+    # Oracle stress_events + price_readings column fixes (migration 075 not applied)
+    _oracle_alters = [
+        "ALTER TABLE oracle_stress_events ADD COLUMN IF NOT EXISTS pre_stress_window_hours INTEGER DEFAULT 72",
+        "ALTER TABLE oracle_stress_events ADD COLUMN IF NOT EXISTS pre_stress_readings_tagged INTEGER",
+        "ALTER TABLE oracle_price_readings ADD COLUMN IF NOT EXISTS pre_stress_event_id BIGINT",
+        # Backfill tracking columns (migration 077)
+        "ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS backfill_source TEXT",
+        "ALTER TABLE generic_index_scores ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE generic_index_scores ADD COLUMN IF NOT EXISTS backfill_source TEXT",
+        "ALTER TABLE score_history ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE score_history ADD COLUMN IF NOT EXISTS backfill_source TEXT",
+        "ALTER TABLE rpi_score_history ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE rpi_score_history ADD COLUMN IF NOT EXISTS backfill_source TEXT",
+    ]
+    for _alt in _oracle_alters:
+        try:
+            execute(_alt)
+        except Exception as _ae:
+            logger.error(f"[startup] oracle ALTER failed: {_ae}")
+
+    # Ensure API usage tracking tables exist
+    try:
+        execute("""
+            CREATE TABLE IF NOT EXISTS api_usage_tracker (
+                id BIGSERIAL PRIMARY KEY,
+                provider TEXT NOT NULL,
+                endpoint TEXT,
+                calls_count INTEGER DEFAULT 1,
+                caller TEXT,
+                response_status INTEGER,
+                latency_ms INTEGER,
+                recorded_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        execute("""
+            CREATE TABLE IF NOT EXISTS api_usage_hourly (
+                id SERIAL PRIMARY KEY,
+                provider TEXT NOT NULL,
+                hour TIMESTAMPTZ NOT NULL,
+                total_calls INTEGER DEFAULT 0,
+                success_calls INTEGER DEFAULT 0,
+                error_calls INTEGER DEFAULT 0,
+                avg_latency_ms INTEGER,
+                p95_latency_ms INTEGER,
+                callers JSONB,
+                UNIQUE (provider, hour)
+            )
+        """)
+    except Exception as e:
+        logger.error(f"[startup] API usage table creation failed: {e}")
+
+    # VACUUM ANALYZE churny tables — needs autocommit (can't run in transaction)
+    try:
+        import psycopg2 as _vac_pg
+        _vac_url = os.environ.get("DATABASE_URL", "")
+        if _vac_url:
+            _vac_conn = _vac_pg.connect(_vac_url)
+            _vac_conn.autocommit = True
+            try:
+                _vac_cur = _vac_conn.cursor()
+                for _tbl in [
+                    "wallet_graph.wallet_risk_scores",
+                    "wallet_graph.wallet_holdings",
+                    "component_readings",
+                ]:
+                    try:
+                        _vac_cur.execute(f"VACUUM ANALYZE {_tbl}")
+                    except Exception as _ve:
+                        logger.error(f"[startup] VACUUM ANALYZE {_tbl} failed: {_ve}")
+                        try:
+                            _vac_cur.execute(f"ANALYZE {_tbl}")
+                        except Exception:
+                            pass
+                # Regular ANALYZE for other key tables
+                for _tbl in [
+                    "score_history", "scores", "psi_scores",
+                    "wallet_graph.wallets", "wallet_graph.wallet_edges",
+                    "entity_snapshots_hourly", "data_provenance", "state_attestations",
+                    "provenance_proofs", "assessment_events",
+                ]:
+                    try:
+                        _vac_cur.execute(f"ANALYZE {_tbl}")
+                    except Exception:
+                        pass
+                _vac_cur.close()
+                logger.error("[startup] VACUUM ANALYZE complete")
+            finally:
+                _vac_conn.close()
+    except Exception as e:
+        logger.error(f"[startup] VACUUM ANALYZE skipped: {e}")
+
+    # Create state_growth_snapshots table if needed
+    try:
+        execute("""
+            CREATE TABLE IF NOT EXISTS state_growth_snapshots (
+                id SERIAL PRIMARY KEY,
+                table_name TEXT NOT NULL,
+                row_count BIGINT NOT NULL,
+                snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+                UNIQUE (table_name, snapshot_date)
+            )
+        """)
+    except Exception:
+        pass
+
+    # Ensure oracle tables exist (migration 073 may not have been applied)
+    try:
+        execute("""CREATE TABLE IF NOT EXISTS oracle_registry (
+            id SERIAL PRIMARY KEY,
+            oracle_address VARCHAR(42) NOT NULL,
+            oracle_name VARCHAR(200) NOT NULL,
+            oracle_provider VARCHAR(50) NOT NULL,
+            chain VARCHAR(20) NOT NULL,
+            asset_symbol VARCHAR(20) NOT NULL,
+            quote_symbol VARCHAR(20) NOT NULL DEFAULT 'usd',
+            decimals INTEGER NOT NULL DEFAULT 8,
+            read_function VARCHAR(100),
+            is_active BOOLEAN DEFAULT TRUE,
+            entity_type VARCHAR(20),
+            entity_slug VARCHAR(100),
+            added_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (oracle_address, chain, asset_symbol)
+        )""")
+        execute("""CREATE TABLE IF NOT EXISTS oracle_price_readings (
+            id SERIAL PRIMARY KEY,
+            oracle_address VARCHAR(42) NOT NULL,
+            oracle_name VARCHAR(200),
+            oracle_provider VARCHAR(50),
+            chain VARCHAR(20) NOT NULL,
+            asset_symbol VARCHAR(20) NOT NULL,
+            quote_symbol VARCHAR(20) NOT NULL DEFAULT 'usd',
+            oracle_price DECIMAL(30,8) NOT NULL,
+            oracle_price_raw VARCHAR(200),
+            oracle_decimals INTEGER,
+            cex_price DECIMAL(30,8),
+            deviation_pct DECIMAL(10,6),
+            deviation_abs DECIMAL(20,8),
+            latency_seconds INTEGER,
+            round_id VARCHAR(100),
+            answer_timestamp TIMESTAMPTZ,
+            recorded_at TIMESTAMPTZ DEFAULT NOW(),
+            is_stress_event BOOLEAN DEFAULT FALSE,
+            content_hash VARCHAR(66),
+            attested_at TIMESTAMPTZ
+        )""")
+        execute("""CREATE TABLE IF NOT EXISTS oracle_stress_events (
+            id SERIAL PRIMARY KEY,
+            oracle_address VARCHAR(42) NOT NULL,
+            oracle_name VARCHAR(200),
+            asset_symbol VARCHAR(20) NOT NULL,
+            chain VARCHAR(20) NOT NULL,
+            event_type VARCHAR(50),
+            event_start TIMESTAMPTZ NOT NULL,
+            event_end TIMESTAMPTZ,
+            duration_seconds INTEGER,
+            max_deviation_pct DECIMAL(10,6),
+            max_latency_seconds INTEGER,
+            reading_count INTEGER DEFAULT 1,
+            concurrent_sii_score DECIMAL(6,2),
+            concurrent_psi_scores JSONB,
+            affected_protocols JSONB,
+            content_hash VARCHAR(66),
+            attested_at TIMESTAMPTZ
+        )""")
+        # Seed oracle feeds if empty
+        oracle_count = fetch_one("SELECT COUNT(*) as cnt FROM oracle_registry")
+        if oracle_count and oracle_count["cnt"] == 0:
+            execute("""
+                INSERT INTO oracle_registry
+                    (oracle_address, oracle_name, oracle_provider, chain, asset_symbol, quote_symbol,
+                     decimals, read_function, entity_type, entity_slug)
+                VALUES
+                    ('0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6', 'Chainlink USDC/USD', 'chainlink',
+                     'ethereum', 'USDC', 'usd', 8, 'latestRoundData', 'stablecoin', 'usdc'),
+                    ('0x3E7d1eAB13ad0104d2750B8863b489D65364e32D', 'Chainlink USDT/USD', 'chainlink',
+                     'ethereum', 'USDT', 'usd', 8, 'latestRoundData', 'stablecoin', 'usdt'),
+                    ('0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9', 'Chainlink DAI/USD', 'chainlink',
+                     'ethereum', 'DAI', 'usd', 8, 'latestRoundData', 'stablecoin', 'dai'),
+                    ('0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', 'Chainlink ETH/USD', 'chainlink',
+                     'ethereum', 'ETH', 'usd', 8, 'latestRoundData', NULL, NULL),
+                    ('0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', 'Chainlink BTC/USD', 'chainlink',
+                     'ethereum', 'BTC', 'usd', 8, 'latestRoundData', NULL, NULL),
+                    ('0x86392dC19c0b719886221c78AB11eb8Cf5c52812', 'Chainlink stETH/ETH', 'chainlink',
+                     'ethereum', 'stETH', 'eth', 18, 'latestRoundData', 'stablecoin', 'steth')
+                ON CONFLICT (oracle_address, chain, asset_symbol) DO NOTHING
+            """)
+            execute("DELETE FROM oracle_registry WHERE oracle_provider = 'pyth'")
+            logger.info("Oracle registry seeded with 6 Chainlink feeds at startup")
+    except Exception as e:
+        logger.error(f"[startup] Oracle table creation failed: {e}")
+
+    logger.error("[bridges] collector disabled — DeFiLlama paywalled all endpoints. See constitution v9.3 for deferral rationale.")
+
+    # Schema introspection — log actual columns for tables with known drift
+    _schema_tables = ["governance_proposals", "psi_scores", "scores", "oracle_registry"]
+    for _st in _schema_tables:
+        try:
+            _cols = fetch_all(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s ORDER BY ordinal_position",
+                (_st.split(".")[-1],),
+            )
+            _col_names = [r["column_name"] for r in (_cols or [])]
+            logger.error(f"[schema] {_st}: {_col_names if _col_names else 'TABLE DOES NOT EXIST'}")
+        except Exception as _se:
+            logger.error(f"[schema] {_st}: introspection failed: {_se}")
+
+    # Fix governance_proposals schema drift — add missing columns from migration 069
+    for _col_sql in [
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS protocol_id INTEGER",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS proposal_source VARCHAR(50)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body TEXT",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_hash VARCHAR(66)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_address VARCHAR(42)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS author_ens VARCHAR(200)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS state VARCHAR(50)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_start TIMESTAMPTZ",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS vote_end TIMESTAMPTZ",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_total DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_for DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_against DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS scores_abstain DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS quorum DECIMAL(30,8)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS choices JSONB",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS votes JSONB",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS ipfs_hash VARCHAR(100)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS discussion_url TEXT",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ DEFAULT NOW()",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS body_changed BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS first_capture_body_hash VARCHAR(66)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS content_hash VARCHAR(66)",
+        "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS attested_at TIMESTAMPTZ",
+    ]:
+        try:
+            execute(_col_sql)
+        except Exception as _ae:
+            logger.error(f"[schema_fix] ALTER failed: {_col_sql[:80]} — {_ae}")
+
+    # Fix psi_scores — add scored_at alias if missing (code references scored_at but table has computed_at)
+    try:
+        execute("ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ DEFAULT NOW()")
+        logger.error("[schema_fix] psi_scores.scored_at column ensured")
+    except Exception as _ae:
+        logger.error(f"[schema_fix] psi_scores.scored_at failed: {_ae}")
+
+    # Unique index for governance_proposals 069-style
+    try:
+        execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_proposals_source_id
+            ON governance_proposals (proposal_source, proposal_id)
+        """)
+    except Exception as _ae:
+        logger.error(f"[schema_fix] governance_proposals unique index failed: {_ae}")
+
+    # Log schema AFTER fixes
+    for _st in ["governance_proposals", "psi_scores"]:
+        try:
+            _cols = fetch_all(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s ORDER BY ordinal_position",
+                (_st,),
+            )
+            logger.error(f"[schema_after] {_st}: {[r['column_name'] for r in (_cols or [])]}")
+        except Exception:
+            pass
+
+    # Startup diagnostic fires via the independent loop after 60s
+    # Schema validation — catch all drift in one shot
+    try:
+        from app.db_schema_validator import validate_schemas
+        validate_schemas()
+    except Exception as e:
+        logger.error(f"[schema_validator] failed to run: {e}")
+
+    logger.error("[startup] schema fixes complete, diagnostics will fire in 60s via independent loop")
 
     # Seed email alert channel if not configured
     try:
@@ -2000,8 +2958,18 @@ async def main():
     except Exception as e:
         logger.warning(f"Worker startup alert failed: {e}")
 
-    FAST_CYCLE_TIMEOUT = 15 * 60   # 15 minutes max for fast cycle
+    FAST_CYCLE_TIMEOUT = 30 * 60   # 30 minutes max for fast cycle
     SLOW_CYCLE_TIMEOUT = 60 * 60   # 60 minutes max for slow cycle
+
+    # Independent diagnostic loop — fires every 10 min regardless of cycle state
+    async def _diagnostic_loop():
+        await asyncio.sleep(60)  # wait 1 min for first cycle to start
+        while True:
+            try:
+                run_cycle_diagnostics()
+            except Exception as _dl_e:
+                logger.error(f"[diagnostic_loop] failed: {_dl_e}")
+            await asyncio.sleep(600)  # 10 minutes
 
     try:
         if args.coin:
@@ -2010,22 +2978,22 @@ async def main():
                 print(result)
         elif args.loop:
             logger.info(f"Starting worker loop (interval: {args.interval} min)")
+            asyncio.create_task(_diagnostic_loop())
             cycle_counter = 0
             while True:
-                # Fast cycle — ALWAYS runs, must stay under 15 min
+                # Fast cycle — runs every interval
                 try:
                     await asyncio.wait_for(run_fast_cycle(), timeout=FAST_CYCLE_TIMEOUT)
                 except asyncio.TimeoutError:
-                    logger.error("Fast cycle exceeded 15-minute timeout")
+                    logger.error("Fast cycle exceeded 30-minute timeout")
 
-                # Slow cycle — runs every 3rd cycle (every ~3 hours)
-                # Uses parallel enrichment worker for concurrent execution
+                # Enrichment cycle — runs every cycle now that fast cycle is <20 min
                 cycle_counter += 1
-                if cycle_counter % 3 == 0:
-                    try:
-                        await asyncio.wait_for(run_slow_cycle_parallel(), timeout=SLOW_CYCLE_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.error("Slow cycle exceeded 60-minute timeout")
+                try:
+                    logger.error(f"=== Starting enrichment (cycle {cycle_counter}) ===")
+                    await asyncio.wait_for(run_slow_cycle_parallel(), timeout=SLOW_CYCLE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.error("Enrichment exceeded 60-minute timeout")
 
                 # Governance crawl — every 6th cycle (~6 hours)
                 if cycle_counter % 6 == 0:
