@@ -789,7 +789,7 @@ function PageHeader({ ts, mobile, coinCount, meta = {} }) {
   return (
     <TabHeader
       title={<><span style={{ fontWeight: 700 }}>Stablecoin</span> Integrity <span style={{ fontWeight: 700 }}>Index</span></>}
-      formId="FORM SII-001 · BASIS PROTOCOL"
+      formId="FORM SII-001"
       stats={[`${displayCount} STABLECOINS`, `${meta.componentCount || 37} SCORING COMPONENTS`, `${meta.dataSourceCount || 5} LIVE DATA SOURCES`, "DETERMINISTIC METHODOLOGY", "UPDATED HOURLY"]}
       formulaLine="SII = 0.30×Peg + 0.25×Liq + 0.20×Struct + 0.15×Flow + 0.10×Dist"
       versionLabel={`Methodology v1.0 · ${timestamp}`}
@@ -1439,7 +1439,7 @@ function MethodologyView({ mobile }) {
 
       <TabHeader
         title={<><span style={{ fontWeight: 700 }}>Scoring</span> Methodology</>}
-        formId="FORM MTH-001 · BASIS PROTOCOL"
+        formId="FORM MTH-001"
         stats={[
           `${indices.length} INDICES`,
           `${dataSources.length} DATA SOURCES`,
@@ -1870,7 +1870,7 @@ function WalletsView({ mobile, integrity }) {
 
       <TabHeader
         title={<><span style={{ fontWeight: 700 }}>Wallet</span> Risk <span style={{ fontWeight: 700 }}>Graph</span></>}
-        formId="FORM WRG-001 · BASIS PROTOCOL"
+        formId="FORM WRG-001"
         stats={[
           `${walletCount ? walletCount.toLocaleString() : "—"} WALLETS TRACKED`,
           `${edgeCount ? edgeCount.toLocaleString() : "—"} TRANSFER EDGES`,
@@ -2116,7 +2116,7 @@ function ProtocolsView({ mobile }) {
 
       <TabHeader
         title={<><span style={{ fontWeight: 700 }}>Protocol</span> Solvency <span style={{ fontWeight: 700 }}>Index</span></>}
-        formId="FORM PSI-001 · BASIS PROTOCOL"
+        formId="FORM PSI-001"
         stats={[
           `${protocols ? protocols.length : "—"} PROTOCOLS SCORED`,
           `${cqiData ? cqiData.count : "—"} CQI PAIRS`,
@@ -2394,7 +2394,7 @@ function PulseView({ mobile, integrity }) {
 
       <TabHeader
         title={<><span style={{ fontWeight: 700 }}>Daily</span> Pulse</>}
-        formId={`${s.pulse_date || pulse.pulse_date || "—"} · FORM PLS-001 · BASIS PROTOCOL`}
+        formId={`${s.pulse_date || pulse.pulse_date || "—"} · FORM PLS-001`}
         accent="#C4A882"
         mobile={mobile}
         showOnChain={false}
@@ -2698,7 +2698,7 @@ function WitnessView({ mobile, onSelectIssuer }) {
     <div style={{ padding: mobile ? "16px 0 32px" : "24px 0 64px" }}>
       <TabHeader
         title={<><span style={{ fontWeight: 700 }}>Basis</span> Witness</>}
-        formId="FORM CDA-001 · BASIS PROTOCOL"
+        formId="FORM CDA-001"
         stats={[
           `${issuers.length} ISSUERS TRACKED`,
           `${totalAttestations} ATTESTATIONS ARCHIVED`,
@@ -3185,17 +3185,40 @@ export default function App() {
             boxShadow: mobile ? "none" : `6px 6px 0 0 ${T.ruleMid}`,
             background: T.paper,
           }}>
-          {/* Tagline strip — reads as a subtitle for the whole box, sits
-              above the nav row with a hairline separator. Not uppercased. */}
+          {/* Masthead row — BASIS PROTOCOL wordmark anchors the frame;
+              tagline reads as a subtitle flowing from it. Vertical rule on
+              desktop, stacked on mobile. Sits above the nav row with a
+              hairline separator. */}
           <div style={{
             padding: mobile ? "6px 12px 4px" : "8px 24px 5px",
             borderBottom: `1px solid ${T.ruleLight}`,
-            fontFamily: T.mono,
-            fontSize: 11,
-            letterSpacing: 0.5,
-            color: T.inkMid,
+            display: "flex",
+            flexDirection: mobile ? "column" : "row",
+            alignItems: mobile ? "flex-start" : "center",
+            gap: mobile ? 2 : 14,
           }}>
-            Continuous risk measurement across stablecoins + protocols + exchanges + treasuries + bridges +++
+            <span style={{
+              fontFamily: T.mono,
+              fontSize: mobile ? 10 : 11,
+              fontWeight: 600,
+              color: T.ink,
+              textTransform: "uppercase",
+              letterSpacing: mobile ? 1 : 1.5,
+              flexShrink: 0,
+            }}>
+              Basis Protocol
+            </span>
+            {!mobile && (
+              <div style={{ width: 1, height: 12, background: T.ruleMid, flexShrink: 0 }} />
+            )}
+            <span style={{
+              fontFamily: T.mono,
+              fontSize: 11,
+              letterSpacing: 0.5,
+              color: T.inkMid,
+            }}>
+              Continuous risk measurement across stablecoins + protocols + exchanges + treasuries + bridges +++
+            </span>
           </div>
           <div style={{ padding: mobile ? "10px 12px" : "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <nav style={{ display: "flex", gap: mobile ? 12 : 16, overflowX: mobile ? "auto" : "visible", WebkitOverflowScrolling: "touch" }}>

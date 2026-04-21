@@ -1977,7 +1977,7 @@ function IndicesPanel() {
     <div style={{ animation: "fadeIn 0.3s ease" }}>
       <TabHeader
         title={<><span style={{ fontWeight: 700 }}>Index</span> Overview</>}
-        formId="FORM IDX-001 · BASIS PROTOCOL"
+        formId="FORM IDX-001"
         stats={[
           `${indicesLoaded > 0 ? INDEX_CONFIGS.length : "—"} indices`,
           `${totalEntities} entities`,
@@ -4355,7 +4355,7 @@ export default function OpsDashboard() {
               <div style={{ animation: "fadeIn 0.3s ease" }}>
                 <TabHeader
                   title={<><span style={{ fontWeight: 700 }}>Data</span> Layer</>}
-                  formId="FORM DL-001 · BASIS PROTOCOL"
+                  formId="FORM DL-001"
                   stats={["component coverage", "collector status", "data freshness"]}
                   accent="#0891b2"
                   mobile={false}
@@ -4369,7 +4369,7 @@ export default function OpsDashboard() {
               <div style={{ animation: "fadeIn 0.3s ease" }}>
                 <TabHeader
                   title={<><span style={{ fontWeight: 700 }}>System</span> Health</>}
-                  formId="FORM HL-001 · BASIS PROTOCOL"
+                  formId="FORM HL-001"
                   stats={[healthSummary, loading ? "loading..." : new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })]}
                   accent={warnings.length > 0 ? "#f39c12" : "#27ae60"}
                   mobile={false}
@@ -4394,7 +4394,7 @@ export default function OpsDashboard() {
               <div style={{ animation: "fadeIn 0.3s ease" }}>
                 <TabHeader
                   title={<><span style={{ fontWeight: 700 }}>Operations</span> Hub</>}
-                  formId="FORM OPS-001 · BASIS PROTOCOL"
+                  formId="FORM OPS-001"
                   stats={[healthSummary, loading ? "loading..." : new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })]}
                   accent={warnings.length > 0 ? "#f39c12" : "#27ae60"}
                   mobile={false}
