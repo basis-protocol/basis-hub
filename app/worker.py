@@ -2579,6 +2579,9 @@ async def main():
         "CREATE TABLE IF NOT EXISTS governance_voters (id BIGSERIAL PRIMARY KEY, protocol TEXT NOT NULL, source TEXT, proposal_id TEXT, voter_address TEXT NOT NULL, voting_power NUMERIC, choice INTEGER, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(protocol, proposal_id, voter_address))",
         "CREATE TABLE IF NOT EXISTS mint_burn_events (id BIGSERIAL PRIMARY KEY, stablecoin_id TEXT, chain TEXT NOT NULL DEFAULT 'ethereum', event_type TEXT NOT NULL, amount NUMERIC, tx_hash TEXT, block_number BIGINT, from_address TEXT, to_address TEXT, timestamp TIMESTAMPTZ, collected_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(chain, tx_hash, event_type))",
         "CREATE TABLE IF NOT EXISTS liquidity_depth (id BIGSERIAL PRIMARY KEY, asset_id TEXT NOT NULL, venue TEXT NOT NULL, chain TEXT NOT NULL DEFAULT 'ethereum', depth_usd_2pct NUMERIC, depth_usd_5pct NUMERIC, bid_depth NUMERIC, ask_depth NUMERIC, spread_bps NUMERIC, raw_data JSONB, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(asset_id, venue, chain, snapshot_at))",
+        "CREATE TABLE IF NOT EXISTS contract_surveillance (id SERIAL PRIMARY KEY, entity_id TEXT NOT NULL, chain TEXT NOT NULL, contract_address TEXT NOT NULL, has_admin_keys BOOLEAN, is_upgradeable BOOLEAN, has_pause_function BOOLEAN, has_blacklist BOOLEAN, timelock_hours NUMERIC, multisig_threshold TEXT, source_code_hash TEXT, analysis JSONB, scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(entity_id, chain, contract_address, scanned_at))",
+        "CREATE TABLE IF NOT EXISTS protocol_parameter_changes (id SERIAL PRIMARY KEY, protocol_slug VARCHAR(100) NOT NULL, protocol_id INTEGER, parameter_name VARCHAR(200) NOT NULL, parameter_key VARCHAR(200) NOT NULL, asset_address VARCHAR(42), asset_symbol VARCHAR(20), contract_address VARCHAR(42) NOT NULL, chain VARCHAR(20) NOT NULL, previous_value DECIMAL(30,8), previous_value_raw VARCHAR(200), new_value DECIMAL(30,8), new_value_raw VARCHAR(200), value_unit VARCHAR(50), change_magnitude DECIMAL(10,4), change_direction VARCHAR(10), changed_at TIMESTAMPTZ NOT NULL, detected_at TIMESTAMPTZ DEFAULT NOW(), concurrent_sii_score DECIMAL(6,2), concurrent_psi_score DECIMAL(6,2), hours_since_last_sii_change DECIMAL(8,2), sii_trend_7d DECIMAL(6,2), change_context VARCHAR(100), content_hash VARCHAR(66), attested_at TIMESTAMPTZ)",
+        "CREATE TABLE IF NOT EXISTS exchange_snapshots (id BIGSERIAL PRIMARY KEY, exchange_id TEXT NOT NULL, name TEXT, trust_score INTEGER, trust_score_rank INTEGER, trade_volume_24h_btc NUMERIC, year_established INTEGER, country TEXT, trading_pairs INTEGER, snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
     ]
     _data_layer_alters = [
         "ALTER TABLE governance_voters ADD COLUMN IF NOT EXISTS source TEXT",
@@ -2613,6 +2616,15 @@ async def main():
         "ALTER TABLE oracle_stress_events ADD COLUMN IF NOT EXISTS pre_stress_window_hours INTEGER DEFAULT 72",
         "ALTER TABLE oracle_stress_events ADD COLUMN IF NOT EXISTS pre_stress_readings_tagged INTEGER",
         "ALTER TABLE oracle_price_readings ADD COLUMN IF NOT EXISTS pre_stress_event_id BIGINT",
+        # Backfill tracking columns (migration 077)
+        "ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS backfill_source TEXT",
+        "ALTER TABLE generic_index_scores ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE generic_index_scores ADD COLUMN IF NOT EXISTS backfill_source TEXT",
+        "ALTER TABLE score_history ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE score_history ADD COLUMN IF NOT EXISTS backfill_source TEXT",
+        "ALTER TABLE rpi_score_history ADD COLUMN IF NOT EXISTS backfilled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE rpi_score_history ADD COLUMN IF NOT EXISTS backfill_source TEXT",
     ]
     for _alt in _oracle_alters:
         try:
