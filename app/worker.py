@@ -2627,6 +2627,23 @@ async def main():
     except Exception as _we:
         logger.error(f"[startup] wallets unique index failed: {_we}")
 
+    # Ensure unique constraints exist for all ON CONFLICT targets
+    _unique_indexes = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_voters_unique ON governance_voters (protocol, proposal_id, voter_address)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mint_burn_unique ON mint_burn_events (chain, tx_hash, event_type)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_liq_depth_unique ON liquidity_depth (asset_id, venue, chain, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_exchange_snap_unique ON exchange_snapshots (exchange_id, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_yield_snap_unique ON yield_snapshots (pool_id, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_peg_5m_unique ON peg_snapshots_5m (stablecoin_id, timestamp)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_snap_unique ON entity_snapshots_hourly (entity_id, entity_type, snapshot_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_surv_unique ON contract_surveillance (entity_id, chain, contract_address, scanned_at)",
+    ]
+    for _ui in _unique_indexes:
+        try:
+            execute(_ui)
+        except Exception as _ue:
+            logger.error(f"[startup] unique index failed: {_ui[:80]} — {_ue}")
+
     for _alt in _data_layer_alters:
         try:
             execute(_alt)
