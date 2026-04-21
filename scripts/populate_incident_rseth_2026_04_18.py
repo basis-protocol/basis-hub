@@ -46,7 +46,6 @@ SUMMARY = (
 #                                    paired with the Design column.
 #   3. peg_volatility_7d           — design-agnostic price-noise signal.
 #   4. market_cap                  — objective size anchor.
-#   5. top_holder_concentration    — objective distribution signal.
 #
 # Removed in v1.1 (see audits/lsti_rseth_audit_2026-04-20.md §V1.1):
 #   - dex_pool_depth      (collector-to-storage wiring gap)
@@ -56,7 +55,6 @@ Q4_COMPONENTS = [
     "eth_price_ratio",
     "peg_volatility_7d",
     "market_cap",
-    "top_holder_concentration",
 ]
 
 COMPONENT_META = {
@@ -92,13 +90,6 @@ COMPONENT_META = {
         "source": "CoinGecko",
         "note": "Live at capture time.",
     },
-    "top_holder_concentration": {
-        "label": "Top 10 Holder Share",
-        "category": "distribution",
-        "unit": "%",
-        "source": "Etherscan",
-        "note": "Live at capture time (24h cache).",
-    },
 }
 
 # Design type — Rebasing vs Reward-bearing. Baked here, not fetched live:
@@ -119,10 +110,10 @@ PEERS = [
 # without a live query) and use None otherwise so the page renders
 # "—" instead of a fabricated number.
 FALLBACK_VALUES = {
-    "kelp-rseth":       {"exploit_history_lst": 10,  "market_cap": None, "top_holder_concentration": None, "peg_volatility_7d": None, "eth_price_ratio": None},
-    "lido-steth":       {"exploit_history_lst": 100, "market_cap": None, "top_holder_concentration": None, "peg_volatility_7d": None, "eth_price_ratio": None},
-    "rocket-pool-reth": {"exploit_history_lst": 100, "market_cap": None, "top_holder_concentration": None, "peg_volatility_7d": None, "eth_price_ratio": None},
-    "etherfi-eeth":     {"exploit_history_lst": 100, "market_cap": None, "top_holder_concentration": None, "peg_volatility_7d": None, "eth_price_ratio": None},
+    "kelp-rseth":       {"exploit_history_lst": 10,  "market_cap": None, "peg_volatility_7d": None, "eth_price_ratio": None},
+    "lido-steth":       {"exploit_history_lst": 100, "market_cap": None, "peg_volatility_7d": None, "eth_price_ratio": None},
+    "rocket-pool-reth": {"exploit_history_lst": 100, "market_cap": None, "peg_volatility_7d": None, "eth_price_ratio": None},
+    "etherfi-eeth":     {"exploit_history_lst": 100, "market_cap": None, "peg_volatility_7d": None, "eth_price_ratio": None},
 }
 
 

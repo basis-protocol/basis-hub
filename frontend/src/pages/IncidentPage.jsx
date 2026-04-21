@@ -54,7 +54,6 @@ function formatValue(componentId, value) {
     case "eth_price_ratio":
       return n.toFixed(3);
     case "peg_volatility_7d":
-    case "top_holder_concentration":
       return `${n.toFixed(2)}%`;
     case "exploit_history_lst":
       return String(Math.round(n));
@@ -310,14 +309,12 @@ function ComparisonSection({ data, mobile }) {
                   const val = peers[p]?.values?.[compId];
                   const design = showDesign ? designLabel(peers[p]?.design) : null;
                   const isSubject = p === "kelp-rseth";
-                  const isSuspect = compId === "top_holder_concentration" && p === "etherfi-eeth" && val === 0;
                   return (
                     <div key={p} style={{ padding: "3px 0", borderBottom: `1px dotted ${T.ruleLight}` }}>
                       <div style={{ display: "flex", justifyContent: "space-between", fontFamily: T.mono, fontSize: 12, color: T.inkMid }}>
                         <span style={{ color: T.inkLight }}>{peerLabel(p)}</span>
                         <span style={{ fontWeight: isSubject ? 600 : 400, color: isSubject ? T.ink : T.inkMid }}>
                           {formatValue(compId, val)}
-                          {isSuspect ? " *" : ""}
                         </span>
                       </div>
                       {design && (
@@ -328,11 +325,6 @@ function ComparisonSection({ data, mobile }) {
                     </div>
                   );
                 })}
-                {compId === "top_holder_concentration" && (
-                  <div style={{ marginTop: 6, fontFamily: T.mono, fontSize: 10, color: T.inkFaint }}>
-                    * eETH 0.00% is a suspected contract-filter anomaly in the holder analyzer, under investigation.
-                  </div>
-                )}
               </div>
             );
           }
@@ -356,11 +348,10 @@ function ComparisonSection({ data, mobile }) {
                 const val = peers[p]?.values?.[compId];
                 const isSubject = p === "kelp-rseth";
                 const design = showDesign ? designLabel(peers[p]?.design) : null;
-                const isSuspect = compId === "top_holder_concentration" && p === "etherfi-eeth" && val === 0;
                 return (
                   <div key={p}>
                     <div style={{ fontFamily: T.mono, fontSize: 13, fontWeight: isSubject ? 600 : 400, color: isSubject ? T.ink : T.inkMid }}>
-                      {formatValue(compId, val)}{isSuspect ? " *" : ""}
+                      {formatValue(compId, val)}
                     </div>
                     {design && (
                       <div style={{ fontFamily: T.mono, fontSize: 10, color: T.inkFaint, letterSpacing: 0.3, marginTop: 2 }}>
@@ -380,11 +371,6 @@ function ComparisonSection({ data, mobile }) {
       <div style={{ marginTop: 10, fontFamily: T.mono, fontSize: 10, color: T.inkFaint, lineHeight: 1.5 }}>
         Bold column = rsETH. Static values noted as "static, updated 2026-04-20" reflect the post-incident audit update; see Section 4.
       </div>
-      {!mobile && order.includes("top_holder_concentration") && (
-        <div style={{ marginTop: 4, fontFamily: T.mono, fontSize: 10, color: T.inkFaint, lineHeight: 1.5 }}>
-          * eETH 0.00% is a suspected contract-filter anomaly in the holder analyzer, under investigation.
-        </div>
-      )}
 
       <div style={{
         marginTop: 18, padding: "12px 14px",

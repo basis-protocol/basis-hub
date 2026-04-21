@@ -350,3 +350,7 @@ The incident page and any forum reply derived from this audit cite the following
 | 5 | `top_holder_concentration` | Objective. eETH showing 0.00% is a suspected contract-filter bug in the holder analyzer — the incident page flags this inline rather than hiding the value. |
 
 Ranking order on the page matches this table. The share card renders only row 1 (`exploit_history_lst`) because the bar chart for a five-component comparison at 1200×630 becomes illegible; the card's role is the hook, and the incident page carries the full evidence.
+
+### Post-deploy: `top_holder_concentration` also removed
+
+Since this addendum's initial draft, `top_holder_concentration` was also removed from the forum-reply package. Three of four peers (rsETH, rETH, eETH) rendered as `0.00%` in production due to the same contract-filter issue in the holder analyzer that was inline-flagged in v1.1. One-of-four having a suspected-anomaly value was borderline publishable with a footnote; three-of-four is not — the row invites questions we can't answer cleanly, and the comparison is no longer cross-peer valid. Published package is now **4 rows**: `exploit_history_lst`, `eth_price_ratio`, `peg_volatility_7d`, `market_cap`. Follow-up investigation of the holder-analyzer contract-filter is pending and will restore `top_holder_concentration` to the package once resolved.
