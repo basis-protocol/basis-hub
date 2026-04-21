@@ -83,6 +83,11 @@ def score_entity(definition, raw_values):
         "components_available": components_available,
         "components_total": components_total,
         "coverage": coverage,
+        # V7.3 canonical names — aliases of components_available / coverage.
+        # TODO(basis-hub#confidence-rename): collapse to a single name in a
+        # later migration; two names for one field compounds if left.
+        "components_populated": components_available,
+        "component_coverage": coverage,
         "effective_category_weights": agg_result["effective_category_weights"],
         "withheld": agg_result["withheld"],
         "aggregation_method": agg_result["method"],
