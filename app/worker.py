@@ -2859,6 +2859,13 @@ async def main():
             pass
 
     # Startup diagnostic fires via the independent loop after 60s
+    # Schema validation — catch all drift in one shot
+    try:
+        from app.db_schema_validator import validate_schemas
+        validate_schemas()
+    except Exception as e:
+        logger.error(f"[schema_validator] failed to run: {e}")
+
     logger.error("[startup] schema fixes complete, diagnostics will fire in 60s via independent loop")
 
     # Seed email alert channel if not configured
