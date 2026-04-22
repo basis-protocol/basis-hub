@@ -840,6 +840,40 @@ async def run_enrichment_pipeline() -> dict:
     ))
 
     # =========================================================================
+    # Phase 2 Sprint 2: Multi-chain holder scans (weekly, Mode A)
+    # =========================================================================
+
+    async def _run_multichain_holders():
+        from app.data_layer.multichain_holder_collector import run_multichain_holder_scan
+        return await run_multichain_holder_scan()
+
+    pipeline.add(EnrichmentTask(
+        name="multichain_holders", func=_run_multichain_holders,
+        timeout_seconds=600, group="growth", priority=3,
+        gate_check=make_db_gate(
+            "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'holder_scan'",
+            min_hours=168,  # weekly
+        ),
+    ))
+
+    # =========================================================================
+    # Phase 2 Sprint 2: Wallet presence scanner (daily, Mode B)
+    # =========================================================================
+
+    async def _run_presence_scan():
+        from app.data_layer.wallet_presence_scanner import run_wallet_presence_scan
+        return await run_wallet_presence_scan()
+
+    pipeline.add(EnrichmentTask(
+        name="wallet_presence_scan", func=_run_presence_scan,
+        timeout_seconds=1800, group="background", priority=4,
+        gate_check=make_db_gate(
+            "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'presence_check'",
+            min_hours=22,  # daily
+        ),
+    ))
+
+    # =========================================================================
     # LLL Phase 1 Pipelines (daily, low-priority)
     # =========================================================================
 

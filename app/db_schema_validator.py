@@ -205,6 +205,11 @@ EXPECTED_COLUMNS = {
         "chain", "balance_raw", "balance_usd", "rank_in_entity",
         "discovered_at", "source",
     ],
+    "wallet_chain_presence": [
+        "id", "wallet_address", "chain", "chain_id", "first_seen_at",
+        "last_verified_at", "tx_count", "native_balance_wei",
+        "native_balance_usd", "token_count", "discovery_method", "discovery_entity",
+    ],
 }
 
 

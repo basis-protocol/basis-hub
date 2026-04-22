@@ -1,0 +1,55 @@
+{
+  "USDC": {
+    "ethereum": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "base": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "arbitrum": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "optimism": "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
+    "polygon": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"
+  },
+  "USDT": {
+    "ethereum": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "arbitrum": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "optimism": "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58",
+    "polygon": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f"
+  },
+  "DAI": {
+    "ethereum": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "base": "0x50c5725949a6f0c72e6c4a641f24049a917db0cb",
+    "arbitrum": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
+    "optimism": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
+    "polygon": "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063"
+  },
+  "FRAX": {
+    "ethereum": "0x853d955acef822db058eb8505911ed77f175b99e",
+    "arbitrum": "0x17fc002b466eec40dae837fc4be5c67993ddbd6f",
+    "optimism": "0x2e3d870790dc77a83dd1d18184acc7439a53f475"
+  },
+  "USDe": {
+    "ethereum": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "base": "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34",
+    "arbitrum": "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34"
+  },
+  "PYUSD": {
+    "ethereum": "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+  },
+  "wstETH": {
+    "ethereum": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+    "base": "0xc1cba3fcea344f92d9239c08c0568f6f2f0ee452",
+    "arbitrum": "0x5979d7b546e38e9ab8d6e7764db86afbc45bbead",
+    "optimism": "0x1f32b1c2345538c0c6f582fcb022739c4a194ebb"
+  },
+  "rETH": {
+    "ethereum": "0xae78736cd615f374d3085123a210448e74fc6393",
+    "arbitrum": "0xec70dcb4a1efa46b8f2d97c310c9c4790ba5ffa8",
+    "optimism": "0x9bcef72be871e61ed4fbbc7630889bee758eb81d"
+  },
+  "cbETH": {
+    "ethereum": "0xbe9895146f7af43049ca1c1ae358b0541ea49bba",
+    "base": "0x2ae3f1ec7f1f5012cfeab0185bfc7aa3cf0dec22"
+  },
+  "weETH": {
+    "ethereum": "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee",
+    "base": "0x04c0599ae5a44757c0af6f9ec3b93da8976c150a",
+    "arbitrum": "0x35751007a407ca6feffe80b3cb397736d2cf4dbe"
+  }
+}
