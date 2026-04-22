@@ -64,6 +64,7 @@ async def run_trace_collection() -> dict:
         logger.error(f"[trace_collector] DISABLED: cooldown active, {remaining}h remaining")
         return {"status": "disabled"}
 
+    logger.error("[trace_collector] step 1: querying rpi_protocol_config")
     protocols = fetch_all(
         "SELECT DISTINCT protocol_slug FROM rpi_protocol_config WHERE protocol_slug IS NOT NULL"
     )
@@ -72,9 +73,10 @@ async def run_trace_collection() -> dict:
         return {"protocols": 0}
 
     slugs = [r["protocol_slug"] for r in protocols]
-    logger.error(f"[trace_collector] starting: {len(slugs)} protocols")
+    logger.error(f"[trace_collector] step 2: {len(slugs)} protocols found")
 
     # Get contract addresses for each protocol
+    logger.error("[trace_collector] step 3: querying protocol_pool_wallets")
     addr_rows = fetch_all("""
         SELECT DISTINCT protocol_slug, wallet_address, chain
         FROM protocol_pool_wallets
@@ -87,20 +89,26 @@ async def run_trace_collection() -> dict:
             (r["wallet_address"], r.get("chain", "ethereum"))
         )
 
+    logger.error(f"[trace_collector] step 4: {len(proto_addrs)} protocols have addresses, entering loop")
+
     total_traces = 0
     total_reverts = 0
     total_errors = 0
     total_calls = 0
     protocols_processed = 0
 
+    logger.error("[trace_collector] step 5: creating httpx client")
     async with httpx.AsyncClient(timeout=30) as client:
-        for slug in slugs:
+        for i, slug in enumerate(slugs):
             addrs = proto_addrs.get(slug, [])
             if not addrs:
                 continue
 
             addr, chain = addrs[0]
             host = CHAIN_HOSTS.get(chain, CHAIN_HOSTS["ethereum"])
+
+            if i < 3 or i % 10 == 0:
+                logger.error(f"[trace_collector] loop {i}/{len(slugs)}: {slug} addr={addr[:12]}... chain={chain}")
 
             # Fetch recent txs for this protocol's primary address
             try:

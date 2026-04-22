@@ -84,6 +84,7 @@ class EnrichmentPipeline:
 
         async with semaphore:
             start = time.time()
+            logger.error(f"[enrichment] [{task.name}] acquired semaphore, executing...")
             try:
                 logger.error(f"[enrichment] [{task.name}] starting...")
                 result = await asyncio.wait_for(
@@ -836,8 +837,14 @@ async def run_enrichment_pipeline() -> dict:
     # =========================================================================
 
     async def _run_holder_ingestion():
-        from app.data_layer.holder_ingestion_collector import run_holder_ingestion
-        return await run_holder_ingestion()
+        try:
+            logger.error("[dispatch] _run_holder_ingestion coroutine entered")
+            from app.data_layer.holder_ingestion_collector import run_holder_ingestion
+            logger.error("[dispatch] holder_ingestion module imported OK")
+            return await run_holder_ingestion()
+        except Exception as e:
+            logger.error(f"[dispatch] holder_ingestion TOP-LEVEL EXCEPTION: {type(e).__name__}: {e}")
+            raise
 
     pipeline.add(EnrichmentTask(
         name="holder_ingestion", func=_run_holder_ingestion,
@@ -853,8 +860,14 @@ async def run_enrichment_pipeline() -> dict:
     # =========================================================================
 
     async def _run_multichain_holders():
-        from app.data_layer.multichain_holder_collector import run_multichain_holder_scan
-        return await run_multichain_holder_scan()
+        try:
+            logger.error("[dispatch] _run_multichain_holders coroutine entered")
+            from app.data_layer.multichain_holder_collector import run_multichain_holder_scan
+            logger.error("[dispatch] multichain_holder module imported OK")
+            return await run_multichain_holder_scan()
+        except Exception as e:
+            logger.error(f"[dispatch] multichain_holders TOP-LEVEL EXCEPTION: {type(e).__name__}: {e}")
+            raise
 
     pipeline.add(EnrichmentTask(
         name="multichain_holders", func=_run_multichain_holders,
@@ -870,8 +883,14 @@ async def run_enrichment_pipeline() -> dict:
     # =========================================================================
 
     async def _run_presence_scan():
-        from app.data_layer.wallet_presence_scanner import run_wallet_presence_scan
-        return await run_wallet_presence_scan()
+        try:
+            logger.error("[dispatch] _run_presence_scan coroutine entered")
+            from app.data_layer.wallet_presence_scanner import run_wallet_presence_scan
+            logger.error("[dispatch] wallet_presence module imported OK")
+            return await run_wallet_presence_scan()
+        except Exception as e:
+            logger.error(f"[dispatch] wallet_presence TOP-LEVEL EXCEPTION: {type(e).__name__}: {e}")
+            raise
 
     pipeline.add(EnrichmentTask(
         name="wallet_presence_scan", func=_run_presence_scan,

@@ -34,6 +34,7 @@ async def run_approval_collection() -> dict:
         logger.error(f"[approval_collector] DISABLED: cooldown active, {remaining}h remaining")
         return {"status": "disabled"}
 
+    logger.error("[approval_collector] step 1: querying wallet_graph.wallets")
     wallets = fetch_all(f"""
         SELECT address, total_stablecoin_value
         FROM wallet_graph.wallets
@@ -46,7 +47,7 @@ async def run_approval_collection() -> dict:
         logger.error("[approval_collector] no wallets found in wallet_graph.wallets")
         return {"wallets_scanned": 0}
 
-    logger.error(f"[approval_collector] starting: {len(wallets)} wallets to scan")
+    logger.error(f"[approval_collector] step 2: {len(wallets)} wallets found, entering loop")
 
     total_approvals_seen = 0
     total_unchanged = 0
@@ -55,11 +56,15 @@ async def run_approval_collection() -> dict:
     total_calls = 0
     max_allowance_usd = 0.0
 
+    logger.error("[approval_collector] step 3: creating httpx client")
     async with httpx.AsyncClient(timeout=30) as client:
-        for wallet_row in wallets:
+        for wi, wallet_row in enumerate(wallets):
             addr = wallet_row["address"]
             chain = "ethereum"
             host = CHAIN_HOSTS[chain]
+
+            if wi < 3 or wi % 100 == 0:
+                logger.error(f"[approval_collector] loop {wi}/{len(wallets)}: {addr[:12]}...")
 
             try:
                 from app.shared_rate_limiter import rate_limiter
