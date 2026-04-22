@@ -46,6 +46,7 @@ def _get_blockscout_24h_usage() -> int:
 
 
 async def run_wallet_presence_scan() -> dict:
+    logger.error("[wallet_presence] ENTRY — function called")
     usage = _get_blockscout_24h_usage()
     if usage > DAILY_CALL_CAP:
         logger.error(

@@ -957,6 +957,8 @@ async def run_enrichment_pipeline() -> dict:
     ))
 
     # ---- Run the pipeline ----
+    task_names = [t.name for t in pipeline._tasks]
+    logger.error(f"[enrichment] pipeline built: {len(task_names)} tasks: {', '.join(task_names)}")
     results = await pipeline.run()
 
     # Flush API usage tracker at end of pipeline

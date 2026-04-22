@@ -90,6 +90,7 @@ async def _fetch_holders_blockscout(
 
 
 async def run_multichain_holder_scan() -> dict:
+    logger.error("[multichain_holder] ENTRY — function called")
     usage = _get_blockscout_24h_usage()
     if usage > BLOCKSCOUT_DAILY_CAP:
         logger.error(

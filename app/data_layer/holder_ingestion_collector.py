@@ -195,6 +195,7 @@ def _parse_holder_balance(raw_qty: str, decimals: int = 18) -> float:
 
 async def run_holder_ingestion() -> dict:
     """Main entry: scan all scored entities, ingest holders, promote to wallet_graph."""
+    logger.error("[holder_ingestion] ENTRY — function called")
     api_key = os.environ.get("ETHERSCAN_API_KEY", "")
     if not api_key:
         logger.error("[holder_ingestion] no ETHERSCAN_API_KEY — cannot run")
