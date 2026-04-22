@@ -12,6 +12,14 @@ const ORACLE_ABI = [
   "function publishStateRoot(bytes32 stateRoot) external",
   "function reportTimestamps(bytes32 entityId) external view returns (uint48)",
   "function stateRootTimestamp() external view returns (uint48)",
+  // Read-only PSI accessor — used by scripts/diagnose_psi_state.ts to
+  // compare per-slug stored state across chains. Returns
+  // (score, grade, timestamp, version). Returns all zeros if slug was
+  // never published on that chain (mapping default).
+  "function getPsiScore(string calldata protocolSlug) external view returns (uint16, bytes2, uint48, uint16)",
+  // SII equivalent — read by address, surfaces the same struct shape. The
+  // storage name `scores` is auto-generated Solidity public getter.
+  "function scores(address token) external view returns (uint16 score, bytes2 grade, uint48 timestamp, uint16 version)",
 ];
 
 const SBT_ABI = [
@@ -137,9 +145,35 @@ export async function publishUpdates(
     gasLimit = (gasEstimate * 120n) / 100n;
     logger.info("SII gas estimated", { chain: chainKey, estimate: gasEstimate.toString(), limit: gasLimit.toString() });
   } catch (err) {
+    // Enhanced revert diagnostics (diagnose/psi-estimategas-revert). ethers
+    // surfaces contract require() messages via `reason` / `shortMessage`;
+    // raw revert data is on `data`; the attempted tx params on `transaction`.
+    // Also logs batch shape so we can spot array-length mismatches and the
+    // first element of each parallel array so the operator can cross-check
+    // against on-chain state via scripts/diagnose_psi_state.ts (SII uses
+    // the token-address mapping; the PSI script is the closer analog).
+    const errAny = err as any;
     logger.warn("SII gas estimate failed — tx would revert, skipping", {
       chain: chainKey,
-      error: err instanceof Error ? err.message : String(err),
+      method: "batchUpdateScores",
+      message: errAny?.message,
+      code: errAny?.code,
+      reason: errAny?.reason,
+      shortMessage: errAny?.shortMessage,
+      data: errAny?.data,
+      info: errAny?.info,
+      txFrom: errAny?.transaction?.from,
+      txTo: errAny?.transaction?.to,
+      tokensCount: tokens.length,
+      scoresCount: scores.length,
+      gradesCount: grades.length,
+      timestampsCount: timestamps.length,
+      versionsCount: versions.length,
+      firstToken: tokens[0],
+      firstScore: scores[0],
+      firstGrade: grades[0],
+      firstTimestamp: timestamps[0],
+      firstVersion: versions[0],
     });
     return null;
   }
@@ -248,9 +282,39 @@ export async function publishPsiScores(
     psiGasLimit = (gasEstimate * 120n) / 100n;
     logger.info("PSI gas estimated", { chain: chainKey, estimate: gasEstimate.toString(), limit: psiGasLimit.toString() });
   } catch (err) {
+    // Enhanced revert diagnostics (diagnose/psi-estimategas-revert). The
+    // BasisSIIOracle PSI path has four per-slug requires inside
+    // updatePsiScore (called by batchUpdatePsiScores):
+    //   - "Basis: empty slug"
+    //   - "Basis: score out of range"       (score > 10000)
+    //   - "Basis: future timestamp"         (timestamp > block.timestamp)
+    //   - "Basis: stale update"             (timestamp <= stored)
+    // Any single failing slug reverts the whole batch. This block captures
+    // enough context to identify which one fired. Cross-reference with
+    // scripts/diagnose_psi_state.ts which reads on-chain state per slug
+    // from both Base and Arbitrum.
+    const errAny = err as any;
     logger.warn("PSI gas estimate failed — tx would revert, skipping", {
       chain: chainKey,
-      error: err instanceof Error ? err.message : String(err),
+      method: "batchUpdatePsiScores",
+      message: errAny?.message,
+      code: errAny?.code,
+      reason: errAny?.reason,
+      shortMessage: errAny?.shortMessage,
+      data: errAny?.data,
+      info: errAny?.info,
+      txFrom: errAny?.transaction?.from,
+      txTo: errAny?.transaction?.to,
+      slugsCount: slugs.length,
+      scoresCount: scores.length,
+      gradesCount: grades.length,
+      timestampsCount: timestamps.length,
+      versionsCount: versions.length,
+      firstSlug: slugs[0],
+      firstScore: scores[0],
+      firstGrade: grades[0],
+      firstTimestamp: timestamps[0],
+      firstVersion: versions[0],
     });
     return null;
   }
@@ -332,10 +396,23 @@ export async function publishReportHashes(
         );
         reportGasLimit = (est * 120n) / 100n;
       } catch (estErr) {
+        // Enhanced revert diagnostics — mirrors the SII/PSI catch blocks
+        // so every estimateGas failure surfaces the same structured fields.
+        const estErrAny = estErr as any;
         logger.warn("Report hash gas estimate failed — skipping", {
           chain: chainKey,
+          method: "publishReportHash",
           entityId: u.entityId.slice(0, 18),
-          error: estErr instanceof Error ? estErr.message : String(estErr),
+          reportHash: u.reportHash?.slice?.(0, 18),
+          lensId: u.lensId,
+          message: estErrAny?.message,
+          code: estErrAny?.code,
+          reason: estErrAny?.reason,
+          shortMessage: estErrAny?.shortMessage,
+          data: estErrAny?.data,
+          info: estErrAny?.info,
+          txFrom: estErrAny?.transaction?.from,
+          txTo: estErrAny?.transaction?.to,
         });
         continue;
       }
@@ -395,9 +472,21 @@ export async function publishStateRoot(
       const est = await (oracle.publishStateRoot as ethers.BaseContractMethod).estimateGas(stateRootHash);
       stateRootGasLimit = (est * 120n) / 100n;
     } catch (estErr) {
+      // Enhanced revert diagnostics — consistent shape across every
+      // estimateGas catch in this file.
+      const estErrAny = estErr as any;
       logger.warn("State root gas estimate failed — tx would revert, skipping", {
         chain: chainKey,
-        error: estErr instanceof Error ? estErr.message : String(estErr),
+        method: "publishStateRoot",
+        stateRootHash: stateRootHash?.slice?.(0, 18),
+        message: estErrAny?.message,
+        code: estErrAny?.code,
+        reason: estErrAny?.reason,
+        shortMessage: estErrAny?.shortMessage,
+        data: estErrAny?.data,
+        info: estErrAny?.info,
+        txFrom: estErrAny?.transaction?.from,
+        txTo: estErrAny?.transaction?.to,
       });
       return false;
     }
