@@ -1167,11 +1167,11 @@ async def run_collection():
     )
 
     if not issuers:
-        logger.warning("No active issuers in registry")
+        logger.error("[cda_vendor] no active issuers in registry")
         return
 
     total = len(issuers)
-    logger.info(f"Processing {total} issuers")
+    logger.error(f"[cda_vendor] starting: {total} issuers to scan")
 
     results = {"success": 0, "partial": 0, "failed": 0, "skipped": 0}
 
@@ -1204,11 +1204,9 @@ async def run_collection():
         if i < total:
             await asyncio.sleep(2)
 
-    logger.info(
-        f"=== CDA Collection Complete: "
-        f"{results['success']} success, {results['partial']} partial, "
-        f"{results['failed']} failed, {results['skipped']} skipped "
-        f"out of {total} ==="
+    logger.error(
+        f"[cda_vendor] SUMMARY: scanned={total}, success={results['success']}, "
+        f"partial={results['partial']}, failed={results['failed']}, skipped={results['skipped']}"
     )
 
     # Attest CDA extractions from this run

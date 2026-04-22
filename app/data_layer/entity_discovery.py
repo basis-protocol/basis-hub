@@ -159,11 +159,13 @@ async def run_entity_discovery() -> dict:
     Returns summary.
     """
     existing = _get_existing_entities()
+    logger.error(f"[discovery] starting: {len(existing)} existing entities tracked")
 
     async with httpx.AsyncClient(timeout=30) as client:
         protocols = await _fetch_protocols(client)
 
     if not protocols:
+        logger.error("[discovery] ZERO protocols fetched from DeFiLlama — upstream may be down")
         return {"error": "no protocols fetched from DeFiLlama"}
 
     candidates = []
@@ -208,9 +210,10 @@ async def run_entity_discovery() -> dict:
         idx: len(entities) for idx, entities in by_index.items()
     }
 
-    logger.info(
-        f"Entity discovery complete: {len(candidates)} new candidates "
-        f"across {len(by_index)} indices from {len(protocols)} protocols scanned"
+    logger.error(
+        f"[discovery] SUMMARY: sources_scanned={len(protocols)}, "
+        f"already_tracked={len(existing)}, signals_found={len(candidates)}, "
+        f"by_index={index_summary}"
     )
 
     return {

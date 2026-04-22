@@ -383,6 +383,11 @@ def run_governance_event_collection() -> dict:
     total_skipped = 0
     protocols_processed = []
 
+    logger.error(
+        f"[gov_events] starting: {len(SNAPSHOT_SPACES)} snapshot spaces, "
+        f"{len(TALLY_ORGS)} tally orgs to scan"
+    )
+
     # Snapshot events
     for slug, space_id in SNAPSHOT_SPACES.items():
         try:
@@ -397,7 +402,7 @@ def run_governance_event_collection() -> dict:
             logger.info(f"Governance events ({slug}/snapshot): {new} new, {len(events) - new} existing")
             time.sleep(0.5)  # rate limit Snapshot
         except Exception as e:
-            logger.warning(f"Snapshot collection failed for {slug}: {e}")
+            logger.error(f"[gov_events] snapshot failed for {slug}: {e}")
 
     # Tally events
     for slug, org_slug in TALLY_ORGS.items():
@@ -414,7 +419,7 @@ def run_governance_event_collection() -> dict:
             logger.info(f"Governance events ({slug}/tally): {new} new, {len(events) - new} existing")
             time.sleep(0.5)  # rate limit Tally
         except Exception as e:
-            logger.warning(f"Tally collection failed for {slug}: {e}")
+            logger.error(f"[gov_events] tally failed for {slug}: {e}")
 
     # Attest governance events
     try:
@@ -425,6 +430,11 @@ def run_governance_event_collection() -> dict:
         ])
     except Exception as e:
         logger.warning(f"Governance events attestation failed: {e}")
+
+    logger.error(
+        f"[gov_events] SUMMARY: protocols_scanned={len(protocols_processed)}, "
+        f"new_events={total_new}, skipped_duplicates={total_skipped}"
+    )
 
     return {
         "protocols_processed": len(protocols_processed),
