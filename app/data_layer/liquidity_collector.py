@@ -267,6 +267,8 @@ def _store_liquidity_records(records: list[dict]):
     stored = 0
     errors = 0
     for rec in records:
+        if rec.get("venue_type") == "cex" and not rec.get("chain"):
+            rec["chain"] = "cex"
         try:
             with get_cursor() as cur:
                 cur.execute(

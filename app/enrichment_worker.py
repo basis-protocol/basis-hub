@@ -144,7 +144,15 @@ class EnrichmentPipeline:
             for task in group_tasks:
                 all_coros.append(self._execute_task(task, semaphore))
 
-        self._results = await asyncio.gather(*all_coros, return_exceptions=False)
+        raw_results = await asyncio.gather(*all_coros, return_exceptions=True)
+        self._results = []
+        for r in raw_results:
+            if isinstance(r, BaseException):
+                self._results.append(TaskResult(
+                    name="unknown", success=False, elapsed_seconds=0, error=str(r),
+                ))
+            else:
+                self._results.append(r)
 
         elapsed = time.time() - start
         successes = sum(1 for r in self._results if r.success)
@@ -233,7 +241,7 @@ async def run_enrichment_pipeline() -> dict:
     Returns summary of all task results.
     """
     logger.error("[enrichment] run_enrichment_pipeline() ENTERED — building task list")
-    pipeline = EnrichmentPipeline(max_concurrent=6)
+    pipeline = EnrichmentPipeline(max_concurrent=15)
 
     # ---- Circle 7 indices (all run concurrently) ----
 
