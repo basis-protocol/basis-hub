@@ -8,6 +8,7 @@ those chains and records chain presence.
 Budget: ~40 Blockscout calls per weekly sweep (<0.05% of 100K/day).
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -241,3 +242,34 @@ async def run_multichain_holder_scan() -> dict:
         "total_new_presences": total_presences,
         "blockscout_calls": total_calls,
     }
+
+
+async def multichain_holder_background_loop():
+    """Independent background loop — runs multi-chain holder scan weekly."""
+    logger.error("[multichain_bg] background loop started")
+    await asyncio.sleep(120)  # stagger behind holder_ingestion
+
+    while True:
+        try:
+            logger.error("[multichain_bg] loop tick, checking gate")
+            last = fetch_one(
+                "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'holder_scan'"
+            )
+            latest = last.get("latest") if last else None
+
+            if latest:
+                if latest.tzinfo is None:
+                    latest = latest.replace(tzinfo=datetime.now(timezone.utc).tzinfo)
+                age_h = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+                if age_h < 168:
+                    logger.error(f"[multichain_bg] gate closed, last run {age_h:.0f}h ago")
+                    await asyncio.sleep(3600)
+                    continue
+
+            logger.error("[multichain_bg] gate open, running scan")
+            result = await run_multichain_holder_scan()
+            logger.error(f"[multichain_bg] scan complete: {result}")
+            await asyncio.sleep(168 * 3600)
+        except Exception as e:
+            logger.error(f"[multichain_bg] ERROR: {type(e).__name__}: {e}")
+            await asyncio.sleep(300)

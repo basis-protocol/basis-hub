@@ -832,74 +832,8 @@ async def run_enrichment_pipeline() -> dict:
         ),
     ))
 
-    # =========================================================================
-    # Phase 2 Sprint 1: Wallet holder ingestion (weekly)
-    # =========================================================================
-
-    async def _run_holder_ingestion():
-        try:
-            logger.error("[dispatch] _run_holder_ingestion coroutine entered")
-            from app.data_layer.holder_ingestion_collector import run_holder_ingestion
-            logger.error("[dispatch] holder_ingestion module imported OK")
-            return await run_holder_ingestion()
-        except Exception as e:
-            logger.error(f"[dispatch] holder_ingestion TOP-LEVEL EXCEPTION: {type(e).__name__}: {e}")
-            raise
-
-    pipeline.add(EnrichmentTask(
-        name="holder_ingestion", func=_run_holder_ingestion,
-        timeout_seconds=900, group="growth", priority=3,
-        gate_check=make_db_gate(
-            "SELECT MAX(discovered_at) AS latest FROM wallet_holder_discovery",
-            min_hours=168,  # weekly
-        ),
-    ))
-
-    # =========================================================================
-    # Phase 2 Sprint 2: Multi-chain holder scans (weekly, Mode A)
-    # =========================================================================
-
-    async def _run_multichain_holders():
-        try:
-            logger.error("[dispatch] _run_multichain_holders coroutine entered")
-            from app.data_layer.multichain_holder_collector import run_multichain_holder_scan
-            logger.error("[dispatch] multichain_holder module imported OK")
-            return await run_multichain_holder_scan()
-        except Exception as e:
-            logger.error(f"[dispatch] multichain_holders TOP-LEVEL EXCEPTION: {type(e).__name__}: {e}")
-            raise
-
-    pipeline.add(EnrichmentTask(
-        name="multichain_holders", func=_run_multichain_holders,
-        timeout_seconds=600, group="growth", priority=3,
-        gate_check=make_db_gate(
-            "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'holder_scan'",
-            min_hours=168,  # weekly
-        ),
-    ))
-
-    # =========================================================================
-    # Phase 2 Sprint 2: Wallet presence scanner (daily, Mode B)
-    # =========================================================================
-
-    async def _run_presence_scan():
-        try:
-            logger.error("[dispatch] _run_presence_scan coroutine entered")
-            from app.data_layer.wallet_presence_scanner import run_wallet_presence_scan
-            logger.error("[dispatch] wallet_presence module imported OK")
-            return await run_wallet_presence_scan()
-        except Exception as e:
-            logger.error(f"[dispatch] wallet_presence TOP-LEVEL EXCEPTION: {type(e).__name__}: {e}")
-            raise
-
-    pipeline.add(EnrichmentTask(
-        name="wallet_presence_scan", func=_run_presence_scan,
-        timeout_seconds=1800, group="background", priority=4,
-        gate_check=make_db_gate(
-            "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'presence_check'",
-            min_hours=22,  # daily
-        ),
-    ))
+    # Phase 2 collectors (holder_ingestion, multichain_holders, wallet_presence)
+    # moved to independent background loops in worker.py main() — see ZZZ sidestep.
 
     # =========================================================================
     # LLL Phase 1 Pipelines (daily, low-priority)

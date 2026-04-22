@@ -3331,6 +3331,28 @@ async def main():
             except Exception as _oc_err:
                 logger.error(f"[startup] oracle cadence loop failed to launch: {_oc_err}")
 
+            # Phase 2 background loops (sidestep enrichment pipeline)
+            try:
+                from app.data_layer.holder_ingestion_collector import holder_ingestion_background_loop
+                asyncio.create_task(holder_ingestion_background_loop())
+                logger.error("[startup] holder_ingestion background loop launched (weekly)")
+            except Exception as _hi_err:
+                logger.error(f"[startup] holder_ingestion loop failed to launch: {_hi_err}")
+
+            try:
+                from app.data_layer.multichain_holder_collector import multichain_holder_background_loop
+                asyncio.create_task(multichain_holder_background_loop())
+                logger.error("[startup] multichain_holder background loop launched (weekly)")
+            except Exception as _mh_err:
+                logger.error(f"[startup] multichain_holder loop failed to launch: {_mh_err}")
+
+            try:
+                from app.data_layer.wallet_presence_scanner import wallet_presence_background_loop
+                asyncio.create_task(wallet_presence_background_loop())
+                logger.error("[startup] wallet_presence background loop launched (daily)")
+            except Exception as _wp_err:
+                logger.error(f"[startup] wallet_presence loop failed to launch: {_wp_err}")
+
             cycle_counter = 0
             while True:
                 # Fast cycle — runs every interval

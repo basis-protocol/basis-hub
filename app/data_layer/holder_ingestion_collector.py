@@ -10,6 +10,7 @@ Budget: ~100 Etherscan calls per weekly sweep (0.05% of 200K/day plan).
 """
 
 import asyncio
+import asyncio
 import hashlib
 import json
 import logging
@@ -359,3 +360,36 @@ async def run_holder_ingestion() -> dict:
         "total_holders_found": total_holders,
         "etherscan_calls": total_calls,
     }
+
+
+LOOP_INTERVAL = 168 * 3600  # 168 hours = 1 week
+
+
+async def holder_ingestion_background_loop():
+    """Independent background loop — runs holder ingestion on a weekly cadence."""
+    logger.error("[holder_ingestion_bg] background loop started")
+    await asyncio.sleep(60)  # initial delay for pool init
+
+    while True:
+        try:
+            logger.error("[holder_ingestion_bg] loop tick, checking gate")
+            last = fetch_one("SELECT MAX(discovered_at) AS latest FROM wallet_holder_discovery")
+            latest = last.get("latest") if last else None
+
+            if latest:
+                if latest.tzinfo is None:
+                    latest = latest.replace(tzinfo=timezone.utc)
+                age_h = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+                if age_h < 168:
+                    logger.error(f"[holder_ingestion_bg] gate closed, last run {age_h:.0f}h ago, sleeping")
+                    await asyncio.sleep(3600)
+                    continue
+
+            logger.error("[holder_ingestion_bg] gate open, running scan")
+            result = await run_holder_ingestion()
+            logger.error(f"[holder_ingestion_bg] scan complete: {result}")
+            logger.error(f"[holder_ingestion_bg] sleeping {LOOP_INTERVAL // 3600}h")
+            await asyncio.sleep(LOOP_INTERVAL)
+        except Exception as e:
+            logger.error(f"[holder_ingestion_bg] ERROR: {type(e).__name__}: {e}")
+            await asyncio.sleep(300)  # retry in 5 min on error

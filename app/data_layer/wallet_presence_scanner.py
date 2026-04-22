@@ -181,3 +181,34 @@ async def run_wallet_presence_scan() -> dict:
         "total_new_presences": total_presences,
         "errors": errors,
     }
+
+
+async def wallet_presence_background_loop():
+    """Independent background loop — runs presence scan daily."""
+    logger.error("[presence_bg] background loop started")
+    await asyncio.sleep(180)  # stagger behind holder loops
+
+    while True:
+        try:
+            logger.error("[presence_bg] loop tick, checking gate")
+            last = fetch_one(
+                "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'presence_check'"
+            )
+            latest = last.get("latest") if last else None
+
+            if latest:
+                if latest.tzinfo is None:
+                    latest = latest.replace(tzinfo=datetime.now(timezone.utc).tzinfo)
+                age_h = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+                if age_h < 22:
+                    logger.error(f"[presence_bg] gate closed, last run {age_h:.0f}h ago")
+                    await asyncio.sleep(3600)
+                    continue
+
+            logger.error("[presence_bg] gate open, running scan")
+            result = await run_wallet_presence_scan()
+            logger.error(f"[presence_bg] scan complete: {result}")
+            await asyncio.sleep(22 * 3600)
+        except Exception as e:
+            logger.error(f"[presence_bg] ERROR: {type(e).__name__}: {e}")
+            await asyncio.sleep(300)
