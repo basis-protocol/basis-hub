@@ -22,6 +22,10 @@ from app.database import fetch_all, fetch_one, get_cursor
 
 logger = logging.getLogger(__name__)
 
+_client = httpx.AsyncClient(
+    timeout=30, limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+)
+
 CHAIN_HOSTS = {
     "ethereum": "eth.blockscout.com",
     "base": "base.blockscout.com",
@@ -121,7 +125,8 @@ async def run_multichain_holder_scan() -> dict:
     stats = defaultdict(lambda: {"scanned": 0, "holders": 0, "new_wallets": 0, "new_presences": 0, "errors": 0})
     total_calls = 0
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    client = _client
+    if True:
         for scan in scans:
             chain = scan["chain"]
             symbol = scan["symbol"]

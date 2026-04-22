@@ -20,6 +20,10 @@ from app.database import fetch_all, fetch_one, get_cursor
 
 logger = logging.getLogger(__name__)
 
+_client = httpx.AsyncClient(
+    timeout=15, limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+)
+
 CHAIN_HOSTS = {
     "base": "base.blockscout.com",
     "arbitrum": "arbitrum.blockscout.com",
@@ -91,7 +95,8 @@ async def run_wallet_presence_scan() -> dict:
     errors = 0
     remaining_budget = DAILY_CALL_CAP - usage
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    client = _client
+    if True:
         for addr in addresses:
             if total_calls >= remaining_budget:
                 logger.error(f"[wallet_presence] budget reached after {total_calls} calls, stopping")

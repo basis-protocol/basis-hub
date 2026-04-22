@@ -24,6 +24,10 @@ from app.database import fetch_all, fetch_one, get_cursor
 
 logger = logging.getLogger(__name__)
 
+_client = httpx.AsyncClient(
+    timeout=30, limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+)
+
 USD_THRESHOLD = 10_000
 MAX_CALLS_PER_RUN = 500
 ETHERSCAN_BASE = "https://api.etherscan.io/api"
@@ -210,7 +214,8 @@ async def run_holder_ingestion() -> dict:
     stats = defaultdict(lambda: {"scanned": 0, "holders_found": 0, "new_wallets": 0, "errors": 0})
     total_calls = 0
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    client = _client
+    if True:
         for i, spec in enumerate(specs):
             if total_calls >= MAX_CALLS_PER_RUN:
                 logger.error(f"[holder_ingestion] ABORTED: {total_calls} calls exceeded {MAX_CALLS_PER_RUN} budget")

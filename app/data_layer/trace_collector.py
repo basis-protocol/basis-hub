@@ -16,6 +16,10 @@ from app.database import fetch_all, fetch_one, get_cursor
 
 logger = logging.getLogger(__name__)
 
+_client = httpx.AsyncClient(
+    timeout=30, limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+)
+
 CHAIN_HOSTS = {
     "ethereum": "eth.blockscout.com",
     "base": "base.blockscout.com",
@@ -97,85 +101,85 @@ async def run_trace_collection() -> dict:
     total_calls = 0
     protocols_processed = 0
 
-    logger.error("[trace_collector] step 5: creating httpx client")
-    async with httpx.AsyncClient(timeout=30) as client:
-        for i, slug in enumerate(slugs):
-            addrs = proto_addrs.get(slug, [])
-            if not addrs:
+    logger.error("[trace_collector] step 5: entering main loop (using module-level httpx client)")
+    client = _client
+    for i, slug in enumerate(slugs):
+        addrs = proto_addrs.get(slug, [])
+        if not addrs:
+            continue
+
+        addr, chain = addrs[0]
+        host = CHAIN_HOSTS.get(chain, CHAIN_HOSTS["ethereum"])
+
+        if i < 3 or i % 10 == 0:
+            logger.error(f"[trace_collector] loop {i}/{len(slugs)}: {slug} addr={addr[:12]}... chain={chain}")
+
+        # Fetch recent txs for this protocol's primary address
+        try:
+            from app.shared_rate_limiter import rate_limiter
+            await rate_limiter.acquire("blockscout")
+            total_calls += 1
+
+            tx_url = f"https://{host}/api/v2/addresses/{addr}/transactions"
+            resp = await client.get(tx_url, params={"filter": "to", "limit": MAX_TXS_PER_PROTOCOL})
+            if resp.status_code != 200:
+                total_errors += 1
                 continue
 
-            addr, chain = addrs[0]
-            host = CHAIN_HOSTS.get(chain, CHAIN_HOSTS["ethereum"])
+            items = resp.json().get("items", [])
+            protocols_processed += 1
+        except Exception as e:
+            total_errors += 1
+            logger.error(f"[trace_collector] tx fetch failed for {slug}: {e}")
+            continue
 
-            if i < 3 or i % 10 == 0:
-                logger.error(f"[trace_collector] loop {i}/{len(slugs)}: {slug} addr={addr[:12]}... chain={chain}")
+        # Fetch trace for each tx
+        for tx_item in items[:MAX_TXS_PER_PROTOCOL]:
+            tx_hash = tx_item.get("hash")
+            if not tx_hash:
+                continue
 
-            # Fetch recent txs for this protocol's primary address
             try:
-                from app.shared_rate_limiter import rate_limiter
                 await rate_limiter.acquire("blockscout")
                 total_calls += 1
 
-                tx_url = f"https://{host}/api/v2/addresses/{addr}/transactions"
-                resp = await client.get(tx_url, params={"filter": "to", "limit": MAX_TXS_PER_PROTOCOL})
-                if resp.status_code != 200:
+                trace_url = f"https://{host}/api/v2/transactions/{tx_hash}/raw-trace"
+                trace_resp = await client.get(trace_url)
+
+                if trace_resp.status_code != 200:
                     total_errors += 1
                     continue
 
-                items = resp.json().get("items", [])
-                protocols_processed += 1
+                trace_data = trace_resp.json()
+                depth, call_count = _parse_trace_depth(trace_data)
+                block_num = tx_item.get("block_number") or tx_item.get("block", 0)
+                revert = tx_item.get("revert_reason")
+
+                ch = _content_hash(tx_hash, chain, block_num)
+
+                with get_cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO protocol_trace_observations
+                            (tx_hash, protocol_slug, chain, block_number, value_usd,
+                             trace_json, trace_depth, internal_call_count, revert_reason,
+                             content_hash)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (tx_hash, chain) DO NOTHING
+                    """, (
+                        tx_hash, slug, chain, block_num,
+                        tx_item.get("value"),
+                        json.dumps(trace_data),
+                        depth, call_count, revert, ch,
+                    ))
+
+                total_traces += 1
+                if revert:
+                    total_reverts += 1
+
             except Exception as e:
                 total_errors += 1
-                logger.error(f"[trace_collector] tx fetch failed for {slug}: {e}")
-                continue
-
-            # Fetch trace for each tx
-            for tx_item in items[:MAX_TXS_PER_PROTOCOL]:
-                tx_hash = tx_item.get("hash")
-                if not tx_hash:
-                    continue
-
-                try:
-                    await rate_limiter.acquire("blockscout")
-                    total_calls += 1
-
-                    trace_url = f"https://{host}/api/v2/transactions/{tx_hash}/raw-trace"
-                    trace_resp = await client.get(trace_url)
-
-                    if trace_resp.status_code != 200:
-                        total_errors += 1
-                        continue
-
-                    trace_data = trace_resp.json()
-                    depth, call_count = _parse_trace_depth(trace_data)
-                    block_num = tx_item.get("block_number") or tx_item.get("block", 0)
-                    revert = tx_item.get("revert_reason")
-
-                    ch = _content_hash(tx_hash, chain, block_num)
-
-                    with get_cursor() as cur:
-                        cur.execute("""
-                            INSERT INTO protocol_trace_observations
-                                (tx_hash, protocol_slug, chain, block_number, value_usd,
-                                 trace_json, trace_depth, internal_call_count, revert_reason,
-                                 content_hash)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (tx_hash, chain) DO NOTHING
-                        """, (
-                            tx_hash, slug, chain, block_num,
-                            tx_item.get("value"),
-                            json.dumps(trace_data),
-                            depth, call_count, revert, ch,
-                        ))
-
-                    total_traces += 1
-                    if revert:
-                        total_reverts += 1
-
-                except Exception as e:
-                    total_errors += 1
-                    if total_errors <= 3:
-                        logger.error(f"[trace_collector] trace fetch failed {tx_hash[:12]}...: {e}")
+                if total_errors <= 3:
+                    logger.error(f"[trace_collector] trace fetch failed {tx_hash[:12]}...: {e}")
 
     # Kill signal: >20% error rate
     total_fetches = total_calls - len(slugs)  # subtract tx list fetches

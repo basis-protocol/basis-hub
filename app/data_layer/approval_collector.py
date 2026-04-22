@@ -15,6 +15,10 @@ from app.database import fetch_all, fetch_one, get_cursor
 
 logger = logging.getLogger(__name__)
 
+_client = httpx.AsyncClient(
+    timeout=30, limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+)
+
 CHAIN_HOSTS = {
     "ethereum": "eth.blockscout.com",
     "base": "base.blockscout.com",
@@ -56,93 +60,92 @@ async def run_approval_collection() -> dict:
     total_calls = 0
     max_allowance_usd = 0.0
 
-    logger.error("[approval_collector] step 3: creating httpx client")
-    async with httpx.AsyncClient(timeout=30) as client:
-        for wi, wallet_row in enumerate(wallets):
-            addr = wallet_row["address"]
-            chain = "ethereum"
-            host = CHAIN_HOSTS[chain]
+    logger.error("[approval_collector] step 3: entering main loop (using module-level httpx client)")
+    client = _client
+    for wi, wallet_row in enumerate(wallets):
+        addr = wallet_row["address"]
+        chain = "ethereum"
+        host = CHAIN_HOSTS[chain]
 
-            if wi < 3 or wi % 100 == 0:
-                logger.error(f"[approval_collector] loop {wi}/{len(wallets)}: {addr[:12]}...")
+        if wi < 3 or wi % 100 == 0:
+            logger.error(f"[approval_collector] loop {wi}/{len(wallets)}: {addr[:12]}...")
 
-            try:
-                from app.shared_rate_limiter import rate_limiter
-                await rate_limiter.acquire("blockscout")
-                total_calls += 1
+        try:
+            from app.shared_rate_limiter import rate_limiter
+            await rate_limiter.acquire("blockscout")
+            total_calls += 1
 
-                url = f"https://{host}/api/v2/addresses/{addr}/token-transfers"
-                resp = await client.get(url, params={"type": "ERC-20", "filter": "from", "limit": 50})
+            url = f"https://{host}/api/v2/addresses/{addr}/token-transfers"
+            resp = await client.get(url, params={"type": "ERC-20", "filter": "from", "limit": 50})
 
-                if resp.status_code == 404:
-                    continue
-                if resp.status_code != 200:
-                    total_errors += 1
-                    continue
-
-                data = resp.json()
-                items = data.get("items", [])
-
-                seen_approvals = set()
-                for item in items:
-                    token_addr = (item.get("token", {}).get("address") or "").lower()
-                    to_addr = (item.get("to", {}).get("hash") or "").lower()
-                    if not token_addr or not to_addr:
-                        continue
-
-                    key = (addr.lower(), token_addr, to_addr)
-                    if key in seen_approvals:
-                        continue
-                    seen_approvals.add(key)
-
-                    amount_raw = item.get("total", {}).get("value", "0")
-                    try:
-                        decimals = int(item.get("token", {}).get("decimals", "18") or "18")
-                        allowance = float(int(amount_raw)) / (10 ** decimals)
-                    except (ValueError, OverflowError):
-                        allowance = 0
-
-                    total_approvals_seen += 1
-
-                    # Diff-capture: check if allowance changed vs last snapshot
-                    prev = fetch_one("""
-                        SELECT allowance FROM token_approval_snapshots
-                        WHERE wallet_address = %s AND token_address = %s AND spender_address = %s AND chain = %s
-                        ORDER BY snapshot_at DESC LIMIT 1
-                    """, (addr.lower(), token_addr, to_addr, chain))
-
-                    prev_allowance = float(prev["allowance"]) if prev else None
-
-                    if prev_allowance is not None and abs(prev_allowance - allowance) < 0.01:
-                        total_unchanged += 1
-                        continue
-
-                    allowance_usd = allowance  # Stablecoins ≈ $1
-                    if allowance_usd > max_allowance_usd:
-                        max_allowance_usd = allowance_usd
-
-                    try:
-                        with get_cursor() as cur:
-                            cur.execute("""
-                                INSERT INTO token_approval_snapshots
-                                    (wallet_address, token_address, spender_address,
-                                     allowance, allowance_usd, chain, previous_allowance)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            """, (
-                                addr.lower(), token_addr, to_addr,
-                                allowance, allowance_usd, chain,
-                                prev_allowance if prev_allowance is not None else 0,
-                            ))
-                        total_inserted += 1
-                    except Exception as e:
-                        total_errors += 1
-                        if total_errors <= 3:
-                            logger.error(f"[approval_collector] insert failed: {e}")
-
-            except Exception as e:
+            if resp.status_code == 404:
+                continue
+            if resp.status_code != 200:
                 total_errors += 1
-                if total_errors <= 5:
-                    logger.error(f"[approval_collector] wallet {addr[:10]}... failed: {e}")
+                continue
+
+            data = resp.json()
+            items = data.get("items", [])
+
+            seen_approvals = set()
+            for item in items:
+                token_addr = (item.get("token", {}).get("address") or "").lower()
+                to_addr = (item.get("to", {}).get("hash") or "").lower()
+                if not token_addr or not to_addr:
+                    continue
+
+                key = (addr.lower(), token_addr, to_addr)
+                if key in seen_approvals:
+                    continue
+                seen_approvals.add(key)
+
+                amount_raw = item.get("total", {}).get("value", "0")
+                try:
+                    decimals = int(item.get("token", {}).get("decimals", "18") or "18")
+                    allowance = float(int(amount_raw)) / (10 ** decimals)
+                except (ValueError, OverflowError):
+                    allowance = 0
+
+                total_approvals_seen += 1
+
+                prev = fetch_one("""
+                    SELECT allowance FROM token_approval_snapshots
+                    WHERE wallet_address = %s AND token_address = %s AND spender_address = %s AND chain = %s
+                    ORDER BY snapshot_at DESC LIMIT 1
+                """, (addr.lower(), token_addr, to_addr, chain))
+
+                prev_allowance = float(prev["allowance"]) if prev else None
+
+                if prev_allowance is not None and abs(prev_allowance - allowance) < 0.01:
+                    total_unchanged += 1
+                    continue
+
+                allowance_usd = allowance
+                if allowance_usd > max_allowance_usd:
+                    max_allowance_usd = allowance_usd
+
+                try:
+                    with get_cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO token_approval_snapshots
+                                (wallet_address, token_address, spender_address,
+                                 allowance, allowance_usd, chain, previous_allowance)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            addr.lower(), token_addr, to_addr,
+                            allowance, allowance_usd, chain,
+                            prev_allowance if prev_allowance is not None else 0,
+                        ))
+                    total_inserted += 1
+                except Exception as e:
+                    total_errors += 1
+                    if total_errors <= 3:
+                        logger.error(f"[approval_collector] insert failed: {e}")
+
+        except Exception as e:
+            total_errors += 1
+            if total_errors <= 5:
+                logger.error(f"[approval_collector] wallet {addr[:10]}... failed: {e}")
 
     # Kill signal: 5x expected calls
     if total_calls > 2500:
