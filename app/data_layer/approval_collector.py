@@ -72,11 +72,17 @@ async def run_approval_collection() -> dict:
 
         try:
             from app.shared_rate_limiter import rate_limiter
+            if wi < 3:
+                logger.error(f"[approval_collector] step C.{wi}: acquiring blockscout rate limiter")
             await rate_limiter.acquire("blockscout")
+            if wi < 3:
+                logger.error(f"[approval_collector] step D.{wi}: rate limiter acquired, making HTTP GET")
             total_calls += 1
 
             url = f"https://{host}/api/v2/addresses/{addr}/token-transfers"
             resp = await client.get(url, params={"type": "ERC-20", "filter": "from", "limit": 50})
+            if wi < 3:
+                logger.error(f"[approval_collector] step E.{wi}: HTTP {resp.status_code}")
 
             if resp.status_code == 404:
                 continue

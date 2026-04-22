@@ -136,7 +136,9 @@ async def _fetch_holders_etherscan(
 ) -> list[dict]:
     """Fetch top holders from Etherscan PRO API."""
     from app.shared_rate_limiter import rate_limiter
+    logger.error(f"[holder_ingestion] _fetch_etherscan: acquiring rate limiter for {contract[:12]}...")
     await rate_limiter.acquire("etherscan")
+    logger.error(f"[holder_ingestion] _fetch_etherscan: rate limiter acquired, making HTTP GET")
 
     resp = await client.get(ETHERSCAN_BASE, params={
         "module": "token",
@@ -147,6 +149,7 @@ async def _fetch_holders_etherscan(
         "apikey": api_key,
     }, timeout=30)
 
+    logger.error(f"[holder_ingestion] _fetch_etherscan: HTTP {resp.status_code}, parsing JSON")
     data = resp.json()
     if data.get("status") != "1":
         msg = data.get("message", "unknown error")
@@ -215,6 +218,7 @@ async def run_holder_ingestion() -> dict:
     stats = defaultdict(lambda: {"scanned": 0, "holders_found": 0, "new_wallets": 0, "errors": 0})
     total_calls = 0
 
+    logger.error("[holder_ingestion] step A: entering entity loop")
     client = _client
     if True:
         for i, spec in enumerate(specs):
@@ -227,14 +231,21 @@ async def run_holder_ingestion() -> dict:
             contract = spec["contract"]
             chain = spec["chain"]
 
+            if i < 5 or i % 20 == 0:
+                logger.error(f"[holder_ingestion] step B.{i}: {eid} contract={contract[:12]}... chain={chain}")
+
             try:
                 # Try Etherscan first (ethereum only), Blockscout fallback
                 holders = []
                 if chain == "ethereum":
+                    logger.error(f"[holder_ingestion] step C.{i}: acquiring etherscan rate limit")
                     holders = await _fetch_holders_etherscan(client, contract, api_key)
+                    logger.error(f"[holder_ingestion] step D.{i}: etherscan returned {len(holders)} holders")
                     total_calls += 1
                 if not holders:
+                    logger.error(f"[holder_ingestion] step C.{i}: falling back to blockscout")
                     holders = await _fetch_holders_blockscout(client, contract, chain)
+                    logger.error(f"[holder_ingestion] step D.{i}: blockscout returned {len(holders)} holders")
                     total_calls += 1
 
                 # Filter by USD threshold (approximate: stablecoins ≈ $1, ETH-based ≈ $3000)

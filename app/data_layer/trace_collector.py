@@ -117,11 +117,14 @@ async def run_trace_collection() -> dict:
         # Fetch recent txs for this protocol's primary address
         try:
             from app.shared_rate_limiter import rate_limiter
+            logger.error(f"[trace_collector] step C.{i}: acquiring blockscout rate limiter")
             await rate_limiter.acquire("blockscout")
+            logger.error(f"[trace_collector] step D.{i}: rate limiter acquired, making HTTP GET")
             total_calls += 1
 
             tx_url = f"https://{host}/api/v2/addresses/{addr}/transactions"
             resp = await client.get(tx_url, params={"filter": "to", "limit": MAX_TXS_PER_PROTOCOL})
+            logger.error(f"[trace_collector] step E.{i}: HTTP {resp.status_code}")
             if resp.status_code != 200:
                 total_errors += 1
                 continue
