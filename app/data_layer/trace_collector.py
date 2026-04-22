@@ -56,6 +56,7 @@ def _parse_trace_depth(trace) -> tuple[int, int]:
 
 
 async def run_trace_collection() -> dict:
+    logger.error("[trace_collector] ENTRY — function called")
     global _disabled_until
 
     if time.time() < _disabled_until:

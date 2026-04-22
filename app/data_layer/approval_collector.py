@@ -26,6 +26,7 @@ _disabled_until = 0.0
 
 
 async def run_approval_collection() -> dict:
+    logger.error("[approval_collector] ENTRY — function called")
     global _disabled_until
 
     if time.time() < _disabled_until:

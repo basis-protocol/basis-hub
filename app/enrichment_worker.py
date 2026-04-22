@@ -232,6 +232,7 @@ async def run_enrichment_pipeline() -> dict:
     Called from worker.py slow cycle.
     Returns summary of all task results.
     """
+    logger.error("[enrichment] run_enrichment_pipeline() ENTERED — building task list")
     pipeline = EnrichmentPipeline(max_concurrent=6)
 
     # ---- Circle 7 indices (all run concurrently) ----
