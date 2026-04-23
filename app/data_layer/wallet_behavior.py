@@ -88,9 +88,9 @@ def _compute_wallet_metrics(address: str) -> dict:
 
     # Current holdings value
     holdings = fetch_all(
-        """SELECT token_symbol, balance_usd, chain
+        """SELECT symbol, value_usd
            FROM wallet_graph.wallet_holdings
-           WHERE wallet_address = %s AND balance_usd > 0""",
+           WHERE wallet_address = %s AND value_usd > 0""",
         (address,),
     )
 
@@ -98,20 +98,19 @@ def _compute_wallet_metrics(address: str) -> dict:
         metrics["total_value"] = 0
         return metrics
 
-    total_value = sum(float(h.get("balance_usd") or 0) for h in holdings)
+    total_value = sum(float(h.get("value_usd") or 0) for h in holdings)
     metrics["total_value"] = total_value
 
-    # Chain diversity
-    chains = set(h.get("chain", "ethereum") for h in holdings if h.get("chain"))
-    metrics["chain_count"] = len(chains)
+    # Chain diversity — wallet_holdings doesn't have a chain column yet
+    metrics["chain_count"] = 1
 
     # DeFi share (receipt tokens like aUSDC, cUSDC, etc.)
     defi_prefixes = {"a", "c", "s", "w", "st"}
     defi_value = 0
     for h in holdings:
-        symbol = (h.get("token_symbol") or "").lower()
+        symbol = (h.get("symbol") or "").lower()
         if any(symbol.startswith(p) and len(symbol) > len(p) + 2 for p in defi_prefixes):
-            defi_value += float(h.get("balance_usd") or 0)
+            defi_value += float(h.get("value_usd") or 0)
     metrics["defi_share"] = defi_value / total_value if total_value > 0 else 0
 
     # Risk score data
@@ -175,7 +174,7 @@ def _compute_wallet_metrics(address: str) -> dict:
 
     # Composition changes (unique token types held)
     metrics["composition_changes_30d"] = len(set(
-        (h.get("token_symbol") or "") for h in holdings
+        (h.get("symbol") or "") for h in holdings
     ))
 
     return metrics
