@@ -268,3 +268,58 @@ async def get_address_token_balance(
             "offset": offset,
         },
     )
+
+
+async def get_token_holders(
+    client: httpx.AsyncClient,
+    contract_address: str,
+    chain_id: int = 1,
+    page: int = 1,
+    offset: int = 100,
+) -> dict:
+    """Get token holder list — equivalent to Etherscan tokenholderlist."""
+    return await blockscout_call(
+        client, "token", "tokenholderlist",
+        chain_id=chain_id,
+        extra_params={
+            "contractaddress": contract_address,
+            "page": page,
+            "offset": offset,
+        },
+    )
+
+
+async def get_address_info(
+    client: httpx.AsyncClient,
+    address: str,
+    chain_id: int = 1,
+) -> dict:
+    """Get address balance/tx count — equivalent to Etherscan balance + txlist count."""
+    return await blockscout_call(
+        client, "account", "balance",
+        chain_id=chain_id,
+        extra_params={"address": address},
+    )
+
+
+async def get_address_txcount(
+    client: httpx.AsyncClient,
+    address: str,
+    chain_id: int = 1,
+) -> int:
+    """Get transaction count for an address via txlist with offset=1."""
+    result = await blockscout_call(
+        client, "account", "txlist",
+        chain_id=chain_id,
+        extra_params={
+            "address": address,
+            "startblock": 0,
+            "endblock": 99999999,
+            "page": 1,
+            "offset": 1,
+            "sort": "desc",
+        },
+    )
+    if result.get("status") == "1" and result.get("result"):
+        return len(result["result"])
+    return 0

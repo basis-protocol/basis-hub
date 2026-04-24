@@ -177,26 +177,21 @@ async def _fetch_holders_blockscout(
     contract: str,
     chain: str = "ethereum",
 ) -> list[dict]:
-    """Fallback: fetch holders from Blockscout v2."""
-    from app.shared_rate_limiter import rate_limiter
-    await rate_limiter.acquire("blockscout")
+    """Fallback: fetch holders from Blockscout unified API."""
+    from app.utils.blockscout_client import get_token_holders, CHAIN_IDS
+    chain_id = CHAIN_IDS.get(chain, 1)
 
-    hosts = {
-        "ethereum": "eth.blockscout.com",
-        "base": "base.blockscout.com",
-        "arbitrum": "arbitrum.blockscout.com",
-    }
-    host = hosts.get(chain, hosts["ethereum"])
-
-    # Blockscout v9.0+ strictly validates parameters; `limit` is not in the
-    # supported set for /tokens/{contract}/holders. Default page size
-    # (~50 items) is sufficient for holder ingestion's breadth pass.
-    resp = await client.get(
-        f"https://{host}/api/v2/tokens/{contract}/holders",
-        timeout=30,
-    )
-    if resp.status_code != 200:
+    result = await get_token_holders(client, contract, chain_id=chain_id, offset=100)
+    if result.get("status") != "1" or not result.get("result"):
         return []
+
+    return [
+        {
+            "TokenHolderAddress": h.get("TokenHolderAddress", ""),
+            "TokenHolderQuantity": h.get("TokenHolderQuantity", "0"),
+        }
+        for h in result["result"]
+    ]
 
     items = resp.json().get("items", [])
     return [

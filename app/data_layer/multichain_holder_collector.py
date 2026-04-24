@@ -28,18 +28,9 @@ _client = httpx.AsyncClient(
     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
 )
 
-CHAIN_HOSTS = {
-    "ethereum": "eth.blockscout.com",
-    "base": "base.blockscout.com",
-    "arbitrum": "arbitrum.blockscout.com",
-    "polygon": "polygon.blockscout.com",
-    # optimism.blockscout.com returns 403 "host_not_allowed" — removed until
-    # a working explorer is identified. Re-add when Optimism Blockscout is back.
-}
-
 CHAIN_IDS = {
     "ethereum": 1, "base": 8453, "arbitrum": 42161,
-    "polygon": 137,
+    "optimism": 10, "polygon": 137,
 }
 
 USD_THRESHOLD = 10_000
@@ -70,40 +61,26 @@ def _load_multichain_entities() -> dict:
 async def _fetch_holders_blockscout(
     client: httpx.AsyncClient, contract: str, chain: str
 ) -> list[dict]:
-    from app.shared_rate_limiter import rate_limiter
-    await rate_limiter.acquire("blockscout")
+    """Fetch holders via Blockscout unified API."""
+    from app.utils.blockscout_client import get_token_holders
 
-    host = CHAIN_HOSTS.get(chain)
-    if not host:
+    chain_id = CHAIN_IDS.get(chain)
+    if not chain_id:
         return []
 
-    url = f"https://{host}/api/v2/tokens/{contract}/holders"
-    resp = await client.get(url, timeout=30)
-    if resp.status_code != 200:
-        # Log URL + body truncation so ops sees the actual Blockscout error
-        # message without having to reproduce with curl. BBBB (3eee9c7)
-        # removed limit=50 and added follow_redirects=True; any remaining
-        # non-200 means the per-chain Blockscout instance has drifted URL
-        # shape or parameter contract, and the response body tells us what.
-        body_snippet = (resp.text or "")[:200].replace("\n", " ")
-        final_url = str(resp.url)
-        redirect_info = (
-            f" via_redirect={final_url}" if final_url != url else ""
-        )
-        logger.error(
-            f"[multichain_holder] blockscout {chain} returned HTTP {resp.status_code} "
-            f"for {contract[:12]}... url={url}{redirect_info} body={body_snippet!r}"
-        )
+    result = await get_token_holders(client, contract, chain_id=chain_id, offset=100)
+    if result.get("status") != "1" or not result.get("result"):
+        if result.get("_blockscout_error"):
+            logger.error(f"[multichain_holder] blockscout unified API error for {chain}/{contract[:12]}: {result.get('result', '')[:200]}")
         return []
 
-    items = resp.json().get("items", [])
     return [
         {
-            "address": (item.get("address", {}).get("hash") or "").lower(),
-            "value": item.get("value", "0"),
-            "token_decimals": item.get("token", {}).get("decimals"),
+            "address": (h.get("TokenHolderAddress") or "").lower(),
+            "value": h.get("TokenHolderQuantity", "0"),
+            "token_decimals": None,
         }
-        for item in items if item.get("address", {}).get("hash")
+        for h in result["result"] if h.get("TokenHolderAddress")
     ]
 
 
@@ -127,7 +104,7 @@ async def run_multichain_holder_scan() -> dict:
         for chain, contract in chains.items():
             if chain == "ethereum":
                 continue
-            if chain not in CHAIN_HOSTS:
+            if chain not in CHAIN_IDS:
                 continue
             scans.append({
                 "symbol": symbol, "chain": chain,

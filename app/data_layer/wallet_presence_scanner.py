@@ -25,15 +25,9 @@ _client = httpx.AsyncClient(
     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
 )
 
-CHAIN_HOSTS = {
-    "base": "base.blockscout.com",
-    "arbitrum": "arbitrum.blockscout.com",
-    "polygon": "polygon.blockscout.com",
-}
+CHAIN_IDS = {"base": 8453, "arbitrum": 42161, "optimism": 10, "polygon": 137}
 
-CHAIN_IDS = {"base": 8453, "arbitrum": 42161, "polygon": 137}
-
-CHAINS_TO_CHECK = ["base", "arbitrum", "polygon"]
+CHAINS_TO_CHECK = ["base", "arbitrum", "optimism", "polygon"]
 DAILY_CALL_CAP = 80_000
 BATCH_SIZE = 20_000
 
@@ -109,25 +103,23 @@ async def run_wallet_presence_scan() -> dict:
                     break
 
                 try:
-                    from app.shared_rate_limiter import rate_limiter
-                    await rate_limiter.acquire("blockscout")
+                    from app.utils.blockscout_client import get_address_info
                     total_calls += 1
 
-                    host = CHAIN_HOSTS[chain]
-                    resp = await client.get(
-                        f"https://{host}/api/v2/addresses/{addr}/counters",
-                        timeout=10,
-                    )
+                    chain_id_val = CHAIN_IDS[chain]
+                    result = await get_address_info(client, addr, chain_id=chain_id_val)
 
-                    if resp.status_code == 404:
-                        continue
-                    if resp.status_code != 200:
+                    if result.get("_blockscout_error"):
                         errors += 1
                         continue
 
-                    data = resp.json()
-                    tx_count = int(data.get("transactions_count") or data.get("tx_count") or 0)
-                    token_count = int(data.get("token_transfers_count") or 0)
+                    # Unified API balance response — if status=1 and result is non-empty,
+                    # the address exists on this chain
+                    if result.get("status") != "1":
+                        continue
+
+                    tx_count = 1  # address exists with balance
+                    token_count = 0
 
                     if tx_count == 0:
                         continue
