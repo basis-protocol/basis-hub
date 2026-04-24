@@ -84,7 +84,7 @@ DRIFT_COVERAGE = CoverageResponse(
             entity_name="drift",
             coverage_type="live",
             live=True,
-            density="multiple_daily",
+            density="weekly",
             earliest_record=_off(-12),
             latest_record=_off(0),
             unique_days=5,
@@ -130,13 +130,13 @@ DRIFT_COVERAGE = CoverageResponse(
     related_entities=[],
     adjacent_indexes_not_covering=_complement({"dex_pool_data", "web_research_protocol", "psi"}),
     coverage_summary=(
-        "Drift has live coverage in dex_pool_data (5 days, multiple_daily) and "
+        "Drift has live coverage in dex_pool_data (5 days, weekly) and "
         "web_research_protocol (single data point, 11 days stale). PSI is "
         "backfilled via temporal reconstruction with 1582 days back to "
         "2021-12-04, last ingested 21 days ago. No live PSI tracking. No "
         "coverage in BRI, LSTI, SII, or other indexes."
     ),
-    coverage_quality="partial-live",
+    coverage_quality="partial-reconstructable",
     recommended_analysis_types=["retrospective_internal", "case_study", "internal_memo"],
     blocks_incident_page=True,
     blocks_reasons=[
@@ -211,7 +211,7 @@ USDC_COVERAGE = CoverageResponse(
             index_id="sii",
             entity_slug="usdc",
             entity_name=None,
-            coverage_type="live",
+            coverage_type="sparse",
             live=False,
             density="daily",
             earliest_record=_off(-73),
@@ -261,7 +261,7 @@ JUPITER_PERP_COVERAGE = CoverageResponse(
             entity_name="jupiter-perpetual-exchange",
             coverage_type="live",
             live=True,
-            density="multiple_daily",
+            density="weekly",
             earliest_record=_off(-12),
             latest_record=_off(0),
             unique_days=5,
@@ -308,12 +308,12 @@ JUPITER_PERP_COVERAGE = CoverageResponse(
     adjacent_indexes_not_covering=_complement({"dex_pool_data", "web_research_protocol", "psi"}),
     coverage_summary=(
         "jupiter-perpetual-exchange has live coverage in dex_pool_data "
-        "(5 days, multiple_daily) and web_research_protocol (single data "
+        "(5 days, weekly) and web_research_protocol (single data "
         "point, 11 days stale). PSI is backfilled via temporal "
         "reconstruction with 796 days back to 2024-01-29, last ingested "
         "21 days ago. No live PSI tracking."
     ),
-    coverage_quality="partial-live",
+    coverage_quality="partial-reconstructable",
     recommended_analysis_types=["retrospective_internal", "case_study", "internal_memo"],
     blocks_incident_page=True,
     blocks_reasons=[

@@ -951,6 +951,17 @@ Findings surfaced during engine-adjacent work that are not blockers for the Step
 - **Owner:** P1 session.
 - **Severity:** none (tool-only; no production consumer).
 
+### 11.3 Coverage cache is per-worker; migrate to Redis with C4
+
+- **Discovered:** Component 1 production verification, post-deploy of commit `3d3b78b`.
+- **Observed:** Two consecutive `curl` requests to `/api/engine/coverage/drift` both took ~212ms. The 15-minute in-memory TTL cache in `app/engine/coverage.py` did not produce a measurable speedup on the second call.
+- **Interpretation:** Production runs uvicorn with multiple workers. The cache is a module-local dict, so request N+1 may land on a different worker than request N and miss the cache. This isn't a bug in the cache logic — it's a deployment-topology mismatch.
+- **Impact on engine:** Performance, not correctness. Coverage responses are still correct; they just take ~200ms each instead of ~5ms on cache hits. Component 4's pipeline will hit `/coverage` repeatedly during analysis runs and would benefit from a real shared cache.
+- **Follow-up:** Migrate the in-memory cache to Redis when Component 4 lands. C4 already requires shared state (event-detection cursor positions, watchlist freshness, pipeline coordination) so the Redis dependency lands in C4 anyway. C1's cache can switch to the same client at that point.
+- **Owner:** C4 session (S4).
+- **Severity:** low (performance only; functional behavior is correct).
+- **Test impact:** `tests/test_engine_coverage.py::test_coverage_cache_hit_behavior` was updated to tolerate worker-cache misses — it now asserts only that the second call isn't catastrophically slower (1.5x ceiling), not that it's faster. Comment in the test references this follow-up.
+
 ---
 
 *Document ends. v0.2 incorporates all review findings from the v0.1 pass. v0.2a adds the migration-number correction and the standing follow-ups section. Ready for operator approval.*
