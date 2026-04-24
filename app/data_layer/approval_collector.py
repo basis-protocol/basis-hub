@@ -97,27 +97,44 @@ async def run_approval_collection() -> dict:
             items = data.get("items", [])
             if wi < 3:
                 logger.error(f"[approval_collector] wallet {addr[:12]}: items={len(items)}, keys={list(data.keys())[:5]}")
+                if items:
+                    logger.error(f"[approval_collector] wallet {addr[:12]}: item[0] keys={list(items[0].keys())[:10]}")
+                    sample = items[0]
+                    logger.error(f"[approval_collector] wallet {addr[:12]}: token={sample.get('token', {})}, to={sample.get('to', {})}, total={sample.get('total', {})}")
 
+            parsed_count = 0
+            skipped_dedup = 0
+            skipped_unchanged = 0
             seen_approvals = set()
-            for item in items:
-                token_addr = (item.get("token", {}).get("address") or "").lower()
-                to_addr = (item.get("to", {}).get("hash") or "").lower()
+            for ii, item in enumerate(items):
+                token_obj = item.get("token") or {}
+                token_addr = (token_obj.get("address") or "").lower()
+                to_obj = item.get("to") or {}
+                to_addr = (to_obj.get("hash") or "").lower()
+
                 if not token_addr or not to_addr:
+                    if wi < 3 and ii < 3:
+                        logger.error(f"[approval_collector] wallet {addr[:12]} item {ii}: SKIP no token_addr={token_addr!r} or to_addr={to_addr!r}")
                     continue
 
                 key = (addr.lower(), token_addr, to_addr)
                 if key in seen_approvals:
+                    skipped_dedup += 1
                     continue
                 seen_approvals.add(key)
 
-                amount_raw = item.get("total", {}).get("value", "0")
+                total_obj = item.get("total") or {}
+                amount_raw = total_obj.get("value") or total_obj.get("amount") or "0"
+                if isinstance(total_obj, str):
+                    amount_raw = total_obj
                 try:
-                    decimals = int(item.get("token", {}).get("decimals", "18") or "18")
+                    decimals = int(token_obj.get("decimals") or "18")
                     allowance = float(int(amount_raw)) / (10 ** decimals)
                 except (ValueError, OverflowError):
                     allowance = 0
 
                 total_approvals_seen += 1
+                parsed_count += 1
 
                 prev = fetch_one("""
                     SELECT allowance FROM token_approval_snapshots
@@ -128,7 +145,7 @@ async def run_approval_collection() -> dict:
                 prev_allowance = float(prev["allowance"]) if prev else None
 
                 if prev_allowance is not None and abs(prev_allowance - allowance) < 0.01:
-                    total_unchanged += 1
+                    skipped_unchanged += 1
                     continue
 
                 allowance_usd = allowance
@@ -150,8 +167,14 @@ async def run_approval_collection() -> dict:
                     total_inserted += 1
                 except Exception as e:
                     total_errors += 1
-                    if total_errors <= 3:
+                    if total_errors <= 5:
                         logger.error(f"[approval_collector] insert failed: {e}")
+
+            if wi < 5 or wi % 100 == 0:
+                logger.error(
+                    f"[approval_collector] wallet {addr[:12]}: parsed={parsed_count}/{len(items)} "
+                    f"dedup={skipped_dedup} unchanged={skipped_unchanged} inserted={total_inserted}"
+                )
 
         except Exception as e:
             total_errors += 1
