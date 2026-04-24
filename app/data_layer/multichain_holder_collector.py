@@ -32,13 +32,14 @@ CHAIN_HOSTS = {
     "ethereum": "eth.blockscout.com",
     "base": "base.blockscout.com",
     "arbitrum": "arbitrum.blockscout.com",
-    "optimism": "optimism.blockscout.com",
     "polygon": "polygon.blockscout.com",
+    # optimism.blockscout.com returns 403 "host_not_allowed" — removed until
+    # a working explorer is identified. Re-add when Optimism Blockscout is back.
 }
 
 CHAIN_IDS = {
     "ethereum": 1, "base": 8453, "arbitrum": 42161,
-    "optimism": 10, "polygon": 137,
+    "polygon": 137,
 }
 
 USD_THRESHOLD = 10_000

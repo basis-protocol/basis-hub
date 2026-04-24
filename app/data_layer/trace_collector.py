@@ -131,7 +131,7 @@ async def run_trace_collection() -> dict:
             # in the supported set for /addresses/{addr}/transactions.
             # Default page size is plenty for trace sampling.
             tx_url = f"https://{host}/api/v2/addresses/{addr}/transactions"
-            resp = await client.get(tx_url, params={"filter": "to"})
+            resp = await client.get(tx_url)
             logger.error(f"[trace_collector] step E.{i}: HTTP {resp.status_code}")
             if resp.status_code != 200:
                 total_errors += 1

@@ -28,13 +28,12 @@ _client = httpx.AsyncClient(
 CHAIN_HOSTS = {
     "base": "base.blockscout.com",
     "arbitrum": "arbitrum.blockscout.com",
-    "optimism": "optimism.blockscout.com",
     "polygon": "polygon.blockscout.com",
 }
 
-CHAIN_IDS = {"base": 8453, "arbitrum": 42161, "optimism": 10, "polygon": 137}
+CHAIN_IDS = {"base": 8453, "arbitrum": 42161, "polygon": 137}
 
-CHAINS_TO_CHECK = ["base", "arbitrum", "optimism", "polygon"]
+CHAINS_TO_CHECK = ["base", "arbitrum", "polygon"]
 DAILY_CALL_CAP = 80_000
 BATCH_SIZE = 20_000
 
