@@ -21,7 +21,9 @@ This is the pre-implementation contract for the analytic engine. Before any CC s
 
 All downstream sessions (S0, P1, P2, P3, G1, P4, S4, S5, G2) consume this document as input. Any change post-approval requires a schema-amendment commit with explicit justification.
 
-**What changed from v0.1:** 20 residual fixes from the review pass — 12 schema-level (Signal baseline window, required Interpretation.model_id, UUID-linked methodology/follow-up, AnalysisAccepted, AnalysisCreate split, status-default alignment, Literal ThresholdType, engine_llm_usage table, superseded_by_id, archived_at, ConfidenceLevel semantics, cache-hit timestamp semantics) and 8 document-level (model ID pinning, complete migration-085 table list, two named templates, asyncio runtime, router aggregation, realistic P2 timeline, existing-module isolation, degraded-analysis operator visibility). See §10 for the full changelog.
+**What changed from v0.1:** 20 residual fixes from the review pass — 12 schema-level (Signal baseline window, required Interpretation.model_id, UUID-linked methodology/follow-up, AnalysisAccepted, AnalysisCreate split, status-default alignment, Literal ThresholdType, engine_llm_usage table, superseded_by_id, archived_at, ConfidenceLevel semantics, cache-hit timestamp semantics) and 8 document-level (model ID pinning, complete migration-088 table list, two named templates, asyncio runtime, router aggregation, realistic P2 timeline, existing-module isolation, degraded-analysis operator visibility). See §10 for the full changelog.
+
+**Migration number update (v0.2a):** Initial v0.2 referenced migration `085` based on the CLAUDE.md guidance. On disk, migrations 085, 086, and 087 are already taken. **S0's migration ships as `088_engine_core.sql`.** All §3, §7, §9, §10 references to "085" should be read as "088."
 
 ---
 
@@ -404,7 +406,7 @@ class WatchlistEntry(BaseModel):
 - **`AnalysisCreate` vs `Analysis` split** — standard Pydantic pattern. Read-path consumers never see `id=None`. S0 commits both models together.
 - **`Analysis.status="pending"` default** — aligns with §3's async contract. The row is written first, the LLM call runs in the background, the status flips to `"draft"` on completion.
 - **`WatchlistEntry.threshold_type: ThresholdType`** — Literal enum, matches `EngineEvent.event_type` values to eliminate string drift between watch trigger and generated event.
-- **Uniqueness constraints** (declared in migration 085, see §3):
+- **Uniqueness constraints** (declared in migration 088, see §3):
   - `engine_analyses`: `(entity, event_date)` UNIQUE WHERE `status != 'archived'`
   - `engine_events`: `(source, entity, event_date, event_type)` UNIQUE
   Both enforced at the DB level. `force_new=true` archives the existing analysis row (sets `archived_at`) before inserting the new one.
@@ -521,9 +523,9 @@ LLM calls take 3–15 seconds. `POST /api/engine/analyze` is async:
 
 `(entity, event_date)` uniqueness on `engine_analyses` (where not archived) prevents redundant analyses at the table level. A 10-point LSTI drop triggered three times in one day produces one analysis, not three. `force_new=true` is the explicit override, admin-only, and archives the prior analysis before inserting the new row.
 
-### Migration 085 — engine_core (seven tables)
+### Migration 088 — engine_core (seven tables)
 
-S0 ships migration 085 as a single file creating all seven engine tables:
+S0 ships migration 088 as a single file creating all seven engine tables:
 
 1. **`engine_analyses`** — see §1 `Analysis` model. Includes unique constraint `(entity, event_date)` WHERE `status != 'archived'`.
 2. **`engine_artifacts`** — see §1 `ArtifactResponse`. FK to `engine_analyses`.
@@ -758,7 +760,7 @@ The whole premise of the engine is that methodology gaps surface structurally. S
 ```
                  ┌─────────────────────────────┐
                  │ S0 — Schema Foundation      │
-                 │ (schemas + migration 085 +  │
+                 │ (schemas + migration 088 +  │
                  │  canonical fixtures + auth  │
                  │  deps + per-component       │
                  │  router stubs + prompt v1   │
@@ -816,9 +818,9 @@ The whole premise of the engine is that methodology gaps surface structurally. S
 - **Per-component router files.** S0 creates `coverage_router.py`, `analyze_router.py`, `render_router.py` stubs plus the aggregating `router.py`. P-sessions add routes only to their own files. Zero merge conflicts by construction.
 - **Canonical fixtures pinned at S0.** P2 and P3 import from `tests/fixtures/canonical_coverage.py`. Coverage drift caught during P1 test runs, not G1.
 - **LLM integration inside P2.** Adds ~2 days to P2 but removes the template-matching dead end. P2 now realistically lands in **5–6 days** rather than 4.
-- **Prompt file v1 stubbed at S0.** Content finalized during P2. `engine_prompts` seeded with v1 row as part of migration 085 data seeding.
-- **Migration 085 bundles all seven engine tables** (see §3). No second migration file until C4 needs one (086 reserved for C4 work).
-- **Unique constraints in migration 085:**
+- **Prompt file v1 stubbed at S0.** Content finalized during P2. `engine_prompts` seeded with v1 row as part of migration 088 data seeding.
+- **Migration 088 bundles all seven engine tables** (see §3). No second migration file until C4 needs one (089 reserved for C4 work).
+- **Unique constraints in migration 088:**
   - `engine_analyses (entity, event_date)` WHERE `status != 'archived'`
   - `engine_events (source, entity, event_date, event_type)`
 - **Auth decisions from §5 applied at S0 router stub time.** Every route declaration includes its auth dependency from day one.
@@ -875,7 +877,7 @@ Once this document is approved:
 
 1. Operator runs coverage extraction queries (I'll provide the exact SQL — five queries per entity × six entities), pastes results
 2. I convert pastes to `tests/fixtures/canonical_coverage.py`
-3. Operator confirms migration 085 is the next available number (`ls migrations/ | tail -5`)
+3. Operator confirms migration 088 is the next available number (`ls migrations/ | tail -5`) — verified at v0.2a time: 085, 086, 087 already applied, 088 is clear
 4. Operator verifies `ANTHROPIC_API_KEY` is set in Railway env
 5. Operator creates PAT for the approval flow, stores as `BASIS_ENGINE_GITHUB_PAT` env var
 6. Operator provisions Slack webhook URL, stores as `BASIS_ENGINE_SLACK_WEBHOOK`
@@ -898,7 +900,7 @@ Schema-level fixes (12):
 5. `AnalysisCreate` / `Analysis` split applied; read-path consumers never see `id=None`. Same split for `EngineEventCreate` / `EngineEvent`
 6. `Analysis.status` default set to `"pending"` (aligns with §3 async contract); state machine documented on the field
 7. `ThresholdType = Literal["score_drop", "score_spike", "coverage_lapse"]` added; `WatchlistEntry.threshold_type` uses it
-8. `engine_llm_usage` table schema added to migration 085
+8. `engine_llm_usage` table schema added to migration 088
 9. `Analysis.superseded_by_id` added for symmetric revision-chain lookup
 10. `Analysis.archived_at` added; makes unique-constraint-with-status-filter observable
 11. `ConfidenceLevel` semantics documented inline (four levels: high / medium / low / insufficient, with `insufficient` reserved for engine-degraded paths)
@@ -907,7 +909,7 @@ Schema-level fixes (12):
 Document-level fixes (8):
 
 13. Model ID pinned: default `claude-sonnet-4-6`, declared as constant in `app/engine/config.py`
-14. Migration 085 explicit table list (seven tables): engine_analyses, engine_artifacts, engine_events, engine_watchlist, engine_prompts, engine_interpretation_cache, engine_llm_usage
+14. Migration 088 explicit table list (seven tables): engine_analyses, engine_artifacts, engine_events, engine_watchlist, engine_prompts, engine_interpretation_cache, engine_llm_usage
 15. Two named templates (`SHAPE_NO_COVERAGE_MEMO`, `SHAPE_API_UNAVAILABLE`); no third template permitted in v1
 16. Async runtime mechanism specified: `asyncio.create_task` + status machine in DB + reaper task for orphaned `"pending"` rows
 17. Router aggregation pattern specified: per-component files + aggregating `app/engine/router.py` + single import in `app/server.py`
