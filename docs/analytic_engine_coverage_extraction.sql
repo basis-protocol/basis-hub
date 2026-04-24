@@ -164,8 +164,28 @@ LIMIT 25;
 -- ----------------------------------------------------------------------------
 -- Query 5 / 5  —  Adjacent-index negative space
 --
--- Returns the set of index_ids present in the universe but NOT covering this
--- entity. Plus the entity's own covering indexes (for cross-check with Q1+Q3).
+-- ⚠️  KNOWN BUG — DO NOT USE FOR FIXTURE EXTRACTION
+--
+-- Symptom: returns covers_entity=false for indexes that DO cover the entity.
+-- Confirmed against production on drift and jupiter-perpetual-exchange during
+-- v0.2a fixture run (2026-04-24). Both entities have PSI coverage via
+-- historical_protocol_data (temporal reconstruction) and dex_pool_data via
+-- generic_index_scores; Q5 returned both as not-covering.
+--
+-- Root cause suspected in the `covering` CTE — mix of UNION semantics, a
+-- stray `LIMIT 1` inside the psi_scores branch that clips multi-row matches,
+-- and inconsistent treatment of historical_protocol_data (which surfaces as
+-- a "psi" index logically but lives in a separate table). Specific fix not
+-- attempted because Component 1 (P1 session) rewrites this logic from scratch
+-- in Python against a single authoritative index registry. No production
+-- consumer depends on this query — it exists only in this extraction file.
+--
+-- Action: fixture extraction ignores Query 5 output. The
+-- adjacent_indexes_not_covering field in tests/fixtures/canonical_coverage.py
+-- is populated manually from Q1+Q2+Q3 results per entity. P1's implementation
+-- derives it correctly from the authoritative index list.
+--
+-- Do not debug this query. It is scheduled for deletion when P1 lands.
 -- ----------------------------------------------------------------------------
 
 WITH all_indexes AS (

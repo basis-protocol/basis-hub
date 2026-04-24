@@ -923,4 +923,34 @@ Initial Step 0 package. See prior document.
 
 ---
 
-*Document ends. v0.2 incorporates all review findings from the v0.1 pass. Ready for operator approval.*
+---
+
+<!-- §11 -->
+
+## 11. Engineering Follow-ups (Standing)
+
+Findings surfaced during engine-adjacent work that are not blockers for the Step 0 package but belong in the engineering backlog. Each entry cites the context in which it was discovered, so the history is recoverable.
+
+### 11.1 USDC SII collector skipped the 2026-04-24 cycle
+
+- **Discovered:** v0.2a fixture extraction, 2026-04-24.
+- **Observed:** USDC `scores.computed_at` = 2026-04-22; other SII stablecoins computed 2026-04-24. `days_since_last_record = 2` for USDC vs 0 for peers.
+- **Interpretation:** Collector run on 2026-04-24 completed for other SII entities but skipped USDC. Cause unknown — could be transient API failure, filter misfire, or silent collector path that didn't raise. No evidence this is a standing problem; first observed during fixture pinning.
+- **Impact on engine:** None blocking. Motivated the addition of `days_since_last_record` + `coverage_window_days` to `EntityCoverage` (see §1) so that binary `live` can be inspected with staleness context. USDC shows up correctly as "live=False, 2 days stale" rather than just "live=False."
+- **Follow-up:** Investigate worker cycle logs for 2026-04-22 → 2026-04-24 window on USDC path. If a single-cycle skip with no recurrence, log and close. If recurring or correlated with specific conditions, file a proper incident in the existing ops tracker.
+- **Owner:** operator, out-of-band from engine build.
+- **Severity:** low (isolated, not customer-facing).
+
+### 11.2 Coverage extraction Query 5 is broken and retired
+
+- **Discovered:** v0.2a fixture extraction, 2026-04-24.
+- **Observed:** `docs/analytic_engine_coverage_extraction.sql` Query 5 (adjacent-index negative space) returned `covers_entity=false` for indexes that do cover the entity. Reproduced on `drift` and `jupiter-perpetual-exchange`.
+- **Interpretation:** Likely root cause in the `covering` CTE — a mix of `UNION` semantics, a stray `LIMIT 1` clipping multi-row matches in the `psi_scores` branch, and inconsistent handling of `historical_protocol_data` as a logical "psi" index. Not debugged.
+- **Impact on engine:** None. Query 5 output was ignored for fixture extraction; `adjacent_indexes_not_covering` in `tests/fixtures/canonical_coverage.py` was populated manually from Q1+Q2+Q3 results.
+- **Follow-up:** P1 (Component 1, Coverage endpoint) rewrites this logic from scratch in Python against a single authoritative index registry. When P1 lands, delete Query 5 from the extraction SQL.
+- **Owner:** P1 session.
+- **Severity:** none (tool-only; no production consumer).
+
+---
+
+*Document ends. v0.2 incorporates all review findings from the v0.1 pass. v0.2a adds the migration-number correction and the standing follow-ups section. Ready for operator approval.*
