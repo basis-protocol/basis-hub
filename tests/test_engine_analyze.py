@@ -287,6 +287,49 @@ def test_analyze_force_new_archives_previous(admin_api):
 
 
 # ═════════════════════════════════════════════════════════════════
+# 6a. Regression guard — psycopg2 UUID adapter registered at import
+#
+# Observed in Railway logs after S2a deploy:
+#   psycopg2.ProgrammingError: can't adapt type 'UUID'
+#   app/engine/analysis_persistence.py:132 in _insert_analysis_sync
+#
+# Root cause: psycopg2 doesn't adapt Python uuid.UUID objects by default.
+# The force_new=true path INSERTs with previous_analysis_id as a UUID and
+# crashes without register_uuid() called at module import time. Fixed by
+# adding psycopg2.extras.register_uuid() at the top of
+# app/engine/analysis_persistence.py.
+#
+# This test explicitly exercises the previous_analysis_id path and asserts
+# the second POST returns 202, not 500, so a future regression (e.g., a
+# refactor that drops the register_uuid call) surfaces as a named test
+# failure rather than a diagnostic-free 500.
+# ═════════════════════════════════════════════════════════════════
+
+def test_analyze_force_new_archives_previous_uuid_adapter(admin_api):
+    """Regression: force_new path must not 500 due to UUID adapter
+    registration being absent. See commentary above."""
+    body = {
+        "entity": "usdc",
+        "event_date": "2026-04-05",
+        "peer_set": [],
+    }
+    first = admin_api.post("/api/engine/analyze", body)
+    assert first.status_code == 202, first.text[:400]
+    _track(first.json()["analysis_id"])
+
+    body_force = dict(body, force_new=True)
+    second = admin_api.post("/api/engine/analyze", body_force)
+    # If register_uuid() is missing from analysis_persistence.py, this
+    # returns 500 with "can't adapt type 'UUID'" in the traceback.
+    assert second.status_code == 202, (
+        f"force_new POST returned {second.status_code} — suspected "
+        f"psycopg2 UUID adapter regression in analysis_persistence.py. "
+        f"Body: {second.text[:400]}"
+    )
+    _track(second.json()["analysis_id"])
+
+
+# ═════════════════════════════════════════════════════════════════
 # 7. List endpoint filters by entity
 # ═════════════════════════════════════════════════════════════════
 

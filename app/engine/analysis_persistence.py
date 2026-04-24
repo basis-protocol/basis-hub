@@ -36,6 +36,15 @@ from app.engine.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Register psycopg2's UUID adapter at module import time so cursor.execute
+# can accept Python uuid.UUID objects directly as query parameters. Without
+# this, INSERTs with a non-None previous_analysis_id raise
+# ProgrammingError: can't adapt type 'UUID' — observed in production when
+# the force_new=true archival path fires. register_uuid() is idempotent and
+# registers a global adapter; safe to call here. Regression guard:
+# tests/test_engine_analyze.py::test_analyze_force_new_archives_previous_uuid_adapter.
+psycopg2.extras.register_uuid()
+
 
 # ─────────────────────────────────────────────────────────────────
 # Row → Analysis conversion
