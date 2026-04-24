@@ -595,6 +595,7 @@ def emit_24h_summary() -> None:
                 AVG(confirmation_latency_ms) FILTER (WHERE confirmation_latency_ms IS NOT NULL) AS avg_latency_ms
             FROM mempool_observations
             WHERE seen_at > NOW() - INTERVAL '24 hours'
+               OR confirmed_at > NOW() - INTERVAL '24 hours'
             """
         )
     except Exception as e:
