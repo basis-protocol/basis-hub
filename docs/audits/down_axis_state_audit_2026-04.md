@@ -133,17 +133,44 @@ Columns: **path** · **purpose** · **source** · **wired loop** · **write targ
 
 ### 1.4 Appendix — collector/domain orphans
 
-My sub-agent's attestation-domain crawl (on top of `app/state_attestation.py`) found:
+> **CORRECTION (2026-04-24, post-publication).** This appendix originally claimed 14 attestation domains were "declared but with no collector writing to them." That claim was **wrong** — it propagated a classification error from a sub-agent that did not grep for `attest_state(...)` call sites. Subsequent investigation (triggered by ENG-TICKET review) confirmed all 14 domains have active call sites. The corrected analysis appears below; the original false claim is preserved in struck-through form for traceability.
 
-**Attestation domains declared but with no collector writing to them:**
-`actors`, `cqi_compositions`, `discovery_signals`, `divergence_signals`, `edges`, `provenance`, `psi_components`, `psi_discoveries`, `rpi_components`, `rqs_composition`/`rqs_compositions`, `sii_components`, `wallet_profiles`, `wallets` (14 total).
+#### Original (incorrect) claim — STRUCK THROUGH
 
-The critical items on that list are `sii_components`, `psi_components`, and `rpi_components` — the per-component state for the three scored indices is **not cryptographically attested** even though the *final score* is. This is a **rendering-vs-collection** boundary question (see Step 5 honesty check §5) — the data exists in `component_readings` / `psi_components` / `rpi_components` tables, it is just not state-hashed at write time.
+> ~~**Attestation domains declared but with no collector writing to them:**~~
+> ~~`actors`, `cqi_compositions`, `discovery_signals`, `divergence_signals`, `edges`, `provenance`, `psi_components`, `psi_discoveries`, `rpi_components`, `rqs_composition`/`rqs_compositions`, `sii_components`, `wallet_profiles`, `wallets` (14 total).~~
 
-**Active collectors writing without any declared attestation domain:**
-`coingecko`, `defillama`, `curve`, `etherscan`, `solana`, `actor_metrics`, `flows`, `offline`, `derived` — i.e. every FAST-cycle collector. Same category as above: data is captured, but not attested.
+#### Corrected analysis
 
-**Written-but-not-wired:** Only `app/data_layer/bridge_flow_collector.py` is confirmed dead by the explicit `# DEFERRED (constitution v9.3)` comment at `app/enrichment_worker.py`. All other collectors my sub-agent flagged as "orphaned" are in fact wired through the SLOW cycle or background loops — this was a classification error in the sub-agent output, corrected above.
+**All 14 domains are wired.** Confirmed via `grep -rnE "attest_state\(" app/`:
+
+| Domain | Call site | Hashed payload |
+|---|---|---|
+| `sii_components` | `app/worker.py:599` | `[{component_id, normalized_score}]` per stablecoin — **genuine component-level** |
+| `psi_components` | `app/worker.py:981` | `[{slug, overall_score}]` — **summary only, not components** |
+| `rpi_components` | `app/worker.py:1749` | `[{slug, overall_score}]` — **summary only, not components** |
+| `actors` | `app/actor_classification.py:384` | classification counts |
+| `cqi_compositions` | `app/composition.py:446` | `[{asset, protocol, cqi_score}]` |
+| `rqs_composition` | `app/composition.py:356` | composition payload |
+| `rqs_compositions` | `app/composition.py:385` | composition payload |
+| `discovery_signals` | `app/discovery.py:229` | signal type + novelty |
+| `divergence_signals` | `app/worker.py:2217` | divergence summary |
+| `provenance` | `app/worker.py:2342` | provenance rows |
+| `psi_discoveries` | `app/worker.py:2382` | discovery counters |
+| `edges` | `app/indexer/edges.py:327` | per-chain edge counts |
+| `wallet_profiles` | `app/indexer/profiles.py:194` | profile build counters |
+| `wallets` | `app/indexer/pipeline.py:786` | wallet batch counters |
+
+**The real gap that surfaced from this re-investigation** (relevant to anyone reading this section to scope attestation work):
+
+1. **`psi_components` and `rpi_components` attest summaries, not components.** Domain names are misleading. Either the names should be changed (e.g. `psi_score_summaries`) or the payloads should expand to per-component arrays matching the `sii_components` pattern.
+2. **`rpi_components` is missing from the daily state root** — the `ATTESTATION_DOMAINS` list at `app/pulse_generator.py:247-255` includes 21 domains but omits `rpi_components`. One-line fix.
+3. **`/api/attestation/{domain}/latest` and `/api/attestation/{domain}/history` endpoints do not exist** — only `/api/state-root/latest`. Adding them is a small new-code task if external verifiers are expected to consume per-domain attestation.
+4. **No per-row `content_hash` + `attested_at` columns on `component_readings`, `psi_components`, `rpi_components`** — this is a different attestation philosophy from the `oracle_price_readings` per-row pattern. Whether to adopt it is a design decision, not a fix.
+
+**FAST-cycle collectors writing without a declared attestation domain — actually fine.** The original appendix claimed `coingecko`/`defillama`/`curve`/`etherscan`/`solana`/`actor_metrics`/`flows`/`offline`/`derived` write `component_readings` rows without attestation. Technically true at the producer level, but the **integration boundary is attested** at `worker.py:599` via `sii_components`, hashing all ~102 normalized scores per stablecoin. Per-collector attestation would multiply hash count without adding verifiability. Treat the original framing as overstated.
+
+**Written-but-not-wired:** Only `app/data_layer/bridge_flow_collector.py` is confirmed dead by the explicit `# DEFERRED (constitution v9.3)` comment at `app/enrichment_worker.py`. All other collectors my sub-agent flagged as "orphaned" are in fact wired through the SLOW cycle or background loops — corrected in Section 1.3 above.
 
 ---
 
@@ -455,11 +482,11 @@ So the effective `START_THIS_WEEK` set is:
 2. **Docs vs schema** — I weighted the code/schema higher than the canonical docs whenever they disagreed. Example: v9.3 says bridge flows are deferred; `main.py` still has a wiring block; I treated the `enrichment_worker.py` comment ("Tier 4 — DEFERRED") as authoritative and flagged the `main.py` path as stale rather than the deferral doc as wrong.
 3. **Framing inheritance** — the robtg4 "PTs as looper infrastructure" framing was visible in Category A. The Step-5 pass deliberately surfaced Categories M / N / O / P / Q which come from different framings (validator risk, gas surface, sentiment, liquidity topology, wallet behaviour composition) to hedge against that.
 4. **Rendering vs collection** — flagged explicitly for **C** (derived view), **E** (classifier), **G** (classifier), **K** (may be coverage only), **P** (derived events). These are cheaper than new collectors and should land first if the decision-maker values shipping over comprehensiveness.
-5. **Unverified claims that should be re-audited** — (a) Category K daily coverage breadth; (b) Category Q wallet-behaviour-tag registry content; (c) whether the 14 orphaned attestation domains are genuine gaps or merely renamed-and-forgotten domains from earlier architecture.
+5. **Unverified claims that should be re-audited** — (a) Category K daily coverage breadth; (b) Category Q wallet-behaviour-tag registry content; (c) ~~whether the 14 orphaned attestation domains are genuine gaps or merely renamed-and-forgotten domains from earlier architecture~~ — **resolved 2026-04-24: all 14 domains are wired; the actual gap is payload-vs-domain-name mismatch in `psi_components`/`rpi_components`, plus a missing entry for `rpi_components` in the state-root composition list (see corrected Section 1.4).**
 
 ---
 
-*End of audit.*
+*End of audit. Section 1.4 corrected 2026-04-24 following ENG-TICKET re-investigation.*
 
 
 
