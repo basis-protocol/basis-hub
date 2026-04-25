@@ -960,7 +960,15 @@ Findings surfaced during engine-adjacent work that are not blockers for the Step
 - **Follow-up:** Migrate the in-memory cache to Redis when Component 4 lands. C4 already requires shared state (event-detection cursor positions, watchlist freshness, pipeline coordination) so the Redis dependency lands in C4 anyway. C1's cache can switch to the same client at that point.
 - **Owner:** C4 session (S4).
 - **Severity:** low (performance only; functional behavior is correct).
-- **Test impact:** `tests/test_engine_coverage.py::test_coverage_cache_hit_behavior` was updated to tolerate worker-cache misses — it now asserts only that the second call isn't catastrophically slower (1.5x ceiling), not that it's faster. Comment in the test references this follow-up.
+- **Test impact:** `tests/test_engine_coverage.py::test_coverage_cache_hit_behavior` was updated to tolerate worker-cache misses — it now asserts only that the second call isn't catastrophically slower (1.5x ceiling), not that it's faster. Comment in the test references this follow-up. (See §11.4 — the cache test was subsequently skipped in-suite once C1 dropped admin-key bypass; cache behavior now verified via manual curl during deploy.)
+
+### 11.4 C1 test surface drift
+
+- **Observed:** 2026-04-25, during S2a verification cycle
+- **Finding:** PR #42 added X-Admin-Key auth to C1 coverage tests to bypass the public 10/min rate limit. C1 endpoint is public; tests now hit a privileged version, not the public surface real users see.
+- **Impact:** Tests pass while public-tier behavior is untested. If public endpoint regresses under rate pressure, CI won't catch it.
+- **Follow-up:** Refactor C1 tests to batch all needed responses into a single session-scoped fixture pre-fetch, eliminate per-test HTTP calls, drop the admin-key dependency. Total HTTP calls during session: 8, fits within 10/min headroom. Mark `test_coverage_cache_hit_behavior` as skip; cache verified via manual curl during deploy.
+- **Priority:** medium. Not blocking engine work, but should be addressed before adding more public endpoints (which would inherit the same testing pattern).
 
 ---
 
