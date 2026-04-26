@@ -17,6 +17,7 @@ import httpx
 import psycopg2
 
 from app.database import fetch_all, fetch_one, execute, get_cursor
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -62,21 +63,39 @@ async def _fetch_tokentx(wallet: str, api_key: str) -> list[dict]:
     from app.shared_rate_limiter import rate_limiter
     await rate_limiter.acquire("etherscan")
 
-    resp = await _client.get(ETHERSCAN_V2_BASE, params={
-        "chainid": 1,
-        "module": "account",
-        "action": "tokentx",
-        "address": wallet,
-        "page": 1,
-        "offset": 1000,
-        "sort": "desc",
-        "apikey": api_key,
-    })
+    _t0 = time.monotonic()
+    _status = None
+    try:
+        resp = await _client.get(ETHERSCAN_V2_BASE, params={
+            "chainid": 1,
+            "module": "account",
+            "action": "tokentx",
+            "address": wallet,
+            "page": 1,
+            "offset": 1000,
+            "sort": "desc",
+            "apikey": api_key,
+        })
+        _status = resp.status_code
 
-    data = resp.json()
-    if data.get("status") != "1":
-        return []
-    return data.get("result", [])
+        data = resp.json()
+        if data.get("status") != "1":
+            return []
+        return data.get("result", [])
+    except Exception:
+        _status = 0
+        raise
+    finally:
+        try:
+            track_api_call(
+                provider="etherscan",
+                endpoint="/v2/api?module=account&action=tokentx",
+                caller="data_layer.transfer_edge_builder",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def _process_wallet(wallet: str, api_key: str) -> dict:

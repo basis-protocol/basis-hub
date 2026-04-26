@@ -21,6 +21,7 @@ import httpx
 import psycopg2
 
 from app.database import fetch_all, fetch_one, get_cursor
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 

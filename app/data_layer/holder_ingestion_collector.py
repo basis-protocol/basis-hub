@@ -23,6 +23,7 @@ import httpx
 import psycopg2
 
 from app.database import fetch_all, fetch_one, get_cursor
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -152,25 +153,44 @@ async def _fetch_holders_etherscan(
     logger.error(f"[holder_ingestion] _fetch_etherscan: rate limiter acquired, making HTTP GET")
 
     chain_id = ETHERSCAN_CHAIN_IDS.get(chain, 1)
-    resp = await client.get(ETHERSCAN_V2_BASE, params={
-        "chainid": chain_id,
-        "module": "token",
-        "action": "tokenholderlist",
-        "contractaddress": contract,
-        "page": page,
-        "offset": offset,
-        "apikey": api_key,
-    }, timeout=30)
+    _t0 = time.monotonic()
+    _status = None
+    try:
+        resp = await client.get(ETHERSCAN_V2_BASE, params={
+            "chainid": chain_id,
+            "module": "token",
+            "action": "tokenholderlist",
+            "contractaddress": contract,
+            "page": page,
+            "offset": offset,
+            "apikey": api_key,
+        }, timeout=30)
+        _status = resp.status_code
 
-    logger.error(f"[holder_ingestion] _fetch_etherscan: HTTP {resp.status_code}, parsing JSON")
-    data = resp.json()
-    if data.get("status") != "1":
-        msg = data.get("message", "unknown error")
-        if "NOTOK" in str(msg) or "No data" in str(msg):
-            return []
-        raise Exception(f"Etherscan holder list: {msg}")
+        logger.error(f"[holder_ingestion] _fetch_etherscan: HTTP {resp.status_code}, parsing JSON")
+        data = resp.json()
+        if data.get("status") != "1":
+            msg = data.get("message", "unknown error")
+            if "NOTOK" in str(msg) or "No data" in str(msg):
+                return []
+            raise Exception(f"Etherscan holder list: {msg}")
 
-    return data.get("result", [])
+        return data.get("result", [])
+    except Exception:
+        if _status is None:
+            _status = 0
+        raise
+    finally:
+        try:
+            track_api_call(
+                provider="etherscan",
+                endpoint=f"/v2/api?module=token&action=tokenholderlist&chainid={chain_id}",
+                caller="data_layer.holder_ingestion_collector",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def _fetch_holders_blockscout(

@@ -16,6 +16,7 @@ import httpx
 import psycopg2
 
 from app.database import fetch_all, fetch_one, get_cursor
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,25 @@ async def run_trace_collection() -> dict:
             # in the supported set for /addresses/{addr}/transactions.
             # Default page size is plenty for trace sampling.
             tx_url = f"https://{host}/api/v2/addresses/{addr}/transactions"
-            resp = await client.get(tx_url)
+            _t0 = time.monotonic()
+            _tx_status = None
+            try:
+                resp = await client.get(tx_url)
+                _tx_status = resp.status_code
+            except Exception:
+                _tx_status = 0
+                raise
+            finally:
+                try:
+                    track_api_call(
+                        provider="blockscout",
+                        endpoint="/api/v2/addresses/transactions",
+                        caller="data_layer.trace_collector",
+                        status=_tx_status,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                    )
+                except Exception:
+                    pass
             logger.error(f"[trace_collector] step E.{i}: HTTP {resp.status_code}")
             if resp.status_code != 200:
                 total_errors += 1
@@ -156,7 +175,25 @@ async def run_trace_collection() -> dict:
                 total_calls += 1
 
                 trace_url = f"https://{host}/api/v2/transactions/{tx_hash}/raw-trace"
-                trace_resp = await client.get(trace_url)
+                _t1 = time.monotonic()
+                _trace_status = None
+                try:
+                    trace_resp = await client.get(trace_url)
+                    _trace_status = trace_resp.status_code
+                except Exception:
+                    _trace_status = 0
+                    raise
+                finally:
+                    try:
+                        track_api_call(
+                            provider="blockscout",
+                            endpoint="/api/v2/transactions/raw-trace",
+                            caller="data_layer.trace_collector",
+                            status=_trace_status,
+                            latency_ms=int((time.monotonic() - _t1) * 1000),
+                        )
+                    except Exception:
+                        pass
 
                 if trace_resp.status_code != 200:
                     total_errors += 1

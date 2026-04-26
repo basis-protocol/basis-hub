@@ -44,6 +44,7 @@ from typing import Any, Iterable
 import httpx
 
 from app.database import execute, fetch_one
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -271,39 +272,60 @@ async def _call_provider(provider: str, method: str, params: list, chain: str,
     if not url:
         raise RPCError(f"no URL configured for provider={provider} chain={chain}")
 
+    _t0 = time.monotonic()
+    _http_status = None
+    _tracker_provider = "alchemy" if provider == RPCProvider.ALCHEMY else "rpc_ethereum"
+    if provider == RPCProvider.DWELLIR:
+        _tracker_provider = "rpc_ethereum"
     try:
-        resp = await client.post(
-            url,
-            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-            timeout=timeout,
-        )
-    except httpx.TimeoutException as e:
-        raise RPCError(f"timeout: {e}", status=599)
-    except httpx.HTTPError as e:
-        raise RPCError(f"network: {e}", status=598)
+        try:
+            resp = await client.post(
+                url,
+                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+                timeout=timeout,
+            )
+        except httpx.TimeoutException as e:
+            _http_status = 0
+            raise RPCError(f"timeout: {e}", status=599)
+        except httpx.HTTPError as e:
+            _http_status = 0
+            raise RPCError(f"network: {e}", status=598)
 
-    if resp.status_code >= 400:
-        raise RPCError(
-            f"HTTP {resp.status_code}: {resp.text[:200]}",
-            status=resp.status_code,
-        )
+        _http_status = resp.status_code
 
-    try:
-        payload = resp.json()
-    except ValueError:
-        raise RPCError(f"non-JSON response: {resp.text[:200]}", status=resp.status_code)
+        if resp.status_code >= 400:
+            raise RPCError(
+                f"HTTP {resp.status_code}: {resp.text[:200]}",
+                status=resp.status_code,
+            )
 
-    if "error" in payload and payload["error"] is not None:
-        err = payload["error"]
-        err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
-        err_code = err.get("code") if isinstance(err, dict) else None
-        raise RPCError(
-            f"rpc error {err_code}: {err_msg}",
-            status=resp.status_code,
-            rpc_code=err_code,
-        )
+        try:
+            payload = resp.json()
+        except ValueError:
+            raise RPCError(f"non-JSON response: {resp.text[:200]}", status=resp.status_code)
 
-    return payload.get("result")
+        if "error" in payload and payload["error"] is not None:
+            err = payload["error"]
+            err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
+            err_code = err.get("code") if isinstance(err, dict) else None
+            raise RPCError(
+                f"rpc error {err_code}: {err_msg}",
+                status=resp.status_code,
+                rpc_code=err_code,
+            )
+
+        return payload.get("result")
+    finally:
+        try:
+            track_api_call(
+                provider=_tracker_provider,
+                endpoint=f"/rpc/{method}",
+                caller="utils.rpc_provider",
+                status=_http_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 def _should_fallback(err: RPCError) -> bool:

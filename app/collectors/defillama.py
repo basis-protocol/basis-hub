@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from app.scoring import normalize_log
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,11 @@ _PROTOCOL_TTL = 86400    # 24 hours
 
 async def fetch_stablecoin_data(client: httpx.AsyncClient, coingecko_id: str) -> dict:
     """Get stablecoin data including chain breakdown."""
+    _t0 = time.monotonic()
+    _status = None
     try:
         resp = await client.get(f"{STABLECOINS_URL}/stablecoins", timeout=15)
+        _status = resp.status_code
         resp.raise_for_status()
         data = resp.json()
         for stable in data.get("peggedAssets", []):
@@ -51,20 +55,36 @@ async def fetch_stablecoin_data(client: httpx.AsyncClient, coingecko_id: str) ->
                 return stable
         return {}
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.error(f"DeFiLlama stablecoin error for {coingecko_id}: {e}")
         return {}
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint="/stablecoins",
+                caller="collectors.defillama",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def fetch_lending_yields(client: httpx.AsyncClient, symbol: str) -> dict:
     """Get lending yields from major protocols."""
+    _t0 = time.monotonic()
+    _status = None
     try:
         resp = await client.get(f"{YIELDS_URL}/pools", timeout=15)
+        _status = resp.status_code
         resp.raise_for_status()
         pools = resp.json().get("data", [])
-        
+
         major_protocols = ["aave", "compound", "morpho", "spark", "maker", "venus", "benqi", "radiant", "fluid"]
         symbol_upper = symbol.upper()
-        
+
         matching = []
         for pool in pools:
             project = pool.get("project", "").lower()
@@ -77,7 +97,7 @@ async def fetch_lending_yields(client: httpx.AsyncClient, symbol: str) -> dict:
                     "tvl": pool.get("tvlUsd", 0),
                     "apy": pool.get("apy", 0),
                 })
-        
+
         return {
             "pool_count": len(matching),
             "total_tvl": sum(p["tvl"] for p in matching),
@@ -85,8 +105,21 @@ async def fetch_lending_yields(client: httpx.AsyncClient, symbol: str) -> dict:
             "protocols": list(set(p["protocol"] for p in matching)),
         }
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.error(f"DeFiLlama yields error for {symbol}: {e}")
         return {"pool_count": 0, "total_tvl": 0, "avg_apy": 0, "protocols": []}
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint="/pools",
+                caller="collectors.defillama",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def collect_defillama_components(
@@ -184,8 +217,11 @@ def fetch_defillama_hacks() -> list[dict]:
     if cached and (time.time() - cached[0]) < _HACKS_TTL:
         return cached[1]
 
+    _t0 = time.monotonic()
+    _status = None
     try:
         resp = httpx.get(f"{LLAMA_BASE}/hacks", timeout=30)
+        _status = resp.status_code
         if resp.status_code == 402:
             # DeFiLlama hacks API paywalled as of April 2026.
             # Circle 7 indices fall back to empty exploit history (score = 100).
@@ -200,10 +236,23 @@ def fetch_defillama_hacks() -> list[dict]:
         logger.info(f"DeFiLlama hacks: fetched {len(hacks)} records")
         return hacks
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.warning(f"DeFiLlama hacks fetch failed: {e}")
         if cached:
             return cached[1]
         return []
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint="/hacks",
+                caller="collectors.defillama",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 def filter_hacks_by_name(hacks: list[dict], name: str) -> list[dict]:
@@ -303,9 +352,12 @@ def fetch_defillama_treasury(protocol: str) -> dict:
 
     result = {"total_usd": 0, "stablecoin_usd": 0, "native_token_usd": 0, "token_breakdown": {}}
 
+    _t0 = time.monotonic()
+    _status = None
     try:
         time.sleep(1)  # rate limit
         resp = httpx.get(f"{LLAMA_BASE}/treasury/{protocol}", timeout=15)
+        _status = resp.status_code
         if resp.status_code != 200:
             _treasury_cache[cache_key] = (time.time(), result)
             return result
@@ -345,7 +397,20 @@ def fetch_defillama_treasury(protocol: str) -> dict:
         _treasury_cache[cache_key] = (time.time(), result)
         logger.info(f"DeFiLlama treasury {protocol}: ${total:,.0f}")
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.warning(f"DeFiLlama treasury fetch failed for {protocol}: {e}")
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint=f"/treasury/{protocol}",
+                caller="collectors.defillama",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
     return result
 
@@ -365,9 +430,12 @@ def fetch_defillama_fees(protocol: str) -> dict:
     result = {"total_daily_fees": 0, "total_daily_revenue": 0,
               "total_30d_fees": 0, "total_30d_revenue": 0}
 
+    _t0 = time.monotonic()
+    _status = None
     try:
         time.sleep(1)  # rate limit
         resp = httpx.get(f"{LLAMA_BASE}/summary/fees/{protocol}", timeout=15)
+        _status = resp.status_code
         if resp.status_code != 200:
             _fees_cache[cache_key] = (time.time(), result)
             return result
@@ -381,7 +449,20 @@ def fetch_defillama_fees(protocol: str) -> dict:
         _fees_cache[cache_key] = (time.time(), result)
         logger.info(f"DeFiLlama fees {protocol}: daily=${result['total_daily_fees']:,.0f}")
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.warning(f"DeFiLlama fees fetch failed for {protocol}: {e}")
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint=f"/summary/fees/{protocol}",
+                caller="collectors.defillama",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
     return result
 
@@ -397,9 +478,12 @@ def fetch_defillama_protocol_detail(protocol: str) -> dict:
     if cached and (time.time() - cached[0]) < _PROTOCOL_TTL:
         return cached[1]
 
+    _t0 = time.monotonic()
+    _status = None
     try:
         time.sleep(1)  # rate limit
         resp = httpx.get(f"{LLAMA_BASE}/protocol/{protocol}", timeout=15)
+        _status = resp.status_code
         if resp.status_code != 200:
             _protocol_cache[cache_key] = (time.time(), {})
             return {}
@@ -409,5 +493,18 @@ def fetch_defillama_protocol_detail(protocol: str) -> dict:
         logger.info(f"DeFiLlama protocol detail {protocol}: fetched")
         return data
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.warning(f"DeFiLlama protocol detail failed for {protocol}: {e}")
         return {}
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint=f"/protocol/{protocol}",
+                caller="collectors.defillama",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass

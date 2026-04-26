@@ -19,6 +19,8 @@ from typing import Optional
 
 import httpx
 
+from app.api_usage_tracker import track_api_call
+
 logger = logging.getLogger(__name__)
 
 CHAIN_HOSTS = {
@@ -54,8 +56,11 @@ async def _request(
 
     for attempt in range(retries):
         async with sem:
+            _t0 = time.monotonic()
+            _status = None
             try:
                 resp = await client.get(url, params=params, timeout=30)
+                _status = resp.status_code
                 if resp.status_code == 200:
                     return resp.json()
                 if resp.status_code == 429:
@@ -69,11 +74,23 @@ async def _request(
                 logger.debug(f"Blockscout {resp.status_code}: {url}")
                 return None
             except Exception as e:
+                _status = 0
                 if attempt < retries - 1:
                     await asyncio.sleep(2 ** attempt)
                 else:
                     logger.warning(f"Blockscout request failed: {url}: {e}")
                     return None
+            finally:
+                try:
+                    track_api_call(
+                        provider="blockscout",
+                        endpoint=path,
+                        caller="utils.blockscout_v2",
+                        status=_status,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                    )
+                except Exception:
+                    pass
     return None
 
 

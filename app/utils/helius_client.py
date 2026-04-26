@@ -10,9 +10,12 @@ Requires HELIUS_API_KEY in env. If not set, all methods return empty.
 import asyncio
 import logging
 import os
+import time as _time
 from typing import Optional
 
 import httpx
+
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +43,15 @@ async def _rpc_call(
 
     for attempt in range(retries):
         async with _semaphore:
+            _t0 = _time.monotonic()
+            _status = None
             try:
                 resp = await client.post(
                     HELIUS_RPC,
                     json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
                     timeout=30,
                 )
+                _status = resp.status_code
                 if resp.status_code == 429:
                     await asyncio.sleep(2 ** (attempt + 1))
                     continue
@@ -55,11 +61,23 @@ async def _rpc_call(
                     return None
                 return data.get("result")
             except Exception as e:
+                _status = 0
                 if attempt < retries - 1:
                     await asyncio.sleep(2 ** attempt)
                 else:
                     logger.warning(f"Helius RPC failed: {method}: {e}")
                     return None
+            finally:
+                try:
+                    track_api_call(
+                        provider="helius",
+                        endpoint=f"/rpc/{method}",
+                        caller="utils.helius_client",
+                        status=_status,
+                        latency_ms=int((_time.monotonic() - _t0) * 1000),
+                    )
+                except Exception:
+                    pass
     return None
 
 

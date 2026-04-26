@@ -18,6 +18,8 @@ from typing import Optional
 
 import httpx
 
+from app.api_usage_tracker import track_api_call
+
 logger = logging.getLogger(__name__)
 
 BLOCKSCOUT_BASE = "https://api.blockscout.com/v2/api"
@@ -87,8 +89,10 @@ async def blockscout_call(
         params.update(extra_params)
 
     start = time.monotonic()
+    _status = None
     try:
         resp = await client.get(BLOCKSCOUT_BASE, params=params, timeout=timeout)
+        _status = resp.status_code
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _track_credit()
 
@@ -97,6 +101,7 @@ async def blockscout_call(
         return data
 
     except Exception as e:
+        _status = 0
         elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.debug(f"Blockscout call failed: {module}/{action} chain={chain_id}: {e}")
         return {
@@ -106,6 +111,17 @@ async def blockscout_call(
             "_blockscout_response_time_ms": elapsed_ms,
             "_blockscout_error": True,
         }
+    finally:
+        try:
+            track_api_call(
+                provider="blockscout",
+                endpoint=f"/v2/api?module={module}&action={action}&chain_id={chain_id}",
+                caller="utils.blockscout_client",
+                status=_status,
+                latency_ms=int((time.monotonic() - start) * 1000),
+            )
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -196,8 +212,10 @@ async def get_token_holder_count(
     url = f"https://{host}/api/v2/tokens/{contract_address}/counters"
 
     start = time.monotonic()
+    _status = None
     try:
         resp = await client.get(url, timeout=20)
+        _status = resp.status_code
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _track_credit()
 
@@ -216,6 +234,7 @@ async def get_token_holder_count(
             "_blockscout_response_time_ms": elapsed_ms,
         }
     except Exception as e:
+        _status = 0
         elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.debug(f"Blockscout V2 token holder count failed: {e}")
         return {
@@ -224,6 +243,17 @@ async def get_token_holder_count(
             "_blockscout_response_time_ms": elapsed_ms,
             "_blockscout_error": True,
         }
+    finally:
+        try:
+            track_api_call(
+                provider="blockscout",
+                endpoint=f"/api/v2/tokens/counters?chain_id={chain_id}",
+                caller="utils.blockscout_client",
+                status=_status,
+                latency_ms=int((time.monotonic() - start) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def get_token_holder_list(

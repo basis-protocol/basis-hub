@@ -15,6 +15,7 @@ import httpx
 import psycopg2
 
 from app.database import fetch_all, fetch_one, get_cursor
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,25 @@ async def run_approval_collection() -> dict:
             total_calls += 1
 
             url = f"https://{host}/api/v2/addresses/{addr}/token-transfers"
-            resp = await client.get(url)
+            _t0 = time.monotonic()
+            _ap_status = None
+            try:
+                resp = await client.get(url)
+                _ap_status = resp.status_code
+            except Exception:
+                _ap_status = 0
+                raise
+            finally:
+                try:
+                    track_api_call(
+                        provider="blockscout",
+                        endpoint="/api/v2/addresses/token-transfers",
+                        caller="data_layer.approval_collector",
+                        status=_ap_status,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                    )
+                except Exception:
+                    pass
             if wi < 3:
                 logger.error(f"[approval_collector] step E.{wi}: HTTP {resp.status_code}")
 
