@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 
 import httpx
+import psycopg2
 
 from app.database import fetch_all, fetch_one, get_cursor
 
@@ -179,6 +180,7 @@ async def wallet_presence_background_loop():
     """Independent background loop — runs presence scan daily."""
     logger.error("[presence_bg] background loop started")
     await asyncio.sleep(180)  # stagger behind holder loops
+    consecutive_db_failures = 0
 
     while True:
         try:
@@ -209,6 +211,17 @@ async def wallet_presence_background_loop():
             result = await run_wallet_presence_scan()
             logger.error(f"[presence_bg] scan complete: {result}")
             await asyncio.sleep(22 * 3600)
+            consecutive_db_failures = 0
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            consecutive_db_failures += 1
+            if consecutive_db_failures >= 10:
+                logger.critical(f"[presence_bg] {consecutive_db_failures} consecutive DB failures — exiting")
+                raise SystemExit(1)
+            elif consecutive_db_failures >= 3:
+                logger.error(f"[presence_bg] DB failure #{consecutive_db_failures}: {e}")
+            else:
+                logger.warning(f"[presence_bg] DB failure (will retry): {e}")
+            await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"[presence_bg] ERROR: {type(e).__name__}: {e}")
             await asyncio.sleep(300)

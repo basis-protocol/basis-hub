@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone
 
 import httpx
+import psycopg2
 
 from app.database import fetch_all, fetch_one, get_cursor
 
@@ -241,6 +242,7 @@ LOOP_GATE_HOURS = 6              # run at most every 6h
 async def trace_collector_background_loop():
     logger.error("[trace_bg] background loop started")
     await asyncio.sleep(90)       # initial delay — let pool init complete
+    consecutive_db_failures = 0
     while True:
         try:
             last = fetch_one(
@@ -266,8 +268,20 @@ async def trace_collector_background_loop():
                     f"[trace_bg] gate closed (last_run={age_h:.1f}h ago, "
                     f"threshold={LOOP_GATE_HOURS}h) — sleeping 1h"
                 )
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            consecutive_db_failures += 1
+            if consecutive_db_failures >= 10:
+                logger.critical(f"[trace_bg] {consecutive_db_failures} consecutive DB failures — exiting")
+                raise SystemExit(1)
+            elif consecutive_db_failures >= 3:
+                logger.error(f"[trace_bg] DB failure #{consecutive_db_failures}: {e}")
+            else:
+                logger.warning(f"[trace_bg] DB failure (will retry): {e}")
+            await asyncio.sleep(60)
+            continue
         except Exception as e:
             logger.error(f"[trace_bg] loop error: {type(e).__name__}: {e}")
             await asyncio.sleep(300)
             continue
         await asyncio.sleep(LOOP_CHECK_INTERVAL)
+        consecutive_db_failures = 0

@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timezone
 
 import httpx
+import psycopg2
 
 from app.database import fetch_all, fetch_one, execute, get_cursor
 
@@ -177,6 +178,8 @@ async def transfer_edge_builder_background_loop():
         logger.error("[transfer_edge_bg] no ETHERSCAN_API_KEY — disabled")
         return
 
+    consecutive_db_failures = 0
+
     while True:
         try:
             usage = _get_etherscan_24h_usage()
@@ -222,7 +225,18 @@ async def transfer_edge_builder_background_loop():
             )
 
             await asyncio.sleep(BATCH_INTERVAL)
+            consecutive_db_failures = 0
 
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            consecutive_db_failures += 1
+            if consecutive_db_failures >= 10:
+                logger.critical(f"[transfer_edge_bg] {consecutive_db_failures} consecutive DB failures — exiting")
+                raise SystemExit(1)
+            elif consecutive_db_failures >= 3:
+                logger.error(f"[transfer_edge_bg] DB failure #{consecutive_db_failures}: {e}")
+            else:
+                logger.warning(f"[transfer_edge_bg] DB failure (will retry): {e}")
+            await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"[transfer_edge_bg] loop error: {type(e).__name__}: {e}")
             await asyncio.sleep(600)

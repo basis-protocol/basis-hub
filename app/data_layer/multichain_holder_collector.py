@@ -18,6 +18,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 import httpx
+import psycopg2
 
 from app.database import fetch_all, fetch_one, get_cursor
 
@@ -238,6 +239,7 @@ async def multichain_holder_background_loop():
     """Independent background loop — runs multi-chain holder scan weekly."""
     logger.error("[multichain_bg] background loop started")
     await asyncio.sleep(120)  # stagger behind holder_ingestion
+    consecutive_db_failures = 0
 
     while True:
         try:
@@ -260,6 +262,17 @@ async def multichain_holder_background_loop():
             result = await run_multichain_holder_scan()
             logger.error(f"[multichain_bg] scan complete: {result}")
             await asyncio.sleep(168 * 3600)
+            consecutive_db_failures = 0
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            consecutive_db_failures += 1
+            if consecutive_db_failures >= 10:
+                logger.critical(f"[multichain_bg] {consecutive_db_failures} consecutive DB failures — exiting")
+                raise SystemExit(1)
+            elif consecutive_db_failures >= 3:
+                logger.error(f"[multichain_bg] DB failure #{consecutive_db_failures}: {e}")
+            else:
+                logger.warning(f"[multichain_bg] DB failure (will retry): {e}")
+            await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"[multichain_bg] ERROR: {type(e).__name__}: {e}")
             await asyncio.sleep(300)

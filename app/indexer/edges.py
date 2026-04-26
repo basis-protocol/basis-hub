@@ -16,6 +16,7 @@ import json
 from datetime import datetime, timezone
 
 import httpx
+import psycopg2
 
 from app.database import fetch_all, fetch_one, execute
 from app.indexer.config import (
@@ -461,6 +462,7 @@ async def edge_builder_background_loop():
     """Independent background loop for Sprint 3 edge graph density."""
     logger.error("[edge_builder_bg] background loop started")
     await asyncio.sleep(240)  # stagger behind other Phase 2 loops
+    consecutive_db_failures = 0
 
     while True:
         try:
@@ -506,7 +508,18 @@ async def edge_builder_background_loop():
 
             # Short sleep before next batch — continuous while there are wallets to scan
             await asyncio.sleep(300)
+            consecutive_db_failures = 0
 
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            consecutive_db_failures += 1
+            if consecutive_db_failures >= 10:
+                logger.critical(f"[edge_builder_bg] {consecutive_db_failures} consecutive DB failures — exiting")
+                raise SystemExit(1)
+            elif consecutive_db_failures >= 3:
+                logger.error(f"[edge_builder_bg] DB failure #{consecutive_db_failures}: {e}")
+            else:
+                logger.warning(f"[edge_builder_bg] DB failure (will retry): {e}")
+            await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"[edge_builder_bg] ERROR: {type(e).__name__}: {e}")
             await asyncio.sleep(600)
