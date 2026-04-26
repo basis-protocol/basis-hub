@@ -19,9 +19,12 @@ in the slow cycle.
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from app.database import fetch_one, fetch_all, execute
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +331,20 @@ async def run_provenance_health_recheck():
                 continue
 
             try:
-                resp = await client.head(url)
+                _t0 = time.monotonic()
+                _status = None
+                try:
+                    resp = await client.head(url)
+                    _status = resp.status_code
+                except Exception:
+                    _status = 0
+                    raise
+                finally:
+                    try:
+                        _provider = urlparse(url).netloc or "unknown"
+                        track_api_call(provider=_provider, endpoint="HEAD", caller="data_layer.prover_source_registry", status=_status, latency_ms=int((time.monotonic() - _t0) * 1000))
+                    except Exception:
+                        pass
 
                 if resp.status_code == 200:
                     record_re_enable(source_id)

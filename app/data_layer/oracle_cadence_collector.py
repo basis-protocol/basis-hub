@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.database import fetch_all, fetch_one, get_cursor
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +47,22 @@ def _get_rpc_url(chain: str) -> str:
 
 
 async def _eth_call(client: httpx.AsyncClient, rpc_url: str, to: str, data: str) -> str:
-    resp = await client.post(rpc_url, json={
-        "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-        "params": [{"to": to, "data": data}, "latest"],
-    })
+    _t0 = time.monotonic()
+    _status = None
+    try:
+        resp = await client.post(rpc_url, json={
+            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+            "params": [{"to": to, "data": data}, "latest"],
+        })
+        _status = resp.status_code
+    except Exception:
+        _status = 0
+        raise
+    finally:
+        try:
+            track_api_call(provider="alchemy", endpoint="eth_call", caller="data_layer.oracle_cadence_collector", status=_status, latency_ms=int((time.monotonic() - _t0) * 1000))
+        except Exception:
+            pass
     result = resp.json()
     if "error" in result:
         raise Exception(result["error"].get("message", str(result["error"])))

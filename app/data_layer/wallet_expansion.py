@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.api_usage_tracker import track_api_call
+
 logger = logging.getLogger(__name__)
 
 ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api"
@@ -111,22 +113,34 @@ async def run_wallet_graph_expansion(
     # 2. Define producer function (fetch tokentx)
     async def fetch_tokentx(client: httpx.AsyncClient, wallet: dict) -> dict:
         nonlocal _api_errors
-        resp = await client.get(
-            ETHERSCAN_V2_BASE,
-            params={
-                "chainid": 1,
-                "module": "account",
-                "action": "tokentx",
-                "address": wallet["address"],
-                "startblock": 0,
-                "endblock": 99999999,
-                "page": 1,
-                "offset": 50,
-                "sort": "desc",
-                "apikey": ETHERSCAN_API_KEY,
-            },
-            timeout=15,
-        )
+        _t0 = time.monotonic()
+        _status = None
+        try:
+            resp = await client.get(
+                ETHERSCAN_V2_BASE,
+                params={
+                    "chainid": 1,
+                    "module": "account",
+                    "action": "tokentx",
+                    "address": wallet["address"],
+                    "startblock": 0,
+                    "endblock": 99999999,
+                    "page": 1,
+                    "offset": 50,
+                    "sort": "desc",
+                    "apikey": ETHERSCAN_API_KEY,
+                },
+                timeout=15,
+            )
+            _status = resp.status_code
+        except Exception:
+            _status = 0
+            raise
+        finally:
+            try:
+                track_api_call(provider="etherscan", endpoint="account/tokentx", caller="data_layer.wallet_expansion", status=_status, latency_ms=int((time.monotonic() - _t0) * 1000))
+            except Exception:
+                pass
         if resp.status_code == 429 or "Max rate limit" in resp.text:
             _api_errors += 1
             raise httpx.HTTPStatusError(
@@ -362,14 +376,26 @@ async def run_multi_source_seeding() -> dict:
                     if not contract or not contract.startswith("0x"):
                         continue
                     try:
-                        resp = await client.get(
-                            ETHERSCAN_V2_BASE,
-                            params={
-                                "chainid": 1, "module": "token", "action": "tokenholderlist",
-                                "contractaddress": contract, "page": 1, "offset": 50,
-                                "apikey": api_key,
-                            },
-                        )
+                        _t0 = time.monotonic()
+                        _status = None
+                        try:
+                            resp = await client.get(
+                                ETHERSCAN_V2_BASE,
+                                params={
+                                    "chainid": 1, "module": "token", "action": "tokenholderlist",
+                                    "contractaddress": contract, "page": 1, "offset": 50,
+                                    "apikey": api_key,
+                                },
+                            )
+                            _status = resp.status_code
+                        except Exception:
+                            _status = 0
+                            raise
+                        finally:
+                            try:
+                                track_api_call(provider="etherscan", endpoint="token/tokenholderlist", caller="data_layer.wallet_expansion", status=_status, latency_ms=int((time.monotonic() - _t0) * 1000))
+                            except Exception:
+                                pass
                         if resp.status_code != 200:
                             continue
                         data = resp.json()
