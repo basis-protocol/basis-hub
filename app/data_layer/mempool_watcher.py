@@ -390,6 +390,7 @@ async def run_watcher(chain: str = "ethereum") -> None:
 
     reconnect_delay = WS_RECONNECT_BASE_DELAY_SEC
     paused_until: float = 0.0
+    consecutive_failures = 0
 
     while True:
         # Cost-control gate.
@@ -440,6 +441,7 @@ async def run_watcher(chain: str = "ethereum") -> None:
                 close_timeout=5,
             ) as ws:
                 reconnect_delay = WS_RECONNECT_BASE_DELAY_SEC  # reset on successful connect
+                consecutive_failures = 0
                 events = await _subscribe_and_consume(ws, watchlist)
                 logger.warning(
                     f"[mempool_watcher] connection closed after {events:,} events"
@@ -452,11 +454,24 @@ async def run_watcher(chain: str = "ethereum") -> None:
             logger.error("[mempool_watcher] cancelled; shutting down cleanly")
             raise
         except Exception as e:
+            consecutive_failures += 1
             elapsed = int(time.time() - connect_started)
-            logger.error(
-                f"[mempool_watcher] connection error after {elapsed}s: "
-                f"{type(e).__name__}: {e}"
-            )
+            if consecutive_failures >= 20:
+                logger.critical(
+                    f"[mempool_watcher] {consecutive_failures} consecutive failures — "
+                    f"exiting to trigger restart. Last: {type(e).__name__}: {e}"
+                )
+                raise SystemExit(1)
+            elif consecutive_failures >= 5:
+                logger.error(
+                    f"[mempool_watcher] failure #{consecutive_failures} after {elapsed}s: "
+                    f"{type(e).__name__}: {e}"
+                )
+            else:
+                logger.warning(
+                    f"[mempool_watcher] connection error after {elapsed}s: "
+                    f"{type(e).__name__}: {e}"
+                )
 
         await asyncio.sleep(reconnect_delay)
         reconnect_delay = min(reconnect_delay * 2, WS_RECONNECT_MAX_DELAY_SEC)

@@ -3450,33 +3450,53 @@ async def main():
             except Exception as _ac_err:
                 logger.error(f"[startup] approval_collector loop failed to launch: {_ac_err}")
 
+            import psycopg2 as _pg2
             cycle_counter = 0
+            consecutive_cycle_db_failures = 0
             while True:
-                # Fast cycle — runs every interval
                 try:
-                    await asyncio.wait_for(run_fast_cycle(), timeout=FAST_CYCLE_TIMEOUT)
-                except asyncio.TimeoutError:
-                    logger.error("Fast cycle exceeded 30-minute timeout")
-
-                # Enrichment cycle — runs every cycle now that fast cycle is <20 min
-                cycle_counter += 1
-                try:
-                    logger.error(f"=== Starting enrichment (cycle {cycle_counter}) ===")
-                    await asyncio.wait_for(run_slow_cycle_parallel(), timeout=SLOW_CYCLE_TIMEOUT)
-                except asyncio.TimeoutError:
-                    logger.error("Enrichment exceeded 60-minute timeout")
-
-                # Governance crawl — every 6th cycle (~6 hours)
-                if cycle_counter % 6 == 0:
+                    # Fast cycle — runs every interval
                     try:
-                        from app.governance import run_crawl as gov_crawl
-                        logger.info("Running governance crawl...")
-                        gov_crawl(since_days=7)
-                    except Exception as e:
-                        logger.warning(f"Governance crawl failed: {e}")
+                        await asyncio.wait_for(run_fast_cycle(), timeout=FAST_CYCLE_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.error("Fast cycle exceeded 30-minute timeout")
 
-                logger.info(f"Sleeping {args.interval} minutes...")
-                await asyncio.sleep(args.interval * 60)
+                    # Enrichment cycle — runs every cycle now that fast cycle is <20 min
+                    cycle_counter += 1
+                    try:
+                        logger.error(f"=== Starting enrichment (cycle {cycle_counter}) ===")
+                        await asyncio.wait_for(run_slow_cycle_parallel(), timeout=SLOW_CYCLE_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.error("Enrichment exceeded 60-minute timeout")
+
+                    # Governance crawl — every 6th cycle (~6 hours)
+                    if cycle_counter % 6 == 0:
+                        try:
+                            from app.governance import run_crawl as gov_crawl
+                            logger.info("Running governance crawl...")
+                            gov_crawl(since_days=7)
+                        except Exception as e:
+                            logger.warning(f"Governance crawl failed: {e}")
+
+                    consecutive_cycle_db_failures = 0
+                    logger.info(f"Sleeping {args.interval} minutes...")
+                    await asyncio.sleep(args.interval * 60)
+
+                except (_pg2.OperationalError, _pg2.InterfaceError) as db_err:
+                    consecutive_cycle_db_failures += 1
+                    if consecutive_cycle_db_failures >= 5:
+                        logger.critical(
+                            f"[main_loop] {consecutive_cycle_db_failures} consecutive DB failures — "
+                            f"exiting to trigger restart. Last: {db_err}"
+                        )
+                        raise SystemExit(1)
+                    logger.error(f"[main_loop] DB failure #{consecutive_cycle_db_failures}: {db_err}")
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as cycle_err:
+                    logger.error(f"[main_loop] cycle error: {type(cycle_err).__name__}: {cycle_err}")
+                    await asyncio.sleep(60)
         else:
             # Single-run mode: run both cycles (backward compat)
             await run_scoring_cycle()
