@@ -28,6 +28,7 @@ from typing import Optional
 from uuid import UUID
 
 from app.engine.coverage import get_entity_coverage
+from app.engine.observation_builder import build_signal
 from app.engine.schemas import (
     AnalysisCreate,
     ArtifactRecommendation,
@@ -36,7 +37,9 @@ from app.engine.schemas import (
     Signal,
 )
 
-ANALYSIS_VERSION_S2A = "v0.1-s2a-stub"
+# Bumped from v0.1-s2a-stub: signal is now real data (per S2b). Interpretation
+# and artifact_recommendation remain stubs until S2c lands the LLM path.
+ANALYSIS_VERSION_S2A = "v0.1-s2b-real-signal"
 STUB_PROMPT_VERSION = "stub-s2a"
 STUB_MODEL_ID = "template:stub"
 
@@ -75,13 +78,13 @@ def compute_inputs_hash(
 # ─────────────────────────────────────────────────────────────────
 
 def _stub_signal() -> Signal:
-    """Empty signal for S2a. S2b populates real observations.
+    """Empty signal — used only as a fallback when build_signal can't
+    produce anything (no covered indexes have any data in any window).
+    Trivially satisfies the AnalysisCreate event-window invariant
+    because all four lists are empty.
 
-    Note: the AnalysisCreate model_validator enforces that `baseline` is
-    populated iff event_date is None, and the windowed lists are populated
-    iff event_date is not None. An empty Signal (all four lists empty)
-    trivially satisfies both directions of the invariant because there's
-    nothing to contradict.
+    S2a used this unconditionally; S2b prefers real observations from
+    build_signal and only falls back here if every fetch returns empty.
     """
     return Signal()
 
@@ -150,16 +153,31 @@ def build_stub_analysis(
     previous_analysis_id: Optional[UUID] = None,
     supersedes_reason: Optional[str] = None,
 ) -> AnalysisCreate:
-    """Assemble an AnalysisCreate object in S2a stub mode.
+    """Assemble an AnalysisCreate.
 
-    Callers: POST /api/engine/analyze handler. Coverage is fetched once by
-    the handler and passed here; this function does not do I/O.
+    S2b: Signal is now real (computed by app.engine.observation_builder
+    from production data). Interpretation and artifact_recommendation
+    remain stubs; S2c lands real LLM interpretation.
+
+    Function name preserved from S2a so analyze_router doesn't need to
+    change. The "stub" qualifier still applies to interpretation +
+    artifact_recommendation, just no longer to signal.
+
+    Callers: POST /api/engine/analyze handler. Coverage is fetched once
+    by the handler and passed here; the signal build does its own DB
+    reads (sync, runs synchronously inside this call).
     """
     inputs_hash = compute_inputs_hash(
         entity=entity,
         event_date=event_date,
         peer_set=peer_set,
         coverage_snapshot_hash=coverage.data_snapshot_hash,
+    )
+    signal = build_signal(
+        entity=entity,
+        event_date=event_date,
+        peer_set=peer_set,
+        coverage=coverage,
     )
     return AnalysisCreate(
         analysis_version=ANALYSIS_VERSION_S2A,
@@ -168,7 +186,7 @@ def build_stub_analysis(
         peer_set=peer_set,
         context=context,
         coverage=coverage,
-        signal=_stub_signal(),
+        signal=signal,
         interpretation=_stub_interpretation(entity, inputs_hash),
         methodology_observations=[],
         follow_ups=[],
