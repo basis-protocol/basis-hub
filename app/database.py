@@ -36,6 +36,7 @@ def init_pool(database_url: Optional[str] = None, min_conn: int = 2, max_conn: i
             keepalives_idle=30,     # start probing after 30 s idle
             keepalives_interval=10, # retry probe every 10 s
             keepalives_count=5,     # drop after 5 failed probes
+            connect_timeout=10,     # 10s connection timeout
             options="-c statement_timeout=120000",  # 120 s query timeout
         )
         logger.info(f"Database pool initialized (min={min_conn}, max={max_conn}, keepalives=on)")
@@ -84,15 +85,17 @@ def get_conn():
     # the connection (TCP-level drop is invisible to psycopg2 until a round-trip).
     # A cheap SELECT 1 catches these broken connections before the caller's query.
     # Retry up to 2 times so the replacement connection is also validated.
-    _max_ping_attempts = 2
+    _max_ping_attempts = 3
+    _ping_ok = False
     for _attempt in range(_max_ping_attempts):
         try:
             cur = conn.cursor()
             cur.execute("SELECT 1")
             cur.close()
+            _ping_ok = True
             break  # connection is healthy
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as ping_err:
-            logger.warning(
+            logger.error(
                 "Connection failed liveness ping (attempt %d/%d) — discarding and replacing: %s",
                 _attempt + 1, _max_ping_attempts, ping_err,
             )
@@ -100,9 +103,20 @@ def get_conn():
                 _pool.putconn(conn, close=True)
             except Exception:
                 pass
-            # Fetch a fresh connection for the next ping attempt (or for the
-            # caller if all retries are exhausted).
             conn = _pool.getconn()
+
+    if not _ping_ok:
+        logger.critical(
+            "All %d liveness pings failed — Neon SSL connection unrecoverable. "
+            "Raising to force caller retry.",
+            _max_ping_attempts,
+        )
+        try:
+            _pool.putconn(conn, close=True)
+        except Exception:
+            pass
+        raise psycopg2.OperationalError("Database connection unrecoverable after liveness ping failures")
+
     try:
         yield conn
         conn.commit()
