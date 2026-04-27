@@ -27,6 +27,14 @@ Idempotency: callers are encouraged to spawn process_event(event_id) via
 asyncio.create_task and forget it — running process_event twice on the
 same event_id is harmless (the second pass sees the analysis is already
 linked and short-circuits).
+
+C5 addition: post_analysis_render_default_artifact() lives here as the
+auto-render-on-finalize hook. After background_tasks.finalize_analysis
+flips a row from 'pending' to 'draft', it calls this function which
+loads the analysis, renders the recommended artifact (skipping
+'nothing', blocked, or duplicate cases), and posts a Slack
+notification. Failures are caught and logged — finalize_analysis must
+not be blocked by render or Slack issues.
 """
 
 from __future__ import annotations
@@ -37,7 +45,12 @@ from typing import Optional
 from uuid import UUID
 
 from app.database import fetch_one, get_cursor
+from app.engine.analysis_persistence import get_analysis
 from app.engine.analysis_pipeline import TriggerResult, trigger_analysis
+from app.engine.artifact_persistence import find_active_artifact
+from app.engine.render import KNOWN_ARTIFACT_TYPES, render_artifact
+from app.engine.schemas import ArtifactResponse
+from app.engine.slack import post_artifact_notification
 
 logger = logging.getLogger(__name__)
 
@@ -191,3 +204,87 @@ async def process_event(event_id: UUID) -> dict:
         "analysis_id": str(result.analysis_id) if result.analysis_id else None,
         "status": new_status,
     }
+
+
+# ─────────────────────────────────────────────────────────────────
+# Auto-render hook (C5)
+# ─────────────────────────────────────────────────────────────────
+
+async def post_analysis_render_default_artifact(
+    analysis_id: UUID,
+    review_url_base: Optional[str] = None,
+) -> Optional[ArtifactResponse]:
+    """After finalize_analysis flips an analysis to 'draft', auto-render
+    the recommended artifact and notify Slack.
+
+    Returns the rendered artifact on success, the existing active
+    artifact on duplicate, or None when the hook deliberately skips
+    (recommendation is 'nothing', blocked, unknown type, or analysis
+    missing). Never raises; finalize_analysis must not be blocked.
+    """
+    try:
+        analysis = await get_analysis(analysis_id)
+        if analysis is None:
+            logger.warning(
+                "post_analysis_render_default_artifact: analysis %s not found",
+                analysis_id,
+            )
+            return None
+
+        recommendation = analysis.artifact_recommendation
+        recommended = recommendation.recommended
+
+        if recommended == "nothing":
+            logger.info(
+                "post_analysis_render_default_artifact: analysis_id=%s "
+                "recommendation=nothing — skipping auto-render",
+                analysis_id,
+            )
+            return None
+
+        if recommended in recommendation.blocked:
+            logger.warning(
+                "post_analysis_render_default_artifact: analysis_id=%s "
+                "recommended=%s is also in blocked — skipping",
+                analysis_id, recommended,
+            )
+            return None
+
+        if recommended not in KNOWN_ARTIFACT_TYPES:
+            logger.warning(
+                "post_analysis_render_default_artifact: analysis_id=%s "
+                "recommended type %s not in renderer registry — skipping",
+                analysis_id, recommended,
+            )
+            return None
+
+        existing = await find_active_artifact(analysis_id, recommended)
+        if existing is not None:
+            logger.info(
+                "post_analysis_render_default_artifact: analysis_id=%s "
+                "type=%s already has active artifact %s — skipping",
+                analysis_id, recommended, existing.id,
+            )
+            return existing
+
+        artifact = await render_artifact(analysis, recommended)
+
+        review_url = (
+            f"{review_url_base.rstrip('/')}/api/engine/artifacts/{artifact.id}"
+            if review_url_base
+            else f"/api/engine/artifacts/{artifact.id}"
+        )
+        notification = post_artifact_notification(artifact, analysis, review_url)
+        logger.info(
+            "post_analysis_render_default_artifact: analysis_id=%s "
+            "artifact_id=%s notification=%s",
+            analysis_id, artifact.id, notification,
+        )
+        return artifact
+
+    except Exception as exc:
+        logger.exception(
+            "post_analysis_render_default_artifact: failed for analysis_id=%s: %s",
+            analysis_id, exc,
+        )
+        return None
