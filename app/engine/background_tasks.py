@@ -66,6 +66,10 @@ from app.engine.interpretation import get_or_call_interpretation
 from app.engine.observation_builder import build_signal
 from app.engine.recommendation import derive_recommendation
 
+# Deferred import (inside finalize_analysis) to break the circular
+# import chain: background_tasks → event_pipeline → analysis_pipeline →
+# background_tasks. The import happens lazily on first finalize call.
+
 logger = logging.getLogger(__name__)
 
 
@@ -161,6 +165,15 @@ async def finalize_analysis(analysis_id: UUID) -> None:
             "finalize_analysis: UPDATE complete id=%s — analysis is now status=draft",
             analysis_id,
         )
+
+        # C5 auto-render hook: render recommended artifact + post Slack
+        # notification. Best-effort; never raises (catches internally).
+        # Deferred import keeps event_pipeline.py off the import-time
+        # graph (see _IN_FLIGHT_TASKS comment block above for the chain).
+        from app.engine.event_pipeline import (
+            post_analysis_render_default_artifact,
+        )
+        await post_analysis_render_default_artifact(analysis_id)
     except Exception as exc:
         logger.exception(
             "finalize_analysis: failed for id=%s: %s — flipping to "
