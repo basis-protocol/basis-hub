@@ -184,17 +184,20 @@ const coverageColor = (q) => {
   return T.accent;
 };
 const confidenceBadge = (conf, tag, populated, total, missing) => {
-  if (!conf || conf === "high") return null;
-  const isStandard = conf === "standard";
-  const tip = isStandard
-    ? `Scored with standard data coverage (${populated || "?"} of ${total || "?"} components)`
-    : `Scored with limited data coverage (${populated || "?"} of ${total || "?"} components)${missing && missing.length ? ". " + missing.join(", ") + " categories have incomplete data" : ""}`;
+  if (!conf || conf === "high" || conf === "medium" || conf === "standard") return null;
+  const isInsufficient = conf === "insufficient";
+  const label = isInsufficient ? "insufficient coverage" : "limited coverage";
+  const tip = isInsufficient
+    ? `Insufficient data coverage (${populated || "?"} of ${total || "?"} components)${missing && missing.length ? ". " + missing.join(", ") + " categories missing data" : ""}`
+    : `Limited data coverage (${populated || "?"} of ${total || "?"} components)${missing && missing.length ? ". " + missing.join(", ") + " categories have incomplete data" : ""}`;
   return (
     <span title={tip} style={{
       fontFamily: T.sans, fontSize: 10, fontWeight: 500,
-      color: "#854F0B", background: "#FAEEDA", padding: "2px 8px", borderRadius: 100,
+      color: isInsufficient ? "#991B1B" : "#854F0B",
+      background: isInsufficient ? "#FEE2E2" : "#FAEEDA",
+      padding: "2px 8px", borderRadius: 100,
       marginLeft: 6, cursor: "help", whiteSpace: "nowrap",
-    }}>partial coverage</span>
+    }}>{label}</span>
   );
 };
 const fmtB = (n) => {
@@ -962,10 +965,10 @@ function RankingsView({ scores, loading, onSelect, ts, mobile, meta }) {
             <span style={{ fontFamily: T.mono, fontSize: 28, fontWeight: 700, color: scoreColor(coin.score), marginLeft: "auto", lineHeight: 1 }}>
               {fmt(coin.score, 1)}
             </span>
-            {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 30 }}>
             <span style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint }}>{coin.issuer}</span>
+            {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
             <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint }}>·</span>
             <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint }}>{coin.price != null ? `$${coin.price.toFixed(4)}` : ""}</span>
           </div>
@@ -1058,14 +1061,16 @@ function RankingsView({ scores, loading, onSelect, ts, mobile, meta }) {
               <div style={{ width: 1, height: 12, background: T.ruleMid, margin: "0 10px", alignSelf: "center" }} />
               <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 500, color: T.inkLight }}>{fmt(coin.score, 1)}</span>
             </div>
-            <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint, marginTop: 1 }}>{coin.issuer}</div>
+            <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint, marginTop: 1, display: "flex", alignItems: "center" }}>
+              {coin.issuer}
+              {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
+            </div>
           </div>
 
-          <div style={{ paddingLeft: 8, display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ paddingLeft: 8, display: "flex", alignItems: "center", gap: 6, overflow: "hidden", minWidth: 0 }}>
             <span style={{ fontFamily: T.mono, fontSize: 38, fontWeight: 700, color: scoreColor(coin.score), lineHeight: 1 }}>
               {fmt(coin.score, 1)}
             </span>
-            {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 56 }}>
@@ -2300,7 +2305,7 @@ function ProtocolsView({ mobile }) {
                       <span style={{ fontFamily: T.mono, fontSize: 11, color: T.inkMid }}>{r.protocol}</span>
                     </div>
                     <span style={{ fontFamily: T.mono, fontSize: 14, fontWeight: 700, color: scoreColor(r.cqi_score) }}>{fmt(r.cqi_score, 1)}</span>
-                    {r.confidence && r.confidence !== "high" && confidenceBadge(r.confidence, null, null, null, null)}
+                    {confidenceBadge(r.confidence, null, null, null, null)}
                   </div>
                 ))}
               </div>
