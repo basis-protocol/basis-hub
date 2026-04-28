@@ -3278,6 +3278,8 @@ async def main():
     except Exception as e:
         logger.error(f"[schema_validator] failed to run: {e}")
 
+    logger.error("[checkpoint 1] schema validation complete")
+
     logger.error("[startup] schema fixes complete, diagnostics will fire in 60s via independent loop")
 
     # Seed methodology hashes (idempotent — skips existing)
@@ -3296,6 +3298,8 @@ async def main():
     except Exception as e:
         logger.error(f"[startup] methodology seed failed: {e}")
 
+    logger.error("[checkpoint 2] methodology seed complete")
+
     # Dwellir RPC capability probe — one-shot at boot. Never raises.
     # Records results in rpc_capabilities so ops can see what Dwellir's free
     # tier actually supports (method-not-found / archive-depth / rate
@@ -3310,6 +3314,8 @@ async def main():
     except Exception as e:
         logger.error(f"[startup] rpc_probe launch failed: {type(e).__name__}: {e}")
 
+    logger.error("[checkpoint 3] RPC probe launched as background task")
+
     # Mempool observation watcher — long-lived WebSocket subscription to
     # Alchemy's alchemy_pendingTransactions with server-side address
     # filtering. Runs as two background asyncio tasks (watcher +
@@ -3322,6 +3328,8 @@ async def main():
         logger.error("[startup] mempool_watcher tasks launched (non-blocking)")
     except Exception as e:
         logger.error(f"[mempool_watcher] startup skipped: {type(e).__name__}: {e}")
+
+    logger.error("[checkpoint 4] mempool launched as background task")
 
     # Seed email alert channel if not configured
     try:
@@ -3367,6 +3375,7 @@ async def main():
                 result = await score_stablecoin(client, args.coin)
                 print(result)
         elif args.loop:
+            logger.error("[checkpoint 5] entering args.loop branch")
             logger.info(f"Starting worker loop (interval: {args.interval} min)")
 
             async def _supervised_loop(name: str, coro_fn, max_consecutive_db_failures: int = 10):
@@ -3395,6 +3404,7 @@ async def main():
                         await asyncio.sleep(300)
 
             asyncio.create_task(_diagnostic_loop())
+            logger.error("[checkpoint 6] diagnostic loop launched")
 
             # LLL Phase 1 Pipeline 3: Oracle cadence sampling (5-min independent loop)
             try:
@@ -3460,16 +3470,21 @@ async def main():
             except Exception as _ac_err:
                 logger.error(f"[startup] approval_collector loop failed to launch: {_ac_err}")
 
+            logger.error("[checkpoint 7] all background loops launched, entering main cycle loop")
+
             import psycopg2 as _pg2
             cycle_counter = 0
             consecutive_cycle_db_failures = 0
             while True:
+                logger.error(f"[checkpoint 8] cycle {cycle_counter + 1} starting")
                 try:
                     # Fast cycle — runs every interval
+                    logger.error("[checkpoint 9] fast cycle starting")
                     try:
                         await asyncio.wait_for(run_fast_cycle(), timeout=FAST_CYCLE_TIMEOUT)
                     except asyncio.TimeoutError:
                         logger.error("Fast cycle exceeded 30-minute timeout")
+                    logger.error("[checkpoint 10] fast cycle complete")
 
                     # Enrichment cycle — runs every cycle now that fast cycle is <20 min
                     cycle_counter += 1
