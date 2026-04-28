@@ -923,13 +923,20 @@ async def run_fast_cycle():
     logger.info(f"Starting scoring cycle for {len(stablecoins)} stablecoins")
 
     results = []
-    # Per-stablecoin elapsed at error level for fast-cycle timeout
-    # attribution. Combined with [slow_collector] lines from the registry,
-    # this lets operators identify which (stablecoin, collector) pair is
-    # driving the 30-min cycle limit without re-running.
-    SLOW_SID_THRESHOLD_SEC = 60  # half of the per-sid 120s timeout
-    async with httpx.AsyncClient(timeout=30) as client:
+    SLOW_SID_THRESHOLD_SEC = 45
+    PER_COIN_TIMEOUT_SEC = 60
+    CYCLE_HARD_LIMIT_SEC = 25 * 60  # 25 min hard cap
+
+    _scoring_client = httpx.AsyncClient(
+        timeout=30, follow_redirects=True,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    )
+    try:
         for sid in stablecoins:
+            if time.time() - fast_start > CYCLE_HARD_LIMIT_SEC:
+                logger.critical(f"[fast_cycle] cycle exceeded {CYCLE_HARD_LIMIT_SEC}s hard limit, breaking at {sid}")
+                break
+
             is_promoted = sid not in STABLECOIN_REGISTRY
             if is_promoted:
                 cfg = get_stablecoin_config(sid)
@@ -938,7 +945,7 @@ async def run_fast_cycle():
             sid_t0 = time.time()
             try:
                 result = await asyncio.wait_for(
-                    score_stablecoin(client, sid), timeout=120
+                    score_stablecoin(_scoring_client, sid), timeout=PER_COIN_TIMEOUT_SEC
                 )
                 results.append(result)
                 if is_promoted and "score" in result:
@@ -952,13 +959,15 @@ async def run_fast_cycle():
                         f"(>={SLOW_SID_THRESHOLD_SEC}s threshold — see [slow_collector] "
                         f"lines above for the slow collector attribution)"
                     )
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(0.5)
             except asyncio.TimeoutError:
-                logger.warning(f"Timeout scoring {sid} (>120s) — skipping")
-                results.append({"stablecoin": sid, "error": "timeout_120s"})
+                logger.error(f"[fast_cycle] {sid} TIMED OUT after {PER_COIN_TIMEOUT_SEC}s — moving on")
+                results.append({"stablecoin": sid, "error": f"timeout_{PER_COIN_TIMEOUT_SEC}s"})
             except Exception as e:
-                logger.error(f"Failed to score {sid}: {e}")
+                logger.error(f"[fast_cycle] {sid} FAILED: {type(e).__name__}: {e}")
                 results.append({"stablecoin": sid, "error": str(e)})
+    finally:
+        await _scoring_client.aclose()
 
     sii_elapsed = time.time() - fast_start
     successes = sum(1 for r in results if "score" in r)
