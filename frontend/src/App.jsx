@@ -940,7 +940,6 @@ function RankingsView({ scores, loading, onSelect, ts, mobile, meta }) {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 30 }}>
             <span style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint }}>{coin.issuer}</span>
-            {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
             <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint }}>·</span>
             <span style={{ fontFamily: T.mono, fontSize: 9, color: T.inkFaint }}>{coin.price != null ? `$${coin.price.toFixed(4)}` : ""}</span>
           </div>
@@ -1033,10 +1032,7 @@ function RankingsView({ scores, loading, onSelect, ts, mobile, meta }) {
               <div style={{ width: 1, height: 12, background: T.ruleMid, margin: "0 10px", alignSelf: "center" }} />
               <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 500, color: T.inkLight }}>{fmt(coin.score, 1)}</span>
             </div>
-            <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint, marginTop: 1, display: "flex", alignItems: "center" }}>
-              {coin.issuer}
-              {confidenceBadge(coin.confidence, coin.confidence_tag, coin.components_populated, coin.components_total, coin.missing_categories)}
-            </div>
+            <div style={{ fontFamily: T.sans, fontSize: 11, color: T.inkFaint, marginTop: 1 }}>{coin.issuer}</div>
           </div>
 
           <div style={{ paddingLeft: 8, display: "flex", alignItems: "center", gap: 6, overflow: "hidden", minWidth: 0 }}>
