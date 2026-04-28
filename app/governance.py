@@ -299,6 +299,7 @@ def crawl_forum(forum_key: str, since_days: int = 30) -> Generator[ForumPost, No
                     f"{base_url}/c/{cat_id}.json",
                     params={"page": page},
                     timeout=30,
+                    follow_redirects=True,
                     headers={"Accept": "application/json",
                              "User-Agent": "BasisProtocol/1.0"},
                 )
@@ -335,6 +336,7 @@ def crawl_forum(forum_key: str, since_days: int = 30) -> Generator[ForumPost, No
                     tr = httpx.get(
                         f"{base_url}/t/{topic_id}.json",
                         timeout=30,
+                        follow_redirects=True,
                         headers={"Accept": "application/json",
                                  "User-Agent": "BasisProtocol/1.0"},
                     )

@@ -5,10 +5,34 @@ Single source of truth for SII score calculation.
 
 Formula (v1.0.0):
   SII = 0.30×Peg + 0.25×Liquidity + 0.15×MintBurn + 0.10×Distribution + 0.20×Structural
-  
+
   Structural = 0.30×Reserves + 0.20×SmartContract + 0.15×Oracle + 0.20×Governance + 0.15×Network
 
 All normalization functions preserved exactly from the original codebase.
+
+Aggregation-registry note
+-------------------------
+SII production scoring dispatches through `app.composition.aggregate`
+(SII v1.1.0 wiring). `app.worker.compute_sii_from_components` builds the
+`component_scores` and `raw_values` dicts and calls `aggregate()` with
+`SII_V1_DEFINITION`, which declares `coverage_weighted` with
+`min_coverage=0.0`. Overall and category scores come from that dispatch.
+
+The functions in this module — `calculate_sii`,
+`calculate_structural_composite`, `aggregate_legacy_to_v1` — are the
+reference implementation of the pre-wiring **three-level** SII path
+(components → legacy categories simple-averaged → structural subcategories
+simple-averaged → `STRUCTURAL_SUBWEIGHTS`-weighted composite → v1
+categories via `SII_V1_WEIGHTS` → overall). They remain callable so the
+`legacy_sii_v1` formula in `app.composition.AGGREGATION_FORMULAS` has a
+reference for historical reproducibility, and so the structural
+subcategory scores (reserves_score / contract_score / oracle_score /
+governance_score / network_score) can be produced alongside the dispatch
+path's overall as derived informational outputs on the `scores` table.
+
+`STRUCTURAL_SUBWEIGHTS` and `DB_TO_STRUCTURAL_MAPPING` are legacy-only —
+they do not participate in current SII overall computation. See
+docs/methodology/sii_changelog.md and docs/methodology/sii_wiring_acceptance.md.
 """
 
 import math
@@ -128,12 +152,25 @@ def score_to_grade(score: float) -> str:
 
 def calculate_structural_composite(subscores: Dict[str, Optional[float]]) -> Optional[float]:
     """
-    Calculate Structural Risk Composite from its 5 subcategories.
-    
+    Calculate Structural Risk Composite from its 5 subcategories (legacy path).
+
     Formula:
       Structural = 0.30×Reserves + 0.20×SmartContract + 0.15×Oracle + 0.20×Governance + 0.15×Network
-    
+
     Returns None if no subcategory data is available.
+
+    Legacy-only as of SII v1.1.0 wiring. This function produces the
+    structural_risk_composite value that the **three-level** pre-wiring
+    SII path used as an input to `calculate_sii`. Current SII scoring
+    dispatches through `app.composition.aggregate` with the
+    `coverage_weighted` formula, which aggregates structural components
+    directly by their per-component `COMPONENT_NORMALIZATIONS` weights
+    — `STRUCTURAL_SUBWEIGHTS` no longer participates in overall
+    computation. This function is retained (a) as the reference
+    implementation backing `legacy_sii_v1` in the aggregation registry
+    so historical scores remain reproducible, and (b) to produce the 5
+    derived structural sub-scores persisted to the `scores` table as
+    informational outputs. See the module docstring.
     """
     total = 0.0
     weight_used = 0.0
@@ -156,16 +193,23 @@ def calculate_structural_composite(subscores: Dict[str, Optional[float]]) -> Opt
 
 def calculate_sii(category_scores: Dict[str, Optional[float]]) -> Optional[float]:
     """
-    Calculate SII using the canonical v1.0.0 formula.
-    
+    Calculate SII using the legacy v1.0.0 three-level formula.
+
     Formula:
       SII = 0.30×Peg + 0.25×Liquidity + 0.15×MintBurn + 0.10×Distribution + 0.20×Structural
-    
+
     Args:
-        category_scores: Dict with scores (0-100) for each canonical category.
-    
+        category_scores: Dict with scores (0-100) for each canonical v1 category.
+
     Returns:
         SII score (0-100), or None if no data available.
+
+    Legacy-only as of SII v1.1.0 wiring. Current SII scoring dispatches
+    through `app.composition.aggregate` with the `coverage_weighted`
+    formula in `app.worker.compute_sii_from_components`. This function
+    remains the reference implementation backing the `legacy_sii_v1`
+    formula in the aggregation registry so historical scores stay
+    reproducible. See module docstring and docs/methodology/sii_wiring_acceptance.md.
     """
     total = 0.0
     weight_used = 0.0

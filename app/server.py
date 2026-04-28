@@ -83,6 +83,21 @@ class _ResponseCache:
 _cache = _ResponseCache()
 
 
+def _parse_jsonb(v):
+    """Safely decode a JSONB column value. psycopg2 usually returns dicts/
+    lists directly for JSONB, but some code paths stringify; accept both
+    and return None on parse failure."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        import json as _j
+        try:
+            return _j.loads(v)
+        except Exception:
+            return None
+    return v
+
+
 app = FastAPI(
     title="Basis Protocol API",
     description="Standardized risk surfaces for on-chain finance",
@@ -229,8 +244,35 @@ async def rate_limit_and_track(request: Request, call_next):
     elif path.startswith("/api/discovery"):
         entity_type = "discovery"
 
-    # Admin endpoints — exempt from rate limiting but still logged
-    if path.startswith("/api/admin") or path.startswith("/api/ops"):
+    # Admin / ops / provenance-write endpoints — exempt from rate limiting but still logged.
+    #
+    # Path-based exemptions: /api/admin/*, /api/ops/*, POST /api/provenance/* — historic
+    # convention; these endpoints are admin-protected by their own _check_admin_key() calls.
+    #
+    # Auth-based exemption (added with /api/engine/* admin routes): any request that presents
+    # a valid X-Admin-Key (or ?key=) matching the ADMIN_KEY env var is treated as admin
+    # context, regardless of path. This generalizes the prior path-list approach so future
+    # admin-protected endpoints don't have to be added to a list to escape the public
+    # 10/min limit. Public endpoints called WITHOUT the admin key remain rate-limited
+    # normally — e.g., /api/engine/coverage/{id} called by an anonymous user still gets the
+    # public tier.
+    _admin_key_env = os.environ.get("ADMIN_KEY", "")
+    _provided_admin_key = (
+        request.headers.get("x-admin-key", "")
+        or request.query_params.get("key", "")
+    )
+    is_admin_authenticated = (
+        bool(_admin_key_env)
+        and bool(_provided_admin_key)
+        and hmac.compare_digest(_provided_admin_key, _admin_key_env)
+    )
+
+    if (
+        path.startswith("/api/admin")
+        or path.startswith("/api/ops")
+        or (path.startswith("/api/provenance/") and request.method == "POST")
+        or is_admin_authenticated
+    ):
         response = await call_next(request)
         elapsed_ms = int((time.time() - start_time) * 1000)
         log_request(
@@ -552,6 +594,32 @@ async def startup():
     except Exception as e:
         logger.warning(f"MCP endpoint registration failed: {e}")
 
+    # Incident pages — evidence artifacts, frozen snapshots, email capture
+    try:
+        from app.incidents import router as incidents_router
+        app.include_router(incidents_router)
+        logger.info("Incident routes registered (/api/incident/*, /api/incident-notify)")
+    except Exception as e:
+        logger.warning(f"Incident router registration failed: {e}")
+
+    # Analytic Engine — coverage endpoint (Component 1 / S0).
+    # Additional engine components register via the same umbrella router.
+    try:
+        from app.engine.router import router as engine_router
+        app.include_router(engine_router)
+        logger.info("Engine routes registered (/api/engine/*)")
+    except Exception as e:
+        logger.warning(f"Engine router registration failed: {e}")
+
+    # Static share assets (Twitter/X cards for incident pages)
+    try:
+        _share_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public", "share")
+        if os.path.isdir(_share_dir):
+            app.mount("/share", StaticFiles(directory=_share_dir), name="share-assets")
+            logger.info(f"Mounted /share from {_share_dir}")
+    except Exception as e:
+        logger.warning(f"Share static mount failed: {e}")
+
     # SPA catch-all must be registered LAST so it doesn't shadow dynamic routes
     _register_spa_catch_all(app)
     logger.info("Basis Protocol API started")
@@ -629,6 +697,30 @@ async def shutdown():
     logger.info("Basis Protocol API stopped")
 
 
+# Analytic Engine — APScheduler lifecycle (Component 4 / S4).
+# Two scheduled jobs: poll_defillama_hacks (15min), evaluate_watchlist
+# (15min). Runs in-process. ⚠ Multi-worker concern: this scheduler runs
+# IN EACH worker uvicorn spawns. Set Railway env var WEB_CONCURRENCY=1
+# to keep things sane for v1; the GET /api/engine/scheduler diagnostic
+# endpoint reports the worker pid so duplication is observable in logs.
+@app.on_event("startup")
+async def _engine_scheduler_startup():
+    try:
+        from app.engine.scheduler import start_scheduler
+        await start_scheduler()
+    except Exception as e:
+        logger.exception(f"Engine scheduler startup failed: {e}")
+
+
+@app.on_event("shutdown")
+async def _engine_scheduler_shutdown():
+    try:
+        from app.engine.scheduler import stop_scheduler
+        await stop_scheduler()
+    except Exception as e:
+        logger.warning(f"Engine scheduler shutdown error: {e}")
+
+
 # Atexit fallback for non-graceful shutdowns (SIGKILL, Replit restarts, etc.)
 try:
     from app.usage_tracker import flush as _flush_usage_atexit
@@ -663,6 +755,614 @@ def check_methodology_version(requested_version, current_version="v1.0.0"):
         "available": [current_version],
         "message": f"Requested methodology version not available. Current version: {current_version}"
     })
+
+
+# =============================================================================
+# Well-known discovery endpoints
+# =============================================================================
+
+@app.get("/.well-known/x402")
+async def well_known_x402():
+    from app.paid_endpoints import PAID_ENDPOINTS, USDC_BASE, BASIS_WALLET
+    from fastapi.responses import JSONResponse
+    resources = []
+    for ep in PAID_ENDPOINTS:
+        resources.append({
+            "url": f"https://basisprotocol.xyz{ep['url']}",
+            "method": ep["method"],
+            "description": ep["description"],
+            "mimeType": "application/json",
+            "accepts": [{
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": USDC_BASE,
+                "amount": ep["price_usdc_base_units"],
+                "payTo": BASIS_WALLET,
+                "maxTimeoutSeconds": 300,
+                "extra": {"name": "USD Coin", "version": "2"},
+            }],
+        })
+    return JSONResponse(
+        content={"x402Version": 2, "resources": resources},
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/.well-known/agent-card.json")
+async def well_known_agent_card():
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={
+            "name": "Basis Protocol",
+            "description": "Computed, attested risk surfaces for on-chain finance.",
+            "url": "https://basisprotocol.xyz",
+            "identity": {
+                "evm_address": "0x2dF0f62D1861Aa59A4430e3B2b2E7a0D29Cb723b",
+                "chains": ["eip155:1", "eip155:8453", "eip155:42161"],
+            },
+            "payment": {
+                "protocols": ["x402"],
+                "discovery": "https://basisprotocol.xyz/.well-known/x402",
+            },
+            "capabilities": [
+                {"category": "oracle", "description": "Score reads per entity (SII, PSI, RPI, plus 6 accruing indices)"},
+                {"category": "cqi", "description": "Composition quality, contagion, and stress analysis"},
+                {"category": "witness", "description": "Evidence retrieval with content-addressable hashes"},
+                {"category": "divergence", "description": "Live divergence, pulse, and coherence signals"},
+            ],
+            "contact": "shlok@basisprotocol.xyz",
+            "version": "1.0.0",
+        },
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/robots.txt")
+async def robots_txt():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        content="# Machine-readable alternates available at {path}.md\n"
+        "# Full sitemap: https://basisprotocol.xyz/sitemap.xml\n"
+        "# Markdown sitemap: https://basisprotocol.xyz/sitemap-markdown.xml\n"
+        "# LLM manifest: https://basisprotocol.xyz/llms.txt\n\n"
+        "User-agent: *\nAllow: /\n\n"
+        "User-agent: GPTBot\nAllow: /\n\n"
+        "User-agent: ClaudeBot\nAllow: /\n\n"
+        "User-agent: Claude-SearchBot\nAllow: /\n\n"
+        "User-agent: PerplexityBot\nAllow: /\n\n"
+        "User-agent: Google-Extended\nAllow: /\n\n"
+        "User-agent: CCBot\nAllow: /\n\n"
+        "User-agent: Googlebot\nAllow: /\n\n"
+        "User-agent: Bingbot\nAllow: /\n\n"
+        "Sitemap: https://basisprotocol.xyz/sitemap.xml\n"
+        "Sitemap: https://basisprotocol.xyz/sitemap-markdown.xml\n",
+        media_type="text/plain",
+    )
+
+
+@app.get("/llms.txt")
+async def llms_txt():
+    """LLM-readable site manifest per llmstxt.org spec."""
+    from fastapi.responses import PlainTextResponse
+    import os
+    llms_path = os.path.join(os.path.dirname(__file__), "templates", "llms_txt.md")
+    try:
+        with open(llms_path) as f:
+            content = f.read()
+    except FileNotFoundError:
+        content = "# Basis Protocol\n\nLLM manifest not found."
+    return PlainTextResponse(
+        content=content,
+        media_type="text/markdown",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+# =============================================================================
+# Markdown alternates (.md suffix)
+# =============================================================================
+
+@app.get("/entity/{slug}.md")
+async def entity_markdown(slug: str):
+    """Markdown alternate for entity pages."""
+    from fastapi.responses import PlainTextResponse
+    from app.rendering.markdown_alternate import render_entity_markdown
+    content = render_entity_markdown(slug.lower())
+    return PlainTextResponse(content=content, media_type="text/markdown")
+
+
+@app.get("/rankings.md")
+async def rankings_markdown():
+    """Markdown alternate for rankings page."""
+    from fastapi.responses import PlainTextResponse
+    from app.rendering.markdown_alternate import render_rankings_markdown
+    content = render_rankings_markdown()
+    return PlainTextResponse(content=content, media_type="text/markdown")
+
+
+@app.get("/proof/{index_name}/{slug}.md")
+async def proof_markdown(index_name: str, slug: str):
+    """Markdown alternate for proof pages."""
+    from fastapi.responses import PlainTextResponse
+    from app.rendering.markdown_alternate import render_proof_markdown
+    content = render_proof_markdown(index_name.lower(), slug.lower())
+    return PlainTextResponse(content=content, media_type="text/markdown")
+
+
+@app.get("/methodology.md")
+async def methodology_markdown():
+    """Markdown alternate for methodology page."""
+    from fastapi.responses import PlainTextResponse
+    from app.rendering.markdown_alternate import render_methodology_markdown
+    content = render_methodology_markdown()
+    return PlainTextResponse(content=content, media_type="text/markdown")
+
+
+# =============================================================================
+# Entity pages + Sitemap — Task 1
+# =============================================================================
+
+def _resolve_entity(slug: str) -> dict | None:
+    """Resolve entity slug across all indices. Returns primary index data or None."""
+    slug_lower = slug.lower()
+
+    # SII (stablecoins)
+    row = fetch_one("""
+        SELECT s.overall_score, s.grade, s.peg_score, s.liquidity_score,
+               s.mint_burn_score, s.distribution_score, s.structural_score,
+               s.component_count, s.formula_version, s.computed_at,
+               st.name, st.symbol, st.id as stablecoin_id
+        FROM scores s JOIN stablecoins st ON st.id = s.stablecoin_id
+        WHERE LOWER(st.symbol) = %s OR LOWER(st.id) = %s
+    """, (slug_lower, slug_lower))
+    if row:
+        return {
+            "index": "SII", "index_full": "Stablecoin Integrity Index",
+            "slug": slug_lower, "name": row.get("name", slug),
+            "score": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row.get("grade"),
+            "categories": {
+                "Peg Stability": row.get("peg_score"),
+                "Liquidity Depth": row.get("liquidity_score"),
+                "Mint/Burn Dynamics": row.get("mint_burn_score"),
+                "Holder Distribution": row.get("distribution_score"),
+                "Structural Risk": row.get("structural_score"),
+            },
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            "formula_version": row.get("formula_version"),
+            "accruing": False,
+            "api_path": f"/api/scores/{slug_lower}",
+        }
+
+    # PSI
+    row = fetch_one("""
+        SELECT overall_score, grade, protocol_name, category_scores,
+               component_scores, formula_version, computed_at
+        FROM psi_scores WHERE LOWER(protocol_slug) = %s
+        ORDER BY computed_at DESC LIMIT 1
+    """, (slug_lower,))
+    if row:
+        cats = row.get("category_scores") or {}
+        return {
+            "index": "PSI", "index_full": "Protocol Solvency Index",
+            "slug": slug_lower, "name": row.get("protocol_name", slug),
+            "score": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row.get("grade"),
+            "categories": {k.replace("_", " ").title(): v for k, v in cats.items()},
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            "formula_version": row.get("formula_version"),
+            "accruing": False,
+            "api_path": f"/api/psi/scores/{slug_lower}",
+        }
+
+    # RPI
+    row = fetch_one("""
+        SELECT overall_score, grade, protocol_name, component_scores,
+               methodology_version, computed_at
+        FROM rpi_scores WHERE LOWER(protocol_slug) = %s
+        ORDER BY computed_at DESC LIMIT 1
+    """, (slug_lower,))
+    if row:
+        cats = row.get("component_scores") or {}
+        return {
+            "index": "RPI", "index_full": "Revenue Protocol Index",
+            "slug": slug_lower, "name": row.get("protocol_name", slug),
+            "score": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": row.get("grade"),
+            "categories": {k.replace("_", " ").title(): v for k, v in cats.items()},
+            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            "formula_version": row.get("methodology_version"),
+            "accruing": False,
+            "api_path": f"/api/rpi/scores/{slug_lower}",
+        }
+
+    # Circle 7 — BRI and CXRI promoted to scored in v0.2.0 (see
+    # docs/methodology/aggregation_impact_analysis.md and the per-index
+    # changelog files). LSTI, DOHI, VSRI, TTI remain accruing.
+    _scored_circle7 = {"bri", "cxri"}
+    for idx in ["lsti", "bri", "dohi", "vsri", "cxri", "tti"]:
+        row = fetch_one("""
+            SELECT overall_score, entity_name, category_scores,
+                   formula_version, computed_at
+            FROM generic_index_scores
+            WHERE index_id = %s AND LOWER(entity_slug) = %s
+            ORDER BY computed_at DESC LIMIT 1
+        """, (idx, slug_lower))
+        if row:
+            cats = row.get("category_scores") or {}
+            if isinstance(cats, str):
+                import json as _j
+                cats = _j.loads(cats)
+            return {
+                "index": idx.upper(), "index_full": idx.upper(),
+                "slug": slug_lower, "name": row.get("entity_name", slug),
+                "score": float(row["overall_score"]) if row.get("overall_score") else None,
+                "grade": None,
+                "categories": {k.replace("_", " ").title(): v for k, v in cats.items()} if isinstance(cats, dict) else {},
+                "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+                "formula_version": row.get("formula_version"),
+                "accruing": idx not in _scored_circle7,
+                "api_path": f"/api/scores/{slug_lower}",
+            }
+
+    return None
+
+
+def _also_scored_in(slug: str, primary_index: str) -> list:
+    """Find other indices that also score this entity."""
+    slug_lower = slug.lower()
+    others = []
+    checks = [
+        ("SII", "SELECT 1 FROM scores s JOIN stablecoins st ON st.id=s.stablecoin_id WHERE LOWER(st.symbol)=%s OR LOWER(st.id)=%s", (slug_lower, slug_lower)),
+        ("PSI", "SELECT 1 FROM psi_scores WHERE LOWER(protocol_slug)=%s LIMIT 1", (slug_lower,)),
+        ("RPI", "SELECT 1 FROM rpi_scores WHERE LOWER(protocol_slug)=%s LIMIT 1", (slug_lower,)),
+    ]
+    for idx in ["lsti", "bri", "dohi", "vsri", "cxri", "tti"]:
+        checks.append((idx.upper(), f"SELECT 1 FROM generic_index_scores WHERE index_id='{idx}' AND LOWER(entity_slug)=%s LIMIT 1", (slug_lower,)))
+
+    for idx_name, sql, params in checks:
+        if idx_name == primary_index:
+            continue
+        try:
+            if fetch_one(sql, params):
+                others.append(idx_name)
+        except Exception:
+            pass
+    return others
+
+
+@app.get("/entity/{slug}")
+async def entity_page(slug: str, request: Request):
+    """Server-rendered entity page with JSON-LD."""
+    from starlette.concurrency import run_in_threadpool
+    from fastapi.responses import HTMLResponse
+    from app.templates._html import CSS, CANONICAL_BASE_URL
+
+    entity = await run_in_threadpool(_resolve_entity, slug)
+    if not entity:
+        raise HTTPException(status_code=404, detail=f"Entity '{slug}' not found in any index")
+
+    name = entity["name"]
+    score = entity["score"]
+    grade = entity.get("grade") or ("A" if score and score >= 90 else "B" if score and score >= 80 else "C" if score and score >= 70 else "D" if score and score >= 60 else "F" if score else "—")
+    idx = entity["index"]
+    accruing = entity["accruing"]
+    computed = entity.get("computed_at", "")
+    cats = entity.get("categories") or {}
+
+    also = await run_in_threadpool(_also_scored_in, slug, idx)
+
+    # Top 2 category drivers for meta description
+    sorted_cats = sorted(((k, float(v)) for k, v in cats.items() if v is not None), key=lambda x: x[1], reverse=True)
+    top_drivers = ", ".join(f"{k} {v:.0f}" for k, v in sorted_cats[:2]) if sorted_cats else ""
+    meta_desc = f"{name}: {idx} {score:.1f}/100, {grade} grade. {top_drivers}. Last updated {computed[:10] if computed else 'recently'}." if score else f"{name} entity page — Basis Protocol"
+    if len(meta_desc) > 160:
+        meta_desc = meta_desc[:157] + "..."
+
+    title = f"{name} Risk Score — {idx} {score:.1f}, {grade} grade" if score else f"{name} — {idx}"
+
+    # Category table
+    cat_rows = ""
+    for cat_name, cat_val in sorted_cats:
+        bar_w = int(float(cat_val) * 1.5) if cat_val else 0
+        cat_rows += f'<tr><td>{cat_name}</td><td class="num">{float(cat_val):.1f}</td><td><span class="bar" style="width:{bar_w}px"></span></td></tr>'
+
+    # Also scored in
+    also_html = ""
+    if also:
+        also_links = ", ".join(f'<a href="/entity/{slug}?via={a.lower()}">{a}</a>' for a in also)
+        also_html = f'<div class="section"><h3>Also scored in</h3><p>{also_links}</p></div>'
+
+    accruing_tag = ' <span style="background:#f39c12;color:#fff;font-size:10px;padding:2px 6px;border-radius:2px">ACCRUING</span>' if accruing else ""
+
+    # JSON-LD
+    json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": f"{name} Risk Score — {idx}",
+        "description": meta_desc,
+        "creator": {"@type": "Organization", "name": "Basis Protocol", "url": "https://basisprotocol.xyz"},
+        "dateModified": computed or "",
+        "license": "https://basisprotocol.xyz/license",
+        "url": f"https://basisprotocol.xyz/entity/{slug}",
+        "variableMeasured": [
+            {"@type": "PropertyValue", "name": k, "value": float(v)} for k, v in sorted_cats
+        ],
+        "distribution": [{
+            "@type": "DataDownload",
+            "contentUrl": f"https://basisprotocol.xyz{entity['api_path']}",
+            "encodingFormat": "application/json",
+        }],
+    }
+    if score:
+        json_ld["review"] = {
+            "@type": "Rating",
+            "ratingValue": round(score, 1),
+            "bestRating": 100,
+            "worstRating": 0,
+        }
+    import json as _json
+    json_ld_str = _json.dumps(json_ld, default=str)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title} | Basis Protocol</title>
+<meta name="description" content="{meta_desc}">
+<link rel="canonical" href="https://basisprotocol.xyz/entity/{slug}">
+<link rel="alternate" type="text/markdown" href="/entity/{slug}.md">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<style>{CSS}</style>
+<script type="application/ld+json">{json_ld_str}</script>
+</head>
+<body>
+<div class="page-wrap">
+<div class="page-frame">
+<div class="page-content" style="padding-top:24px">
+<p class="meta"><a href="/">Basis Protocol</a> › <a href="/rankings">{idx}</a> › {name}</p>
+<h1>{name}{accruing_tag}</h1>
+<div style="display:flex;gap:24px;align-items:baseline;margin:12px 0 20px">
+<div class="score">{f"{score:.1f}" if score else "—"}</div>
+<div style="font-size:24px;font-weight:600">{grade}</div>
+<div class="meta">{idx} · {entity.get('formula_version', '')} · {computed[:10] if computed else ''}</div>
+</div>
+{"<p class='meta' style='color:#f39c12'>This index is accruing — scores are computed but not yet promoted to production status.</p>" if accruing else ""}
+<div class="section">
+<h3>Category Breakdown</h3>
+<table><thead><tr><th>Category</th><th>Score</th><th></th></tr></thead>
+<tbody>{cat_rows}</tbody></table>
+</div>
+{also_html}
+<div class="section">
+<h3>Links</h3>
+<p><a href="/proof/{idx.lower()}/{slug}">Computation provenance</a> · <a href="/witness">Evidence archive</a> · <a href="{entity['api_path']}">API endpoint</a></p>
+</div>
+</div>
+<div class="page-footer"><span>Basis Protocol</span><span>basisprotocol.xyz</span></div>
+</div>
+</div>
+</body>
+</html>"""
+
+    return HTMLResponse(content=html, headers={
+        "Cache-Control": "public, max-age=300",
+        "Basis-URL-Stability": "permanent",
+        "Basis-Protocol-Version": "v1.0.0",
+    })
+
+
+@app.get("/disputes")
+async def disputes_ssr_page():
+    """Server-rendered HTML page listing public disputes."""
+    from starlette.concurrency import run_in_threadpool
+    from fastapi.responses import HTMLResponse
+
+    def _load_disputes():
+        return fetch_all(
+            "SELECT * FROM disputes WHERE status != 'submitted' ORDER BY created_at DESC LIMIT 100"
+        )
+
+    try:
+        rows = await run_in_threadpool(_load_disputes)
+    except Exception:
+        rows = []
+
+    dispute_rows_html = ""
+    for r in (rows or []):
+        d = dict(r)
+        status_color = {
+            "under_review": "#f39c12",
+            "counter_evidence_issued": "#3498db",
+            "resolved": "#27ae60",
+            "withdrawn": "#95a5a6",
+        }.get(d.get("status", ""), "#999")
+        resolution = ""
+        if d.get("resolution_category"):
+            resolution = f' <span style="font-size:10px;color:#666">({d["resolution_category"]})</span>'
+        created = str(d.get("created_at", ""))[:10]
+        dispute_rows_html += f"""<tr>
+<td><a href="/api/disputes/{d['dispute_id']}" style="color:#0a0a0a;font-family:'IBM Plex Mono',monospace;font-size:11px">{str(d['dispute_id'])[:8]}...</a></td>
+<td style="font-weight:600">{d.get('entity_slug', '')}</td>
+<td>{d.get('submitter_type', '')}</td>
+<td><span style="color:{status_color};font-weight:600">{d.get('status', '')}</span>{resolution}</td>
+<td style="color:#666">{created}</td>
+</tr>"""
+
+    if not dispute_rows_html:
+        dispute_rows_html = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px">No public disputes yet.</td></tr>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Score Disputes | Basis Protocol</title>
+<meta name="description" content="Public record of score disputes submitted against Basis Protocol indices.">
+<link rel="canonical" href="https://basisprotocol.xyz/disputes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+body {{ margin:0; background:#f5f2ec; color:#0a0a0a; font-family:'IBM Plex Sans',system-ui,sans-serif; }}
+.page-wrap {{ max-width:900px; margin:0 auto; padding:24px 16px; }}
+h1 {{ font-size:28px; font-weight:400; letter-spacing:-0.3px; margin:0 0 8px; }}
+.meta {{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:#6a6a6a; }}
+table {{ width:100%; border-collapse:collapse; margin-top:20px; }}
+th {{ text-align:left; font-family:'IBM Plex Mono',monospace; font-size:10px; font-weight:600;
+     color:#6a6a6a; text-transform:uppercase; letter-spacing:0.5px; padding:8px 6px;
+     border-bottom:2px solid #c8c4bc; }}
+td {{ padding:8px 6px; font-size:12px; border-bottom:1px solid #e0ddd6; }}
+a {{ color:#0a0a0a; }}
+.footer {{ margin-top:32px; padding-top:12px; border-top:1px solid #c8c4bc;
+           font-family:'IBM Plex Mono',monospace; font-size:10px; color:#9a9a9a;
+           display:flex; justify-content:space-between; }}
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<p class="meta"><a href="/">Basis Protocol</a> &rsaquo; Disputes</p>
+<h1>Score Disputes</h1>
+<p class="meta">Public record of disputes submitted against scored entities. Disputes become visible once they move to review.</p>
+<table>
+<thead><tr><th>ID</th><th>Entity</th><th>Submitter</th><th>Status</th><th>Submitted</th></tr></thead>
+<tbody>{dispute_rows_html}</tbody>
+</table>
+<p class="meta" style="margin-top:16px">Data also available via <a href="/api/disputes">API</a>.</p>
+<div class="footer"><span>Basis Protocol</span><span>basisprotocol.xyz</span></div>
+</div>
+</body>
+</html>"""
+
+    return HTMLResponse(content=html, headers={"Cache-Control": "public, max-age=120"})
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml():
+    """Dynamic sitemap listing all entity pages."""
+    from starlette.concurrency import run_in_threadpool
+    from fastapi.responses import Response
+
+    def _build():
+        urls = []
+        # SII
+        rows = fetch_all("SELECT st.symbol, s.computed_at FROM scores s JOIN stablecoins st ON st.id=s.stablecoin_id")
+        for r in (rows or []):
+            urls.append((r["symbol"].lower(), r["computed_at"]))
+        # PSI
+        rows = fetch_all("SELECT DISTINCT ON (protocol_slug) protocol_slug, computed_at FROM psi_scores ORDER BY protocol_slug, computed_at DESC")
+        for r in (rows or []):
+            urls.append((r["protocol_slug"], r["computed_at"]))
+        # RPI
+        rows = fetch_all("SELECT DISTINCT ON (protocol_slug) protocol_slug, computed_at FROM rpi_scores ORDER BY protocol_slug, computed_at DESC")
+        for r in (rows or []):
+            urls.append((r["protocol_slug"], r["computed_at"]))
+        # Circle 7
+        rows = fetch_all("SELECT DISTINCT ON (entity_slug) entity_slug, computed_at FROM generic_index_scores ORDER BY entity_slug, computed_at DESC")
+        for r in (rows or []):
+            urls.append((r["entity_slug"], r["computed_at"]))
+        return urls
+
+    entities = await run_in_threadpool(_build)
+    seen = set()
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for slug, ts in entities:
+        if slug in seen:
+            continue
+        seen.add(slug)
+        lastmod = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10] if ts else ""
+        xml_parts.append(
+            f'<url><loc>https://basisprotocol.xyz/entity/{slug}</loc>'
+            f'<lastmod>{lastmod}</lastmod>'
+            f'<xhtml:link rel="alternate" type="text/markdown" '
+            f'href="https://basisprotocol.xyz/entity/{slug}.md" />'
+            f'</url>'
+        )
+    xml_parts.append("</urlset>")
+
+    return Response(content="\n".join(xml_parts), media_type="application/xml",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/sitemap-markdown.xml")
+async def sitemap_markdown_xml():
+    """Sitemap listing only .md alternate URLs."""
+    from starlette.concurrency import run_in_threadpool
+    from fastapi.responses import Response
+
+    def _build():
+        urls = []
+        rows = fetch_all("SELECT st.symbol, s.computed_at FROM scores s JOIN stablecoins st ON st.id=s.stablecoin_id")
+        for r in (rows or []):
+            urls.append((r["symbol"].lower(), r["computed_at"]))
+        rows = fetch_all("SELECT DISTINCT ON (protocol_slug) protocol_slug, computed_at FROM psi_scores ORDER BY protocol_slug, computed_at DESC")
+        for r in (rows or []):
+            urls.append((r["protocol_slug"], r["computed_at"]))
+        return urls
+
+    entities = await run_in_threadpool(_build)
+    seen = set()
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for slug, ts in entities:
+        if slug in seen:
+            continue
+        seen.add(slug)
+        lastmod = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10] if ts else ""
+        xml_parts.append(f"<url><loc>https://basisprotocol.xyz/entity/{slug}.md</loc><lastmod>{lastmod}</lastmod></url>")
+    xml_parts.append("</urlset>")
+
+    return Response(content="\n".join(xml_parts), media_type="application/xml",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/playground/report/{token}")
+async def playground_report(token: str):
+    """Public email-gated report link. noindex, nofollow."""
+    from starlette.concurrency import run_in_threadpool
+    from fastapi.responses import HTMLResponse
+
+    def _get_and_render():
+        sub = fetch_one(
+            "SELECT * FROM playground_submissions WHERE report_link_token = %s",
+            (token,),
+        )
+        if not sub:
+            return None, "not_found"
+        from datetime import datetime, timezone
+        if sub.get("report_link_expires") and sub["report_link_expires"] < datetime.now(timezone.utc):
+            return None, "expired"
+
+        # Update access tracking
+        is_first = sub.get("email_verified_at") is None
+        execute("""
+            UPDATE playground_submissions SET
+                report_access_count = report_access_count + 1,
+                report_accessed_at = NOW()
+                %s
+            WHERE submission_id = %%s
+        """ % (", email_verified_at = NOW()" if is_first else ""), (sub["submission_id"],))
+
+        portfolio = sub.get("portfolio") or []
+        cqi = sub.get("computed_cqi") or {}
+
+        from app.playground import render_basel_sco60_full
+        return render_basel_sco60_full(portfolio, cqi), None
+
+    result = await run_in_threadpool(_get_and_render)
+    html, error = result
+
+    if error == "not_found":
+        raise HTTPException(status_code=404, detail="Report not found or link invalid")
+    if error == "expired":
+        raise HTTPException(status_code=404, detail="This report link has expired")
+
+    # Add noindex meta tag
+    if html and "<head>" in html:
+        html = html.replace("<head>", '<head>\n<meta name="robots" content="noindex, nofollow">')
+
+    return HTMLResponse(content=html or "Report generation failed",
+                        headers={"Cache-Control": "private, no-store"})
 
 
 # =============================================================================
@@ -772,20 +1472,52 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
         JOIN stablecoins st ON st.id = s.stablecoin_id
         ORDER BY s.overall_score DESC
     """)
-    
+
     from app.scoring_engine import compute_confidence_tag
+    from app.confidence_tier_codes import tag_to_code as _tag_to_code
     SII_COMPONENTS_TOTAL = len(COMPONENT_NORMALIZATIONS)
 
     results = []
     for row in rows:
-        comp_count = row.get("component_count") or 0
-        coverage = round(comp_count / max(SII_COMPONENTS_TOTAL, 1), 2)
-        # Determine missing categories from null category scores
-        sii_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
-                       "distribution": "distribution_score", "structural": "structural_score"}
-        missing = [cat for cat, col in sii_cat_map.items() if not row.get(col)]
-        conf = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
+        # V7.3 confidence fields — prefer the stored columns (populated by
+        # the scorer on write). Fall back to legacy synthesis for rows that
+        # predate migration 084 / the one-shot backfill.
+        stored_populated = row.get("components_populated")
+        if stored_populated is not None:
+            comp_populated = int(stored_populated)
+            comp_total = int(row.get("components_total") or SII_COMPONENTS_TOTAL)
+            coverage = float(row.get("component_coverage") or (
+                round(comp_populated / max(comp_total, 1), 4)
+            ))
+            missing = row.get("missing_categories") or []
+            if isinstance(missing, str):
+                import json as _j
+                try:
+                    missing = _j.loads(missing)
+                except Exception:
+                    missing = []
+            conf_level = row.get("confidence")
+            conf_tag = row.get("confidence_tag")
+            if not conf_level:
+                _c = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
+                conf_level, conf_tag = _c["confidence"], _c["tag"]
+        else:
+            # Legacy fallback — row was written before migration 084.
+            sii_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
+                           "distribution": "distribution_score", "structural": "structural_score"}
+            missing = [cat for cat, col in sii_cat_map.items() if not row.get(col)]
+            comp_populated = row.get("component_count") or 0
+            comp_total = SII_COMPONENTS_TOTAL
+            coverage = round(comp_populated / max(comp_total, 1), 4)
+            _c = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
+            conf_level, conf_tag = _c["confidence"], _c["tag"]
 
+        comp_count = comp_populated
+
+        # Aggregation envelope (columns from migration 084; populated by the
+        # SII v1.1.0 wiring). Historical rows return None.
+        eff_weights = _parse_jsonb(row.get("effective_category_weights"))
+        agg_params = _parse_jsonb(row.get("aggregation_params"))
         results.append({
             "id": row["stablecoin_id"],
             "name": row["name"],
@@ -793,12 +1525,13 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
             "issuer": row["issuer"],
             "token_contract": row.get("token_contract"),
             "score": float(row["overall_score"]),
-            "confidence": conf["confidence"],
-            "confidence_tag": conf["tag"],
-            "missing_categories": conf["missing_categories"],
+            "grade": _tag_to_code(conf_tag),
+            "confidence": conf_level,
+            "confidence_tag": conf_tag,
+            "missing_categories": missing,
             "component_coverage": coverage,
-            "components_populated": comp_count,
-            "components_total": SII_COMPONENTS_TOTAL,
+            "components_populated": comp_populated,
+            "components_total": comp_total,
             "price": float(row["current_price"]) if row.get("current_price") else None,
             "market_cap": row.get("market_cap"),
             "volume_24h": row.get("volume_24h"),
@@ -820,6 +1553,12 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
             },
             "component_count": comp_count,
             "formula_version": row.get("formula_version"),
+            "aggregation_method": row.get("aggregation_method"),
+            "aggregation_params": agg_params,
+            "aggregation_formula_version": row.get("aggregation_formula_version"),
+            "effective_category_weights": eff_weights,
+            "coverage": float(row["coverage"]) if row.get("coverage") is not None else None,
+            "withheld": bool(row.get("withheld")) if row.get("withheld") is not None else False,
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         })
     
@@ -886,12 +1625,38 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
     
     from app.scoring_engine import compute_confidence_tag
     SII_COMPONENTS_TOTAL = len(COMPONENT_NORMALIZATIONS)
-    comp_count = row.get("component_count") or 0
-    detail_coverage = round(comp_count / max(SII_COMPONENTS_TOTAL, 1), 2)
-    detail_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
-                      "distribution": "distribution_score", "structural": "structural_score"}
-    detail_missing = [cat for cat, col in detail_cat_map.items() if not row.get(col)]
-    detail_conf = compute_confidence_tag(5 - len(detail_missing), 5, detail_coverage, detail_missing)
+    # V7.3 confidence fields — prefer the stored columns, fall back to legacy
+    # synthesis for rows that predate migration 084 / backfill.
+    _stored_populated = row.get("components_populated")
+    if _stored_populated is not None:
+        detail_comp_populated = int(_stored_populated)
+        detail_comp_total = int(row.get("components_total") or SII_COMPONENTS_TOTAL)
+        detail_coverage = float(row.get("component_coverage") or (
+            round(detail_comp_populated / max(detail_comp_total, 1), 4)
+        ))
+        detail_missing = row.get("missing_categories") or []
+        if isinstance(detail_missing, str):
+            import json as _j
+            try:
+                detail_missing = _j.loads(detail_missing)
+            except Exception:
+                detail_missing = []
+        detail_conf = {
+            "confidence": row.get("confidence")
+                or compute_confidence_tag(5 - len(detail_missing), 5, detail_coverage, detail_missing)["confidence"],
+            "tag": row.get("confidence_tag")
+                or compute_confidence_tag(5 - len(detail_missing), 5, detail_coverage, detail_missing)["tag"],
+            "missing_categories": detail_missing,
+        }
+    else:
+        detail_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
+                          "distribution": "distribution_score", "structural": "structural_score"}
+        detail_missing = [cat for cat, col in detail_cat_map.items() if not row.get(col)]
+        detail_comp_populated = row.get("component_count") or 0
+        detail_comp_total = SII_COMPONENTS_TOTAL
+        detail_coverage = round(detail_comp_populated / max(detail_comp_total, 1), 4)
+        detail_conf = compute_confidence_tag(5 - len(detail_missing), 5, detail_coverage, detail_missing)
+    comp_count = detail_comp_populated
 
     return {
         "id": row["stablecoin_id"],
@@ -904,8 +1669,8 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
         "confidence_tag": detail_conf["tag"],
         "missing_categories": detail_conf["missing_categories"],
         "component_coverage": detail_coverage,
-        "components_populated": comp_count,
-        "components_total": SII_COMPONENTS_TOTAL,
+        "components_populated": detail_comp_populated,
+        "components_total": detail_comp_total,
         "price": float(row["current_price"]) if row.get("current_price") else None,
         "market_cap": row.get("market_cap"),
         "volume_24h": row.get("volume_24h"),
@@ -945,6 +1710,12 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
         "formula_version": row.get("formula_version"),
         "methodology_version": FORMULA_VERSION,
         "methodology_version_pinned": pinned,
+        "aggregation_method": row.get("aggregation_method"),
+        "aggregation_params": _parse_jsonb(row.get("aggregation_params")),
+        "aggregation_formula_version": row.get("aggregation_formula_version"),
+        "effective_category_weights": _parse_jsonb(row.get("effective_category_weights")),
+        "coverage": float(row["coverage"]) if row.get("coverage") is not None else None,
+        "withheld": bool(row.get("withheld")) if row.get("withheld") is not None else False,
         "daily_change": float(row["daily_change"]) if row.get("daily_change") else None,
         "weekly_change": float(row["weekly_change"]) if row.get("weekly_change") else None,
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
@@ -1322,6 +2093,7 @@ async def get_all_indices():
             "description": idx["description"],
             "entity_type": idx["entity_type"],
             "formula": formula,
+            "aggregation": idx.get("aggregation"),
             "categories": categories,
             "total_components": len(idx.get("components", {})),
             "structural_subcategories": idx.get("structural_subcategories"),
@@ -1364,6 +2136,33 @@ async def get_methodology_versions():
         "psi": PSI_METHODOLOGY_VERSIONS,
         "wallet": WALLET_METHODOLOGY_VERSIONS,
     }
+
+
+# =============================================================================
+# 6c. GET /api/methodology/hashes — Methodology hash registry (public)
+# =============================================================================
+
+@app.get("/api/methodology/hashes")
+async def public_list_methodology_hashes():
+    """List all registered methodology hashes (no content — use detail endpoint for full content)."""
+    try:
+        from app.methodology_hashes import list_methodologies
+        return {"methodologies": list_methodologies()}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/methodology/hashes/{methodology_id}")
+async def public_get_methodology_hash(methodology_id: str):
+    """Get a single methodology including full content."""
+    try:
+        from app.methodology_hashes import get_methodology
+        m = get_methodology(methodology_id)
+        if not m:
+            return JSONResponse(status_code=404, content={"error": "methodology not found"})
+        return m
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # =============================================================================
@@ -3722,6 +4521,60 @@ async def verify_assessment(assessment_id: str):
 
 
 # =============================================================================
+# Disputes — Public API
+# =============================================================================
+
+@app.get("/api/disputes")
+async def public_list_disputes(status: Optional[str] = None):
+    """Public dispute listing. Only shows disputes that have moved past 'submitted' status."""
+    try:
+        if status:
+            if status == "submitted":
+                return {"disputes": []}
+            rows = fetch_all(
+                "SELECT * FROM disputes WHERE status = %s AND status != 'submitted' ORDER BY created_at DESC",
+                (status,),
+            )
+        else:
+            rows = fetch_all(
+                "SELECT * FROM disputes WHERE status != 'submitted' ORDER BY created_at DESC"
+            )
+        return {"disputes": [dict(r) for r in rows] if rows else []}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/disputes/{dispute_id}")
+async def public_get_dispute(dispute_id: str):
+    """Public single-dispute view. Only visible if status != 'submitted'."""
+    try:
+        dispute = fetch_one(
+            "SELECT * FROM disputes WHERE dispute_id = %s::uuid AND status != 'submitted'",
+            (dispute_id,),
+        )
+        if not dispute:
+            raise HTTPException(status_code=404, detail="Dispute not found or not yet public")
+
+        transitions = fetch_all(
+            "SELECT * FROM dispute_transitions WHERE dispute_id = %s::uuid ORDER BY transition_index",
+            (dispute_id,),
+        )
+        result = dict(dispute)
+        result["transitions"] = []
+        for t in (transitions or []):
+            td = dict(t)
+            if isinstance(td.get("transition_payload"), str):
+                import json as _json
+                td["transition_payload"] = _json.loads(td["transition_payload"])
+            result["transitions"].append(td)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# =============================================================================
 # Admin — Manual Assessment Event Creation
 # =============================================================================
 
@@ -3815,32 +4668,66 @@ async def psi_scores():
         SELECT DISTINCT ON (protocol_slug)
             id, protocol_slug, protocol_name, overall_score, grade,
             category_scores, component_scores, raw_values,
-            formula_version, computed_at
+            formula_version, computed_at,
+            confidence, confidence_tag, component_coverage,
+            components_populated, components_total, missing_categories
         FROM psi_scores
         ORDER BY protocol_slug, computed_at DESC
     """)
     from app.index_definitions.psi_v01 import PSI_V01_DEFINITION
     from app.scoring_engine import compute_confidence_tag
+    from app.confidence_tier_codes import tag_to_code as _psi_tag_to_code
     psi_cats_total = len(PSI_V01_DEFINITION["categories"])
-    psi_comps_total = len(PSI_V01_DEFINITION["components"])
+    psi_comps_total_def = len(PSI_V01_DEFINITION["components"])
 
     results = []
     for row in rows:
         slug = row["protocol_slug"]
         cat_scores = row.get("category_scores") or {}
         comp_scores = row.get("component_scores") or {}
-        comps_populated = len(comp_scores)
-        psi_coverage = round(comps_populated / max(psi_comps_total, 1), 2)
-        psi_missing = sorted(set(PSI_V01_DEFINITION["categories"].keys()) - set(cat_scores.keys()))
-        psi_conf = compute_confidence_tag(psi_cats_total - len(psi_missing), psi_cats_total, psi_coverage, psi_missing)
+
+        # Prefer stored V7.3 columns. Fall back to JSON-count synthesis for
+        # rows written before migration 084 / backfill.
+        stored_populated = row.get("components_populated")
+        if stored_populated is not None:
+            comps_populated = int(stored_populated)
+            psi_comps_total = int(row.get("components_total") or psi_comps_total_def)
+            psi_coverage = float(row.get("component_coverage") or (
+                round(comps_populated / max(psi_comps_total, 1), 4)
+            ))
+            psi_missing = row.get("missing_categories") or []
+            if isinstance(psi_missing, str):
+                import json as _j
+                try:
+                    psi_missing = _j.loads(psi_missing)
+                except Exception:
+                    psi_missing = []
+            psi_conf = {
+                "confidence": row.get("confidence"),
+                "tag": row.get("confidence_tag"),
+                "missing_categories": psi_missing,
+            }
+            if not psi_conf["confidence"]:
+                psi_conf = compute_confidence_tag(
+                    psi_cats_total - len(psi_missing), psi_cats_total, psi_coverage, psi_missing,
+                )
+        else:
+            comps_populated = len(comp_scores)
+            psi_comps_total = psi_comps_total_def
+            psi_coverage = round(comps_populated / max(psi_comps_total, 1), 4)
+            psi_missing = sorted(set(PSI_V01_DEFINITION["categories"].keys()) - set(cat_scores.keys()))
+            psi_conf = compute_confidence_tag(
+                psi_cats_total - len(psi_missing), psi_cats_total, psi_coverage, psi_missing,
+            )
 
         results.append({
             "protocol_slug": slug,
             "protocol_name": row["protocol_name"],
             "score": float(row["overall_score"]) if row.get("overall_score") else None,
+            "grade": _psi_tag_to_code(psi_conf["tag"]),
             "confidence": psi_conf["confidence"],
             "confidence_tag": psi_conf["tag"],
-            "missing_categories": psi_conf["missing_categories"],
+            "missing_categories": psi_conf.get("missing_categories") or psi_missing,
             "component_coverage": psi_coverage,
             "components_populated": comps_populated,
             "components_total": psi_comps_total,
@@ -4049,7 +4936,9 @@ async def psi_score_detail(slug: str):
     row = fetch_one("""
         SELECT id, protocol_slug, protocol_name, overall_score, grade,
                category_scores, component_scores, raw_values,
-               formula_version, computed_at
+               formula_version, computed_at,
+               confidence, confidence_tag, component_coverage,
+               components_populated, components_total, missing_categories
         FROM psi_scores
         WHERE protocol_slug = %s
         ORDER BY computed_at DESC
@@ -4062,15 +4951,42 @@ async def psi_score_detail(slug: str):
     from app.scoring_engine import compute_confidence_tag
     psi_cat_scores = row.get("category_scores") or {}
     psi_comp_scores = row.get("component_scores") or {}
-    psi_comps_populated = len(psi_comp_scores)
-    psi_comps_total = len(PSI_V01_DEFINITION["components"])
-    psi_det_coverage = round(psi_comps_populated / max(psi_comps_total, 1), 2)
-    psi_det_missing = sorted(set(PSI_V01_DEFINITION["categories"].keys()) - set(psi_cat_scores.keys()))
-    psi_det_conf = compute_confidence_tag(
-        len(PSI_V01_DEFINITION["categories"]) - len(psi_det_missing),
-        len(PSI_V01_DEFINITION["categories"]),
-        psi_det_coverage, psi_det_missing
-    )
+
+    _stored_populated = row.get("components_populated")
+    if _stored_populated is not None:
+        psi_comps_populated = int(_stored_populated)
+        psi_comps_total = int(row.get("components_total") or len(PSI_V01_DEFINITION["components"]))
+        psi_det_coverage = float(row.get("component_coverage") or (
+            round(psi_comps_populated / max(psi_comps_total, 1), 4)
+        ))
+        psi_det_missing = row.get("missing_categories") or []
+        if isinstance(psi_det_missing, str):
+            import json as _j
+            try:
+                psi_det_missing = _j.loads(psi_det_missing)
+            except Exception:
+                psi_det_missing = []
+        psi_det_conf = {
+            "confidence": row.get("confidence"),
+            "tag": row.get("confidence_tag"),
+            "missing_categories": psi_det_missing,
+        }
+        if not psi_det_conf["confidence"]:
+            psi_det_conf = compute_confidence_tag(
+                len(PSI_V01_DEFINITION["categories"]) - len(psi_det_missing),
+                len(PSI_V01_DEFINITION["categories"]),
+                psi_det_coverage, psi_det_missing,
+            )
+    else:
+        psi_comps_populated = len(psi_comp_scores)
+        psi_comps_total = len(PSI_V01_DEFINITION["components"])
+        psi_det_coverage = round(psi_comps_populated / max(psi_comps_total, 1), 4)
+        psi_det_missing = sorted(set(PSI_V01_DEFINITION["categories"].keys()) - set(psi_cat_scores.keys()))
+        psi_det_conf = compute_confidence_tag(
+            len(PSI_V01_DEFINITION["categories"]) - len(psi_det_missing),
+            len(PSI_V01_DEFINITION["categories"]),
+            psi_det_coverage, psi_det_missing,
+        )
 
     return {
         "protocol_slug": row["protocol_slug"],
@@ -4078,7 +4994,7 @@ async def psi_score_detail(slug: str):
         "score": float(row["overall_score"]) if row.get("overall_score") else None,
         "confidence": psi_det_conf["confidence"],
         "confidence_tag": psi_det_conf["tag"],
-        "missing_categories": psi_det_conf["missing_categories"],
+        "missing_categories": psi_det_conf.get("missing_categories") or psi_det_missing,
         "component_coverage": psi_det_coverage,
         "components_populated": psi_comps_populated,
         "components_total": psi_comps_total,
@@ -4130,20 +5046,72 @@ async def rpi_scores():
         SELECT DISTINCT ON (protocol_slug)
             id, protocol_slug, protocol_name, overall_score, grade,
             component_scores, raw_values, inputs_hash,
-            methodology_version, computed_at
+            methodology_version, computed_at,
+            confidence, confidence_tag, component_coverage,
+            components_populated, components_total, missing_categories
         FROM rpi_scores
         ORDER BY protocol_slug, computed_at DESC
     """)
     from app.index_definitions.rpi_v2 import RPI_V2_DEFINITION
+    from app.scoring_engine import compute_confidence_tag
+    rpi_comps_total_def = len(RPI_V2_DEFINITION["components"])
+    rpi_cats_total = len(RPI_V2_DEFINITION["categories"])
+    _rpi_comp_to_cat = {
+        cid: cdef["category"] for cid, cdef in RPI_V2_DEFINITION["components"].items()
+    }
+
     results = []
     for row in rows:
+        comp_scores = row.get("component_scores") or {}
+        stored_populated = row.get("components_populated")
+        if stored_populated is not None:
+            rpi_populated = int(stored_populated)
+            rpi_total = int(row.get("components_total") or rpi_comps_total_def)
+            rpi_coverage = float(row.get("component_coverage") or (
+                round(rpi_populated / max(rpi_total, 1), 4)
+            ))
+            rpi_missing = row.get("missing_categories") or []
+            if isinstance(rpi_missing, str):
+                import json as _j
+                try:
+                    rpi_missing = _j.loads(rpi_missing)
+                except Exception:
+                    rpi_missing = []
+            rpi_conf_level = row.get("confidence")
+            rpi_conf_tag = row.get("confidence_tag")
+            if not rpi_conf_level:
+                _c = compute_confidence_tag(
+                    rpi_cats_total - len(rpi_missing), rpi_cats_total, rpi_coverage, rpi_missing,
+                )
+                rpi_conf_level, rpi_conf_tag = _c["confidence"], _c["tag"]
+        else:
+            # Legacy fallback — row predates migration 084 / backfill.
+            rpi_populated = len(comp_scores)
+            rpi_total = rpi_comps_total_def
+            rpi_coverage = round(rpi_populated / max(rpi_total, 1), 4)
+            _pop_cats = {
+                _rpi_comp_to_cat[cid] for cid in comp_scores
+                if cid in _rpi_comp_to_cat
+            }
+            rpi_missing = sorted(set(RPI_V2_DEFINITION["categories"].keys()) - _pop_cats)
+            _c = compute_confidence_tag(
+                len(_pop_cats), rpi_cats_total, rpi_coverage, rpi_missing,
+            )
+            rpi_conf_level, rpi_conf_tag = _c["confidence"], _c["tag"]
+
         results.append({
             "protocol_slug": row["protocol_slug"],
             "protocol_name": row["protocol_name"],
             "score": float(row["overall_score"]) if row.get("overall_score") else None,
             "grade": row.get("grade"),
-            "component_scores": row.get("component_scores"),
+            "component_scores": comp_scores,
             "methodology_version": row.get("methodology_version"),
+            "confidence": rpi_conf_level,
+            "confidence_tag": rpi_conf_tag,
+            "missing_categories": rpi_missing,
+            "component_coverage": rpi_coverage,
+            "components_populated": rpi_populated,
+            "components_total": rpi_total,
             "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
         })
     result = {
@@ -4356,7 +5324,9 @@ async def rpi_score_detail(slug: str, lens: Optional[str] = Query(default=None))
     row = fetch_one("""
         SELECT id, protocol_slug, protocol_name, overall_score, grade,
                component_scores, raw_values, inputs_hash,
-               methodology_version, computed_at
+               methodology_version, computed_at,
+               confidence, confidence_tag, component_coverage,
+               components_populated, components_total, missing_categories
         FROM rpi_scores
         WHERE protocol_slug = %s
         ORDER BY computed_at DESC LIMIT 1
@@ -4364,15 +5334,51 @@ async def rpi_score_detail(slug: str, lens: Optional[str] = Query(default=None))
     if not row:
         raise HTTPException(status_code=404, detail=f"Protocol '{slug}' not found in RPI scores")
 
+    from app.index_definitions.rpi_v2 import RPI_V2_DEFINITION as _RPI_DEF
+    from app.scoring_engine import compute_confidence_tag as _cct
+    _comp_scores = row.get("component_scores") or {}
+    _comp_to_cat = {cid: cdef["category"] for cid, cdef in _RPI_DEF["components"].items()}
+    _stored_populated = row.get("components_populated")
+    if _stored_populated is not None:
+        rpi_populated = int(_stored_populated)
+        rpi_total = int(row.get("components_total") or len(_RPI_DEF["components"]))
+        rpi_coverage = float(row.get("component_coverage") or round(rpi_populated / max(rpi_total, 1), 4))
+        rpi_missing = row.get("missing_categories") or []
+        if isinstance(rpi_missing, str):
+            import json as _j
+            try:
+                rpi_missing = _j.loads(rpi_missing)
+            except Exception:
+                rpi_missing = []
+        rpi_conf_level = row.get("confidence")
+        rpi_conf_tag = row.get("confidence_tag")
+        if not rpi_conf_level:
+            _c = _cct(len(_RPI_DEF["categories"]) - len(rpi_missing), len(_RPI_DEF["categories"]), rpi_coverage, rpi_missing)
+            rpi_conf_level, rpi_conf_tag = _c["confidence"], _c["tag"]
+    else:
+        rpi_populated = len(_comp_scores)
+        rpi_total = len(_RPI_DEF["components"])
+        rpi_coverage = round(rpi_populated / max(rpi_total, 1), 4)
+        _pop_cats = {_comp_to_cat[cid] for cid in _comp_scores if cid in _comp_to_cat}
+        rpi_missing = sorted(set(_RPI_DEF["categories"].keys()) - _pop_cats)
+        _c = _cct(len(_pop_cats), len(_RPI_DEF["categories"]), rpi_coverage, rpi_missing)
+        rpi_conf_level, rpi_conf_tag = _c["confidence"], _c["tag"]
+
     result = {
         "protocol_slug": row["protocol_slug"],
         "protocol_name": row["protocol_name"],
         "rpi_base": float(row["overall_score"]) if row.get("overall_score") else None,
         "grade": row.get("grade"),
-        "component_scores": row.get("component_scores"),
+        "component_scores": _comp_scores,
         "raw_values": row.get("raw_values"),
         "inputs_hash": row.get("inputs_hash"),
         "methodology_version": row.get("methodology_version"),
+        "confidence": rpi_conf_level,
+        "confidence_tag": rpi_conf_tag,
+        "missing_categories": rpi_missing,
+        "component_coverage": rpi_coverage,
+        "components_populated": rpi_populated,
+        "components_total": rpi_total,
         "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
     }
 
@@ -5138,28 +6144,91 @@ async def circle7_scores(index_id: str):
     rows = fetch_all("""
         SELECT DISTINCT ON (entity_slug)
             entity_slug, entity_name, overall_score,
-            category_scores, confidence, confidence_tag,
-            scored_date, computed_at
+            category_scores, component_scores, confidence, confidence_tag,
+            component_coverage, components_populated, components_total,
+            missing_categories, scored_date, computed_at
         FROM generic_index_scores
         WHERE index_id = %s
         ORDER BY entity_slug, computed_at DESC
     """, (index_id,))
 
+    # Definition lookup for fallback synthesis on rows that predate backfill.
+    _def_map = {}
+    try:
+        from app.index_definitions.lsti_v01 import LSTI_V01_DEFINITION
+        from app.index_definitions.bri_v01 import BRI_V01_DEFINITION
+        from app.index_definitions.dohi_v01 import DOHI_V01_DEFINITION
+        from app.index_definitions.vsri_v01 import VSRI_V01_DEFINITION
+        from app.index_definitions.cxri_v01 import CXRI_V01_DEFINITION
+        from app.index_definitions.tti_v01 import TTI_V01_DEFINITION
+        _def_map = {
+            "lsti": LSTI_V01_DEFINITION, "bri": BRI_V01_DEFINITION,
+            "dohi": DOHI_V01_DEFINITION, "vsri": VSRI_V01_DEFINITION,
+            "cxri": CXRI_V01_DEFINITION, "tti": TTI_V01_DEFINITION,
+        }
+    except ImportError:
+        pass
+    defn = _def_map.get(index_id)
+
+    from app.scoring_engine import compute_confidence_tag
+    scores_out = []
+    for r in rows:
+        stored_populated = r.get("components_populated")
+        if stored_populated is not None:
+            populated = int(stored_populated)
+            total = int(r.get("components_total") or (
+                len(defn["components"]) if defn else 0
+            ))
+            coverage = float(r.get("component_coverage") or (
+                round(populated / max(total, 1), 4) if total else 0
+            ))
+            missing = r.get("missing_categories") or []
+            if isinstance(missing, str):
+                import json as _j
+                try:
+                    missing = _j.loads(missing)
+                except Exception:
+                    missing = []
+        elif defn is not None:
+            # Legacy fallback — synthesize from component_scores JSON.
+            cs = r.get("component_scores") or {}
+            populated = len(cs)
+            total = len(defn["components"])
+            coverage = round(populated / max(total, 1), 4)
+            cat_scores = r.get("category_scores") or {}
+            missing = sorted(set(defn["categories"].keys()) - set(cat_scores.keys()))
+        else:
+            populated = total = 0
+            coverage = 0.0
+            missing = []
+
+        conf_level = r.get("confidence")
+        conf_tag = r.get("confidence_tag")
+        if not conf_level and defn is not None:
+            _c = compute_confidence_tag(
+                len(defn["categories"]) - len(missing),
+                len(defn["categories"]), coverage, missing,
+            )
+            conf_level, conf_tag = _c["confidence"], _c["tag"]
+
+        scores_out.append({
+            "entity": r["entity_slug"],
+            "name": r["entity_name"],
+            "score": float(r["overall_score"]) if r["overall_score"] else None,
+            "category_scores": r["category_scores"],
+            "confidence": conf_level,
+            "confidence_tag": conf_tag,
+            "missing_categories": missing,
+            "component_coverage": coverage,
+            "components_populated": populated,
+            "components_total": total,
+            "scored_date": str(r["scored_date"]),
+        })
+
     return {
         "index_id": index_id,
         "count": len(rows),
-        "scores": [
-            {
-                "entity": r["entity_slug"],
-                "name": r["entity_name"],
-                "score": float(r["overall_score"]) if r["overall_score"] else None,
-                "category_scores": r["category_scores"],
-                "confidence": r["confidence"],
-                "confidence_tag": r["confidence_tag"],
-                "scored_date": str(r["scored_date"]),
-            }
-            for r in rows
-        ],
+        "scores": scores_out,
     }
 
 
@@ -5174,7 +6243,8 @@ async def circle7_score_detail(index_id: str, entity_slug: str):
         SELECT entity_slug, entity_name, overall_score,
                category_scores, component_scores, raw_values,
                formula_version, inputs_hash, confidence, confidence_tag,
-               scored_date, computed_at
+               component_coverage, components_populated, components_total,
+               missing_categories, scored_date, computed_at
         FROM generic_index_scores
         WHERE index_id = %s AND entity_slug = %s
         ORDER BY computed_at DESC LIMIT 1
@@ -5182,6 +6252,59 @@ async def circle7_score_detail(index_id: str, entity_slug: str):
 
     if not row:
         raise HTTPException(status_code=404, detail=f"No score found for {entity_slug} in {index_id}")
+
+    _def_map = {}
+    try:
+        from app.index_definitions.lsti_v01 import LSTI_V01_DEFINITION
+        from app.index_definitions.bri_v01 import BRI_V01_DEFINITION
+        from app.index_definitions.dohi_v01 import DOHI_V01_DEFINITION
+        from app.index_definitions.vsri_v01 import VSRI_V01_DEFINITION
+        from app.index_definitions.cxri_v01 import CXRI_V01_DEFINITION
+        from app.index_definitions.tti_v01 import TTI_V01_DEFINITION
+        _def_map = {
+            "lsti": LSTI_V01_DEFINITION, "bri": BRI_V01_DEFINITION,
+            "dohi": DOHI_V01_DEFINITION, "vsri": VSRI_V01_DEFINITION,
+            "cxri": CXRI_V01_DEFINITION, "tti": TTI_V01_DEFINITION,
+        }
+    except ImportError:
+        pass
+    defn = _def_map.get(index_id)
+
+    from app.scoring_engine import compute_confidence_tag as _cct
+    stored_populated = row.get("components_populated")
+    if stored_populated is not None:
+        populated = int(stored_populated)
+        total = int(row.get("components_total") or (len(defn["components"]) if defn else 0))
+        coverage = float(row.get("component_coverage") or (
+            round(populated / max(total, 1), 4) if total else 0
+        ))
+        missing = row.get("missing_categories") or []
+        if isinstance(missing, str):
+            import json as _j
+            try:
+                missing = _j.loads(missing)
+            except Exception:
+                missing = []
+    elif defn is not None:
+        cs = row.get("component_scores") or {}
+        populated = len(cs)
+        total = len(defn["components"])
+        coverage = round(populated / max(total, 1), 4)
+        cat_scores = row.get("category_scores") or {}
+        missing = sorted(set(defn["categories"].keys()) - set(cat_scores.keys()))
+    else:
+        populated = total = 0
+        coverage = 0.0
+        missing = []
+
+    conf_level = row.get("confidence")
+    conf_tag = row.get("confidence_tag")
+    if not conf_level and defn is not None:
+        _c = _cct(
+            len(defn["categories"]) - len(missing),
+            len(defn["categories"]), coverage, missing,
+        )
+        conf_level, conf_tag = _c["confidence"], _c["tag"]
 
     return {
         "index_id": index_id,
@@ -5193,8 +6316,12 @@ async def circle7_score_detail(index_id: str, entity_slug: str):
         "raw_values": row["raw_values"],
         "formula_version": row["formula_version"],
         "inputs_hash": row["inputs_hash"],
-        "confidence": row["confidence"],
-        "confidence_tag": row["confidence_tag"],
+        "confidence": conf_level,
+        "confidence_tag": conf_tag,
+        "missing_categories": missing,
+        "component_coverage": coverage,
+        "components_populated": populated,
+        "components_total": total,
         "scored_date": str(row["scored_date"]),
         "computed_at": str(row["computed_at"]),
     }
@@ -5507,7 +6634,7 @@ async def cqi_contagion(
                 e.weight,
                 e.total_value_usd,
                 1 AS depth,
-                ARRAY[e.from_address, e.to_address] AS path
+                ARRAY[e.from_address, e.to_address]::varchar[] AS path
             FROM wallet_graph.wallet_edges e
             WHERE (e.from_address = ANY(%s) OR e.to_address = ANY(%s))
               AND e.weight > 0.05
@@ -6918,7 +8045,9 @@ async def generate_report(
         if not render_fn:
             raise HTTPException(status_code=400, detail=f"Unknown template: {template}")
 
-        data = assemble_report_data(entity_type, entity_id)
+        from starlette.concurrency import run_in_threadpool
+
+        data = await run_in_threadpool(assemble_report_data, entity_type, entity_id)
         if not data:
             raise HTTPException(status_code=404, detail=f"{entity_type} '{entity_id}' not found")
 
@@ -6951,14 +8080,18 @@ async def generate_report(
             if template == "sbt_metadata":
                 content = render_sbt(data, lens_result, report_hash, ts)
             else:
-                content = _json.dumps({
+                json_payload = {
                     "entity_type": entity_type,
                     "entity_id": entity_id,
                     "report_data": data,
                     "lens_result": lens_result,
                     "report_hash": report_hash,
                     "generated_at": ts,
-                }, default=str, indent=2)
+                }
+                if template == "engagement":
+                    from app.templates.engagement import generate_email_draft
+                    json_payload["email_draft"] = generate_email_draft(data, report_hash, ts)
+                content = _json.dumps(json_payload, default=str, indent=2)
             return JSONResponse(
                 content=_json.loads(content) if isinstance(content, str) else content,
                 headers={"X-Report-Hash": report_hash},
@@ -7037,6 +8170,98 @@ async def sbt_metadata(token_id: int):
     content = render_sbt(data, None, report_hash, ts)
     import json as _json
     return JSONResponse(_json.loads(content))
+
+
+# =============================================================================
+# Shareable Engagement Routes
+# =============================================================================
+
+
+@app.get("/engagement/{entity_type}/{entity_id}")
+async def engagement_shareable(entity_type: str, entity_id: str):
+    """Shareable HTML engagement page for an entity's most recent report."""
+    try:
+        from app.report import assemble_report_data
+        from app.report_attestation import compute_report_hash
+        from app.templates.engagement import render as render_engagement
+        from starlette.concurrency import run_in_threadpool
+
+        if entity_type not in ("stablecoin", "protocol", "wallet"):
+            raise HTTPException(status_code=400, detail=f"Invalid entity_type: {entity_type}. Use stablecoin, protocol, or wallet.")
+
+        data = await run_in_threadpool(assemble_report_data, entity_type, entity_id)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"{entity_type} '{entity_id}' not found")
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        report_hash = compute_report_hash(data, "engagement", None, None, ts,
+                                          state_hashes=data.get("state_hashes"))
+
+        html = render_engagement(data, None, report_hash, ts, "html")
+        return HTMLResponse(
+            content=html,
+            headers={
+                "X-Report-Hash": report_hash,
+                "Cache-Control": "public, max-age=300",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        import traceback
+        from starlette.responses import PlainTextResponse
+        return PlainTextResponse(
+            content=traceback.format_exc(),
+            status_code=500,
+            media_type="text/plain",
+        )
+
+
+@app.get("/engagement/{entity_type}/{entity_id}/{report_hash}")
+async def engagement_by_hash(entity_type: str, entity_id: str, report_hash: str):
+    """Historical engagement artifact for a specific report hash."""
+    try:
+        from app.report import assemble_report_data
+        from app.report_attestation import compute_report_hash as _compute_hash
+        from app.templates.engagement import render as render_engagement
+        from starlette.concurrency import run_in_threadpool
+
+        if entity_type not in ("stablecoin", "protocol", "wallet"):
+            raise HTTPException(status_code=400, detail=f"Invalid entity_type: {entity_type}. Use stablecoin, protocol, or wallet.")
+
+        # Try to look up the attestation record for this hash
+        row = fetch_one(
+            "SELECT entity_type, entity_id, generated_at FROM report_attestations WHERE report_hash = %s",
+            (report_hash,),
+        )
+
+        # Regardless of whether we found the attestation, generate fresh data
+        # (the attestation just confirms the hash existed)
+        data = await run_in_threadpool(assemble_report_data, entity_type, entity_id)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"{entity_type} '{entity_id}' not found")
+
+        ts = row["generated_at"].strftime("%Y-%m-%d %H:%M UTC") if row and row.get("generated_at") else \
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        html = render_engagement(data, None, report_hash, ts, "html")
+        return HTMLResponse(
+            content=html,
+            headers={
+                "X-Report-Hash": report_hash,
+                "Cache-Control": "public, max-age=300",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        import traceback
+        from starlette.responses import PlainTextResponse
+        return PlainTextResponse(
+            content=traceback.format_exc(),
+            status_code=500,
+            media_type="text/plain",
+        )
 
 
 # =============================================================================
@@ -7275,6 +8500,70 @@ async def state_root_latest():
 # Provenance Proofs
 # =============================================================================
 
+def _normalize_source_domain(raw_domain: str, endpoint: str = "") -> str:
+    """Map raw hostnames to semantic provenance source names."""
+    from urllib.parse import urlparse
+    host = raw_domain
+    path = endpoint
+    # If raw_domain is a full URL, parse it
+    if "://" in raw_domain:
+        p = urlparse(raw_domain)
+        host = p.netloc
+        path = path or p.path
+    host = host.lower()
+    path = (path or "").lower()
+
+    # Etherscan — split by endpoint
+    if "etherscan" in host:
+        if "tokentx" in path: return "etherscan_tokentx"
+        if "tokenholdercount" in path or "tokenbalance" in path: return "etherscan_holders"
+        if "getsourcecode" in path or "getabi" in path: return "etherscan_sourcecode"
+        return "etherscan_holders"
+
+    # GeckoTerminal (separate domain or via CoinGecko onchain API)
+    if "geckoterminal" in host:
+        return "geckoterminal_dex"
+    if "gecko-terminal" in host:
+        return "geckoterminal_dex"
+
+    # CoinGecko — split by endpoint
+    if "coingecko" in host:
+        if "market_chart" in path: return "coingecko_market_chart"
+        if "exchanges" in path: return "coingecko_exchanges"
+        if "tickers" in path: return "coingecko_tickers"
+        if "onchain" in path or "pools" in path: return "geckoterminal_dex"
+        return "coingecko_price"
+
+    # DeFiLlama — split by subdomain and path
+    if "llama.fi" in host:
+        if "yields" in host or "pools" in path: return "defillama_yields"
+        if "bridges" in host or "bridge" in path: return "defillama_bridges"
+        if "stablecoins" in host: return "defillama_tvl"
+        return "defillama_tvl"
+
+    # Blockscout
+    if "blockscout" in host:
+        return "blockscout_balances"
+
+    # Snapshot
+    if "snapshot" in host:
+        return "snapshot_governance"
+
+    # Tally
+    if "tally" in host:
+        return "tally_governance"
+
+    # CDA issuer PDFs
+    if "hubspot" in host or "website-files" in host or ".pdf" in path:
+        return "cda_issuer_pdf"
+
+    # Already a semantic name (not a hostname)
+    if "." not in raw_domain or "_" in raw_domain:
+        return raw_domain
+
+    return raw_domain
+
+
 @app.post("/api/provenance/register")
 async def provenance_register(request: Request):
     _check_admin_key(request)
@@ -7286,6 +8575,8 @@ async def provenance_register(request: Request):
         if field not in body:
             raise HTTPException(status_code=400, detail=f"Missing field: {field}")
 
+    _src = _normalize_source_domain(body["source_domain"], body.get("source_endpoint", ""))
+
     from app.database import fetch_one as _prov_fetch
     row = _prov_fetch(
         """INSERT INTO provenance_proofs
@@ -7293,12 +8584,83 @@ async def provenance_register(request: Request):
             proof_url, attestor_pubkey, proved_at, cycle_hour)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
            RETURNING id""",
-        (body["source_domain"], body["source_endpoint"],
+        (_src, body["source_endpoint"],
          body["response_hash"], body["attestation_hash"],
          body["proof_url"], body["attestor_pubkey"],
          body["proved_at"], body["cycle_hour"]),
     )
-    return {"status": "registered", "id": row["id"] if row else None}
+    return {"status": "registered", "id": row["id"] if row else None, "source_domain": _src}
+
+
+@app.post("/api/provenance/register/static")
+async def provenance_register_static(request: Request):
+    """Register a static (GitHub/docs) provenance proof — same schema as live."""
+    _check_admin_key(request)
+    body = await request.json()
+    required = ["source_domain", "source_endpoint", "response_hash",
+                "attestation_hash", "proof_url", "attestor_pubkey",
+                "proved_at", "cycle_hour"]
+    for field in required:
+        if field not in body:
+            raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+
+    _src = _normalize_source_domain(body["source_domain"], body.get("source_endpoint", ""))
+
+    from app.database import fetch_one as _prov_fetch
+    row = _prov_fetch(
+        """INSERT INTO provenance_proofs
+           (source_domain, source_endpoint, response_hash, attestation_hash,
+            proof_url, attestor_pubkey, proved_at, cycle_hour)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           RETURNING id""",
+        (_src, body["source_endpoint"],
+         body["response_hash"], body["attestation_hash"],
+         body["proof_url"], body["attestor_pubkey"],
+         body["proved_at"], body["cycle_hour"]),
+    )
+    return {"status": "registered", "id": row["id"] if row else None, "source_domain": _src}
+
+
+@app.post("/api/provenance/register/batch")
+async def provenance_register_batch(request: Request):
+    """Register multiple proofs in one request (avoids rate-limit issues)."""
+    _check_admin_key(request)
+    body = await request.json()
+    proofs = body.get("proofs", [])
+    if not proofs:
+        raise HTTPException(status_code=400, detail="proofs array is required")
+
+    required = ["source_domain", "source_endpoint", "response_hash",
+                "attestation_hash", "proof_url", "attestor_pubkey",
+                "proved_at", "cycle_hour"]
+    registered = []
+    from app.database import get_cursor as _prov_cursor
+    with _prov_cursor(dict_cursor=True) as cur:
+        for proof in proofs:
+            missing = [f for f in required if f not in proof]
+            if missing:
+                continue
+            _psrc = _normalize_source_domain(proof["source_domain"], proof.get("source_endpoint", ""))
+            cur.execute(
+                """INSERT INTO provenance_proofs
+                   (source_domain, source_endpoint, response_hash, attestation_hash,
+                    proof_url, attestor_pubkey, proved_at, cycle_hour)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   RETURNING id""",
+                (_psrc, proof["source_endpoint"],
+                 proof["response_hash"], proof["attestation_hash"],
+                 proof["proof_url"], proof["attestor_pubkey"],
+                 proof["proved_at"], proof["cycle_hour"]),
+            )
+            row = cur.fetchone()
+            if row:
+                registered.append(row["id"])
+
+    return {
+        "status": "registered",
+        "count": len(registered),
+        "ids": registered,
+    }
 
 
 @app.get("/api/provenance/latest")
@@ -7398,6 +8760,1094 @@ async def provenance_attestor_pubkey():
     }
 
 
+# --- Provenance Source Registry & Health ---
+
+@app.get("/api/provenance/sources")
+async def provenance_sources_list():
+    """List all registered provenance sources with health status."""
+    rows = fetch_all("SELECT * FROM provenance_sources ORDER BY entity, component")
+    return {
+        "sources": [dict(r) for r in (rows or [])],
+        "count": len(rows or []),
+    }
+
+
+@app.post("/api/provenance/health/alert")
+async def provenance_health_alert(request: Request):
+    """Record a health alert from the prover (domain change, DNS failure, auto-heal)."""
+    data = await request.json()
+    source_id = data.get("source_id")
+    event = data.get("event")
+    if not source_id or not event:
+        raise HTTPException(status_code=400, detail="source_id and event are required")
+
+    execute(
+        """INSERT INTO provenance_health_alerts
+           (source_id, event, old_url, redirect_url, details)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (
+            source_id,
+            event,
+            data.get("old_url"),
+            data.get("redirect_url"),
+            json.dumps(data),
+        ),
+    )
+    return {"status": "recorded"}
+
+
+@app.post("/api/provenance/sources/health")
+async def provenance_source_health_update(request: Request):
+    """Prover writes health state for a source after each notarization attempt."""
+    data = await request.json()
+    source_id = data.get("source_id")
+    status = data.get("status")  # "success", "failure", "auto_heal", "re_enable"
+    if not source_id or not status:
+        raise HTTPException(status_code=400, detail="source_id and status required")
+
+    from app.data_layer.prover_source_registry import (
+        record_success, record_failure, record_auto_heal, record_re_enable,
+    )
+
+    if status == "success":
+        record_success(source_id)
+    elif status == "failure":
+        error = data.get("error", "unknown error")
+        was_disabled = record_failure(source_id, error)
+        return {"status": "recorded", "auto_disabled": was_disabled}
+    elif status == "auto_heal":
+        old_url = data.get("old_url", "")
+        new_url = data.get("new_url", "")
+        if not new_url:
+            raise HTTPException(status_code=400, detail="new_url required for auto_heal")
+        record_auto_heal(source_id, old_url, new_url)
+    elif status == "re_enable":
+        record_re_enable(source_id)
+    else:
+        raise HTTPException(status_code=400,
+                            detail=f"Invalid status: {status}. "
+                                   f"Use success/failure/auto_heal/re_enable")
+
+    return {"status": "recorded"}
+
+
+@app.get("/api/provenance/sources/cycle")
+async def provenance_sources_for_cycle():
+    """Return sources the prover should notarize this cycle (schedule-aware)."""
+    from app.data_layer.prover_source_registry import get_cycle_sources, get_source_counts
+    sources = get_cycle_sources()
+    counts = get_source_counts()
+    return {
+        "sources": sources,
+        "count": len(sources),
+        "registry_counts": counts,
+    }
+
+
+@app.get("/api/provenance/health")
+async def provenance_health():
+    """Current provenance source health — active/disabled counts + recent alerts."""
+    sources = fetch_all("SELECT * FROM provenance_sources ORDER BY entity, component")
+    sources = sources or []
+
+    active = [s for s in sources if s.get("enabled")]
+    disabled = [s for s in sources if not s.get("enabled")]
+
+    recent_alerts = fetch_all("""
+        SELECT * FROM provenance_health_alerts
+        WHERE created_at > NOW() - INTERVAL '7 days'
+        ORDER BY created_at DESC
+        LIMIT 20
+    """) or []
+
+    # Check proof freshness — flag if no proofs registered in >2 hours
+    latest_proof = fetch_one(
+        "SELECT MAX(proved_at) AS latest FROM provenance_proofs"
+    )
+    proof_age_hours = None
+    proof_stale = False
+    if latest_proof and latest_proof.get("latest"):
+        from datetime import datetime, timezone
+        latest_ts = latest_proof["latest"]
+        if latest_ts.tzinfo is None:
+            latest_ts = latest_ts.replace(tzinfo=timezone.utc)
+        proof_age_hours = round(
+            (datetime.now(timezone.utc) - latest_ts).total_seconds() / 3600, 2
+        )
+        proof_stale = proof_age_hours > 2
+
+    return {
+        "total": len(sources),
+        "active": len(active),
+        "disabled": len(disabled),
+        "proof_age_hours": proof_age_hours,
+        "proof_stale": proof_stale,
+        "disabled_sources": [
+            {
+                "id": s["id"],
+                "entity": s.get("entity"),
+                "url": s.get("url"),
+                "reason": s.get("disabled_reason"),
+                "consecutive_failures": s.get("consecutive_failures", 0),
+                "since": s["last_failure"].isoformat() if s.get("last_failure") else None,
+            }
+            for s in disabled
+        ],
+        "recent_alerts": [
+            {
+                "source_id": a["source_id"],
+                "event": a["event"],
+                "old_url": a.get("old_url"),
+                "redirect_url": a.get("redirect_url"),
+                "created_at": a["created_at"].isoformat() if a.get("created_at") else None,
+            }
+            for a in recent_alerts
+        ],
+    }
+
+
+# =============================================================================
+# State-Building Pipeline API Endpoints (Pipelines 3, 16, 17, 19, 20, 21)
+# =============================================================================
+
+
+# --- Pipeline 3: Contract Upgrades ---
+
+@app.get("/api/contract-upgrades/history")
+async def contract_upgrade_history(
+    entity_type: Optional[str] = None,
+    entity_id: Optional[int] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    """Upgrade history for scored contracts."""
+    if entity_type and entity_id:
+        rows = fetch_all(
+            """SELECT * FROM contract_upgrade_history
+               WHERE entity_type = %s AND entity_id = %s
+               ORDER BY upgrade_detected_at DESC LIMIT %s""",
+            (entity_type, entity_id, limit),
+        )
+    elif entity_type:
+        rows = fetch_all(
+            """SELECT * FROM contract_upgrade_history
+               WHERE entity_type = %s
+               ORDER BY upgrade_detected_at DESC LIMIT %s""",
+            (entity_type, limit),
+        )
+    else:
+        rows = fetch_all(
+            """SELECT * FROM contract_upgrade_history
+               ORDER BY upgrade_detected_at DESC LIMIT %s""",
+            (limit,),
+        )
+    return {"upgrades": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/contract-upgrades/recent")
+async def contract_upgrades_recent():
+    """All contract upgrades in the last 30 days."""
+    rows = fetch_all(
+        """SELECT * FROM contract_upgrade_history
+           WHERE upgrade_detected_at > NOW() - INTERVAL '30 days'
+           ORDER BY upgrade_detected_at DESC"""
+    )
+    return {"upgrades": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/stablecoins/{symbol}/contract-upgrades")
+async def stablecoin_contract_upgrades(symbol: str):
+    """Contract upgrade history for a specific stablecoin."""
+    rows = fetch_all(
+        """SELECT * FROM contract_upgrade_history
+           WHERE entity_type = 'stablecoin' AND LOWER(entity_symbol) = LOWER(%s)
+           ORDER BY upgrade_detected_at DESC""",
+        (symbol,),
+    )
+    return {"upgrades": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/protocols/{slug}/contract-upgrades")
+async def protocol_contract_upgrades(slug: str):
+    """Contract upgrade history for a specific protocol."""
+    rows = fetch_all(
+        """SELECT * FROM contract_upgrade_history
+           WHERE entity_type = 'protocol' AND LOWER(entity_symbol) = LOWER(%s)
+           ORDER BY upgrade_detected_at DESC""",
+        (slug,),
+    )
+    return {"upgrades": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+# --- Pipeline 16: Contagion Events ---
+
+@app.get("/api/contagion-events")
+async def contagion_events_list(
+    event_type: Optional[str] = None,
+    severity: Optional[str] = None,
+    entity_symbol: Optional[str] = None,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """List archived contagion propagation events."""
+    conditions = ["detected_at > NOW() - INTERVAL '%s days'"]
+    params = [days]
+
+    if event_type:
+        conditions.append("event_type = %s")
+        params.append(event_type)
+    if severity:
+        conditions.append("severity = %s")
+        params.append(severity)
+    if entity_symbol:
+        conditions.append("LOWER(source_entity_symbol) = LOWER(%s)")
+        params.append(entity_symbol)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    rows = fetch_all(
+        f"""SELECT id, event_type, source_entity_type, source_entity_id,
+                   source_entity_symbol, trigger_metric, trigger_value_before,
+                   trigger_value_after, severity, propagation_summary,
+                   detected_at, content_hash
+            FROM contagion_events
+            WHERE {where}
+            ORDER BY detected_at DESC LIMIT %s""",
+        tuple(params),
+    )
+    return {"events": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/contagion-events/{event_id}")
+async def contagion_event_detail(event_id: int):
+    """Full contagion event record including graph state snapshot."""
+    row = fetch_one(
+        "SELECT * FROM contagion_events WHERE id = %s",
+        (event_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Contagion event not found")
+    return dict(row)
+
+
+@app.get("/api/stablecoins/{symbol}/contagion-events")
+async def stablecoin_contagion_events(symbol: str):
+    """Contagion events where this stablecoin was the source."""
+    rows = fetch_all(
+        """SELECT id, event_type, trigger_metric, trigger_value_before,
+                  trigger_value_after, severity, propagation_summary,
+                  detected_at, content_hash
+           FROM contagion_events
+           WHERE source_entity_type = 'stablecoin' AND LOWER(source_entity_symbol) = LOWER(%s)
+           ORDER BY detected_at DESC""",
+        (symbol,),
+    )
+    return {"events": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/protocols/{slug}/contagion-events")
+async def protocol_contagion_events(slug: str):
+    """Contagion events where this protocol was the source."""
+    rows = fetch_all(
+        """SELECT id, event_type, trigger_metric, trigger_value_before,
+                  trigger_value_after, severity, propagation_summary,
+                  detected_at, content_hash
+           FROM contagion_events
+           WHERE source_entity_type = 'protocol' AND LOWER(source_entity_symbol) = LOWER(%s)
+           ORDER BY detected_at DESC""",
+        (slug,),
+    )
+    return {"events": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+# --- Pipeline 19: Sanctions Screening ---
+
+@app.get("/api/sanctions/summary")
+async def sanctions_summary():
+    """Summary of sanctions screening status."""
+    today_count = fetch_one(
+        "SELECT COUNT(*) AS cnt FROM sanctions_screening_results WHERE screened_at::date = CURRENT_DATE"
+    )
+    match_count = fetch_one(
+        "SELECT COUNT(*) AS cnt FROM sanctions_screening_results WHERE is_match = TRUE"
+    )
+    last_screened = fetch_one(
+        "SELECT MAX(screened_at) AS latest FROM sanctions_screening_results"
+    )
+    return {
+        "targets_screened_today": (today_count or {}).get("cnt", 0),
+        "total_matches": (match_count or {}).get("cnt", 0),
+        "last_screened_at": (last_screened or {}).get("latest"),
+    }
+
+
+@app.get("/api/sanctions/matches")
+async def sanctions_matches():
+    """All historical sanctions matches."""
+    rows = fetch_all(
+        """SELECT * FROM sanctions_screening_results
+           WHERE is_match = TRUE
+           ORDER BY screened_at DESC"""
+    )
+    return {"matches": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/stablecoins/{symbol}/sanctions")
+async def stablecoin_sanctions(symbol: str):
+    """Screening history for this stablecoin's issuers."""
+    rows = fetch_all(
+        """SELECT * FROM sanctions_screening_results
+           WHERE LOWER(entity_symbol) = LOWER(%s)
+           ORDER BY screened_at DESC""",
+        (symbol,),
+    )
+    return {"screenings": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+# --- Pipeline 20: Enforcement History ---
+
+@app.get("/api/enforcement/summary")
+async def enforcement_summary():
+    """Summary of enforcement record collection."""
+    entity_counts = fetch_all(
+        """SELECT entity_symbol, COUNT(*) AS cnt
+           FROM enforcement_records
+           GROUP BY entity_symbol ORDER BY cnt DESC"""
+    )
+    unreviewed = fetch_one(
+        "SELECT COUNT(*) AS cnt FROM enforcement_records WHERE is_relevant IS NULL"
+    )
+    last_scan = fetch_one(
+        "SELECT MAX(discovered_at) AS latest FROM enforcement_records"
+    )
+    return {
+        "records_by_entity": [dict(r) for r in (entity_counts or [])],
+        "unreviewed_count": (unreviewed or {}).get("cnt", 0),
+        "last_scanned_at": (last_scan or {}).get("latest"),
+    }
+
+
+@app.get("/api/enforcement/records")
+async def enforcement_records_list(
+    entity_symbol: Optional[str] = None,
+    record_type: Optional[str] = None,
+    days: int = Query(default=365, ge=1, le=3650),
+):
+    """List enforcement records with optional filters."""
+    conditions = ["discovered_at > NOW() - INTERVAL '%s days'"]
+    params = [days]
+
+    if entity_symbol:
+        conditions.append("LOWER(entity_symbol) = LOWER(%s)")
+        params.append(entity_symbol)
+    if record_type:
+        conditions.append("record_type = %s")
+        params.append(record_type)
+
+    where = " AND ".join(conditions)
+    rows = fetch_all(
+        f"""SELECT id, entity_type, entity_symbol, search_term, record_source,
+                   case_name, case_date, court, docket_number, record_type,
+                   summary, case_url, absolute_url,
+                   COALESCE(is_relevant::text, 'pending_review') AS review_status,
+                   discovered_at
+            FROM enforcement_records
+            WHERE {where}
+            ORDER BY discovered_at DESC""",
+        tuple(params),
+    )
+    return {"records": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/stablecoins/{symbol}/enforcement")
+async def stablecoin_enforcement(symbol: str):
+    """All enforcement records for this stablecoin's issuer."""
+    rows = fetch_all(
+        """SELECT id, entity_type, search_term, record_source, case_name,
+                  case_date, court, docket_number, record_type, summary,
+                  case_url, absolute_url,
+                  COALESCE(is_relevant::text, 'pending_review') AS review_status,
+                  discovered_at
+           FROM enforcement_records
+           WHERE LOWER(entity_symbol) = LOWER(%s)
+           ORDER BY case_date DESC""",
+        (symbol,),
+    )
+    return {"records": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+# --- Pipeline 21: Parent Company Financials ---
+
+@app.get("/api/parent-company/{symbol}/financials")
+async def parent_company_financials(symbol: str):
+    """Financial history for all parent companies of this stablecoin."""
+    companies = fetch_all(
+        """SELECT pcr.company_name, pcr.sec_cik, pcr.relationship_type,
+                  pcf.fiscal_period, pcf.fiscal_year, pcf.period_end_date,
+                  pcf.total_assets_usd, pcf.total_liabilities_usd,
+                  pcf.total_equity_usd, pcf.revenue_usd, pcf.net_income_usd,
+                  pcf.cash_and_equivalents_usd, pcf.debt_to_equity,
+                  pcf.current_ratio, pcf.captured_at
+           FROM parent_company_registry pcr
+           LEFT JOIN parent_company_financials pcf ON pcr.sec_cik = pcf.cik
+           WHERE LOWER(pcr.entity_symbol) = LOWER(%s) AND pcr.active = TRUE
+           ORDER BY pcf.period_end_date DESC""",
+        (symbol,),
+    )
+    return {"financials": [dict(r) for r in (companies or [])], "count": len(companies or [])}
+
+
+@app.get("/api/parent-company/summary")
+async def parent_company_summary():
+    """List all tracked parent companies with latest period data."""
+    rows = fetch_all(
+        """SELECT pcr.company_name, pcr.sec_cik, pcr.entity_symbol,
+                  pcr.relationship_type,
+                  pcf.fiscal_period, pcf.fiscal_year, pcf.period_end_date,
+                  pcf.total_assets_usd, pcf.revenue_usd, pcf.net_income_usd,
+                  pcf.debt_to_equity
+           FROM parent_company_registry pcr
+           LEFT JOIN LATERAL (
+               SELECT * FROM parent_company_financials
+               WHERE cik = pcr.sec_cik
+               ORDER BY period_end_date DESC LIMIT 1
+           ) pcf ON TRUE
+           WHERE pcr.active = TRUE
+           ORDER BY pcr.company_name"""
+    )
+    return {"companies": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+# --- Pipeline 8: Governance Proposals ---
+
+@app.get("/api/governance/proposals")
+async def governance_proposals_list(
+    protocol_slug: Optional[str] = None,
+    state: Optional[str] = None,
+    days: int = Query(default=90, ge=1, le=3650),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """List governance proposals across scored protocols."""
+    conditions = ["captured_at > NOW() - INTERVAL '%s days'"]
+    params = [days]
+
+    if protocol_slug:
+        conditions.append("protocol_slug = %s")
+        params.append(protocol_slug)
+    if state:
+        conditions.append("state = %s")
+        params.append(state)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    rows = fetch_all(
+        f"""SELECT id, protocol_slug, proposal_id, proposal_source,
+                   title, author_address, author_ens, state,
+                   vote_start, vote_end, scores_total, scores_for,
+                   scores_against, scores_abstain, quorum, votes,
+                   ipfs_hash, body_changed, captured_at
+            FROM governance_proposals
+            WHERE {where}
+            ORDER BY vote_end DESC NULLS LAST LIMIT %s""",
+        tuple(params),
+    )
+    return {"proposals": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/governance/proposals/{proposal_id}")
+async def governance_proposal_detail(proposal_id: str):
+    """Full governance proposal including body text."""
+    row = fetch_one(
+        "SELECT * FROM governance_proposals WHERE proposal_id = %s",
+        (proposal_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return dict(row)
+
+
+@app.get("/api/protocols/{slug}/governance/proposals")
+async def protocol_governance_proposals(slug: str):
+    """All governance proposals for a specific protocol."""
+    rows = fetch_all(
+        """SELECT id, proposal_id, proposal_source, title,
+                  author_address, state, vote_start, vote_end,
+                  scores_total, scores_for, scores_against, scores_abstain,
+                  votes, body_changed, captured_at
+           FROM governance_proposals
+           WHERE protocol_slug = %s
+           ORDER BY vote_end DESC NULLS LAST""",
+        (slug,),
+    )
+    return {"proposals": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/governance/edits")
+async def governance_edits():
+    """Proposals where the body was edited after initial capture."""
+    rows = fetch_all(
+        """SELECT id, protocol_slug, proposal_id, proposal_source,
+                  title, state, first_capture_body_hash, body_hash,
+                  captured_at
+           FROM governance_proposals
+           WHERE body_changed = TRUE
+           ORDER BY captured_at DESC"""
+    )
+    return {"edits": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+# --- Pipeline 6: Contract Dependencies ---
+
+@app.get("/api/contract-dependencies/{entity_type}/{slug}")
+async def contract_dependencies_list(
+    entity_type: str,
+    slug: str,
+    chain: Optional[str] = None,
+):
+    """Current active dependencies for an entity."""
+    conditions = ["entity_type = %s", "entity_slug = %s", "removed_at IS NULL"]
+    params = [entity_type, slug]
+
+    if chain:
+        conditions.append("depends_on_chain = %s")
+        params.append(chain)
+
+    where = " AND ".join(conditions)
+    rows = fetch_all(
+        f"""SELECT source_contract, source_chain,
+                   depends_on_address, depends_on_chain,
+                   depends_on_label, depends_on_type,
+                   call_type, detected_via,
+                   first_seen_at, last_confirmed_at
+            FROM contract_dependencies
+            WHERE {where}
+            ORDER BY depends_on_type, depends_on_address""",
+        tuple(params),
+    )
+    return {"dependencies": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/contract-dependencies/{entity_type}/{slug}/history")
+async def contract_dependencies_history(
+    entity_type: str,
+    slug: str,
+    days: int = Query(default=90, ge=1, le=3650),
+):
+    """Daily dependency graph snapshots over time."""
+    rows = fetch_all(
+        """SELECT snapshot_date, dependency_count,
+                  dependency_addresses, dependency_hashes, content_hash
+           FROM dependency_graph_snapshots
+           WHERE entity_type = %s AND entity_slug = %s
+             AND snapshot_date > CURRENT_DATE - INTERVAL '%s days'
+           ORDER BY snapshot_date DESC""",
+        (entity_type, slug, days),
+    )
+    return {"snapshots": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/contract-dependencies/reverse/{address}")
+async def contract_dependencies_reverse(address: str):
+    """All entities that depend on a given contract address (exploit propagation query)."""
+    rows = fetch_all(
+        """SELECT entity_type, entity_slug, source_contract, source_chain,
+                  depends_on_type, call_type, detected_via,
+                  first_seen_at, last_confirmed_at, removed_at
+           FROM contract_dependencies
+           WHERE depends_on_address = LOWER(%s)
+           ORDER BY removed_at NULLS FIRST, entity_type, entity_slug""",
+        (address.lower(),),
+    )
+    return {"dependents": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/contract-dependencies/changes")
+async def contract_dependencies_changes():
+    """New and removed dependencies in the last 30 days."""
+    new_deps = fetch_all(
+        """SELECT entity_type, entity_slug, source_contract,
+                  depends_on_address, depends_on_chain,
+                  depends_on_label, depends_on_type,
+                  first_seen_at
+           FROM contract_dependencies
+           WHERE first_seen_at > NOW() - INTERVAL '30 days'
+           ORDER BY first_seen_at DESC"""
+    )
+    removed_deps = fetch_all(
+        """SELECT entity_type, entity_slug, source_contract,
+                  depends_on_address, depends_on_chain,
+                  depends_on_label, depends_on_type,
+                  removed_at
+           FROM contract_dependencies
+           WHERE removed_at > NOW() - INTERVAL '30 days'
+           ORDER BY removed_at DESC"""
+    )
+    return {
+        "new": [dict(r) for r in (new_deps or [])],
+        "removed": [dict(r) for r in (removed_deps or [])],
+        "new_count": len(new_deps or []),
+        "removed_count": len(removed_deps or []),
+    }
+
+
+# --- Pipeline 9: Protocol Parameter History ---
+
+@app.get("/api/parameters/{slug}/history")
+async def parameter_change_history(
+    slug: str,
+    asset_symbol: Optional[str] = None,
+    parameter_name: Optional[str] = None,
+    days: int = Query(default=90, ge=1, le=3650),
+    limit: int = Query(default=200, ge=1, le=1000),
+):
+    """Parameter changes for a protocol with concurrent score context."""
+    conditions = ["protocol_slug = %s", "changed_at > NOW() - INTERVAL '%s days'"]
+    params = [slug, days]
+
+    if asset_symbol:
+        conditions.append("UPPER(asset_symbol) = UPPER(%s)")
+        params.append(asset_symbol)
+    if parameter_name:
+        conditions.append("parameter_name ILIKE %s")
+        params.append(f"%{parameter_name}%")
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    rows = fetch_all(
+        f"""SELECT id, parameter_name, parameter_key, asset_symbol,
+                   previous_value, new_value, value_unit,
+                   change_magnitude, change_direction, changed_at,
+                   concurrent_sii_score, concurrent_psi_score,
+                   hours_since_last_sii_change, sii_trend_7d, change_context
+            FROM protocol_parameter_changes
+            WHERE {where}
+            ORDER BY changed_at DESC LIMIT %s""",
+        tuple(params),
+    )
+    return {"changes": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/parameters/{slug}/current")
+async def parameter_current_values(slug: str):
+    """Current parameter values for all watched parameters."""
+    rows = fetch_all(
+        """SELECT parameter_name, parameter_key, asset_symbol,
+                  current_value, current_value_raw, value_unit,
+                  last_updated_at, first_seen_at
+           FROM protocol_parameters
+           WHERE protocol_slug = %s
+           ORDER BY parameter_key""",
+        (slug,),
+    )
+    return {"parameters": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/parameters/{slug}/snapshots")
+async def parameter_snapshots(
+    slug: str,
+    days: int = Query(default=90, ge=1, le=3650),
+):
+    """Daily parameter snapshots over time."""
+    rows = fetch_all(
+        """SELECT snapshot_date, parameters, parameter_count, content_hash
+           FROM protocol_parameter_snapshots
+           WHERE protocol_slug = %s
+             AND snapshot_date > CURRENT_DATE - INTERVAL '%s days'
+           ORDER BY snapshot_date DESC""",
+        (slug, days),
+    )
+    return {"snapshots": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/parameters/changes")
+async def parameter_changes_all(
+    change_context: Optional[str] = None,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """Recent parameter changes across all protocols."""
+    conditions = ["changed_at > NOW() - INTERVAL '%s days'"]
+    params = [days]
+
+    if change_context:
+        conditions.append("change_context = %s")
+        params.append(change_context)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    rows = fetch_all(
+        f"""SELECT protocol_slug, parameter_name, asset_symbol,
+                   previous_value, new_value, value_unit,
+                   change_magnitude, change_direction, changed_at,
+                   concurrent_sii_score, concurrent_psi_score,
+                   change_context
+            FROM protocol_parameter_changes
+            WHERE {where}
+            ORDER BY changed_at DESC LIMIT %s""",
+        tuple(params),
+    )
+    return {"changes": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/parameters/{slug}/context")
+async def parameter_context_analysis(slug: str):
+    """Change context analysis: reactive vs proactive ratio over time."""
+    rows = fetch_all(
+        """SELECT change_context, COUNT(*) AS cnt
+           FROM protocol_parameter_changes
+           WHERE protocol_slug = %s AND change_context IS NOT NULL
+           GROUP BY change_context""",
+        (slug,),
+    )
+    context_counts = {r["change_context"]: r["cnt"] for r in (rows or [])}
+
+    reactive = context_counts.get("reactive", 0)
+    proactive = context_counts.get("proactive", 0)
+    total = reactive + proactive + context_counts.get("unknown", 0)
+
+    avg_lag = fetch_one(
+        """SELECT AVG(hours_since_last_sii_change) AS avg_lag
+           FROM protocol_parameter_changes
+           WHERE protocol_slug = %s AND change_context = 'reactive'
+             AND hours_since_last_sii_change IS NOT NULL""",
+        (slug,),
+    )
+
+    return {
+        "protocol_slug": slug,
+        "total_changes": total,
+        "reactive_count": reactive,
+        "proactive_count": proactive,
+        "reactive_pct": round(reactive / total * 100, 1) if total > 0 else 0,
+        "proactive_pct": round(proactive / total * 100, 1) if total > 0 else 0,
+        "avg_reactive_lag_hours": float(avg_lag["avg_lag"]) if avg_lag and avg_lag.get("avg_lag") else None,
+    }
+
+
+# --- Pipeline 14: Graph-Clustered Holder Concentration ---
+
+@app.get("/api/concentration/{symbol}/latest")
+async def concentration_latest(symbol: str):
+    """Most recent concentration snapshot with top clusters."""
+    snapshot = fetch_one(
+        """SELECT * FROM concentration_snapshots
+           WHERE UPPER(stablecoin_symbol) = UPPER(%s)
+           ORDER BY snapshot_date DESC LIMIT 1""",
+        (symbol,),
+    )
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No concentration data for this stablecoin")
+
+    clusters = fetch_all(
+        """SELECT cluster_id, seed_wallet, member_count,
+                  total_balance_usd, pct_of_supply, cluster_type, actor_labels
+           FROM holder_clusters
+           WHERE UPPER(stablecoin_symbol) = UPPER(%s) AND snapshot_date = %s
+           ORDER BY total_balance_usd DESC LIMIT 20""",
+        (symbol, snapshot["snapshot_date"]),
+    )
+    result = dict(snapshot)
+    result["top_clusters"] = [dict(c) for c in (clusters or [])]
+    return result
+
+
+@app.get("/api/concentration/{symbol}/history")
+async def concentration_history(
+    symbol: str,
+    days: int = Query(default=90, ge=1, le=3650),
+):
+    """Concentration snapshots over time with nominal and clustered metrics."""
+    rows = fetch_all(
+        """SELECT snapshot_date, nominal_gini, clustered_gini,
+                  nominal_top10_pct, clustered_top10_pct,
+                  nominal_top50_pct, clustered_top50_pct,
+                  cluster_count, singleton_count,
+                  exchange_cluster_pct, whale_cluster_pct,
+                  divergence_score, total_wallets_analyzed
+           FROM concentration_snapshots
+           WHERE UPPER(stablecoin_symbol) = UPPER(%s)
+             AND snapshot_date > CURRENT_DATE - INTERVAL '%s days'
+           ORDER BY snapshot_date DESC""",
+        (symbol, days),
+    )
+    return {"snapshots": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/concentration/{symbol}/clusters/{snapshot_date}")
+async def concentration_clusters(symbol: str, snapshot_date: str):
+    """All clusters for a stablecoin on a specific date."""
+    rows = fetch_all(
+        """SELECT cluster_id, seed_wallet, member_wallets, member_count,
+                  total_balance_usd, pct_of_supply, cluster_type, actor_labels
+           FROM holder_clusters
+           WHERE UPPER(stablecoin_symbol) = UPPER(%s) AND snapshot_date = %s
+           ORDER BY total_balance_usd DESC""",
+        (symbol, snapshot_date),
+    )
+    return {"clusters": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/concentration/divergence")
+async def concentration_divergence():
+    """All stablecoins sorted by divergence_score for most recent snapshot."""
+    rows = fetch_all(
+        """SELECT DISTINCT ON (stablecoin_symbol)
+                  stablecoin_symbol, snapshot_date,
+                  nominal_gini, clustered_gini, divergence_score,
+                  nominal_top10_pct, clustered_top10_pct,
+                  cluster_count, total_wallets_analyzed
+           FROM concentration_snapshots
+           ORDER BY stablecoin_symbol, snapshot_date DESC"""
+    )
+    sorted_rows = sorted((rows or []), key=lambda r: float(r.get("divergence_score") or 0), reverse=True)
+    return {"stablecoins": [dict(r) for r in sorted_rows], "count": len(sorted_rows)}
+
+
+@app.get("/api/concentration/changes")
+async def concentration_changes():
+    """Stablecoins where clustered_gini changed >0.02 in the last 7 days."""
+    rows = fetch_all(
+        """WITH recent AS (
+               SELECT stablecoin_symbol, snapshot_date, clustered_gini,
+                      LAG(clustered_gini) OVER (
+                          PARTITION BY stablecoin_symbol ORDER BY snapshot_date
+                      ) AS prev_gini
+               FROM concentration_snapshots
+               WHERE snapshot_date > CURRENT_DATE - INTERVAL '7 days'
+           )
+           SELECT stablecoin_symbol, snapshot_date,
+                  clustered_gini, prev_gini,
+                  ABS(clustered_gini - prev_gini) AS gini_change
+           FROM recent
+           WHERE prev_gini IS NOT NULL
+             AND ABS(clustered_gini - prev_gini) > 0.02
+           ORDER BY ABS(clustered_gini - prev_gini) DESC"""
+    )
+    return {"changes": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+# --- Pipeline 10: Oracle Deviation and Latency ---
+
+@app.get("/api/oracle/readings")
+async def oracle_readings_latest(
+    asset_symbol: Optional[str] = None,
+    provider: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    """Most recent reading per oracle."""
+    conditions = []
+    params = []
+
+    if asset_symbol:
+        conditions.append("UPPER(asset_symbol) = UPPER(%s)")
+        params.append(asset_symbol)
+    if provider:
+        conditions.append("oracle_provider = %s")
+        params.append(provider)
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(limit)
+
+    rows = fetch_all(
+        f"""SELECT DISTINCT ON (oracle_address)
+                   oracle_address, oracle_name, oracle_provider, chain,
+                   asset_symbol, oracle_price, cex_price,
+                   deviation_pct, deviation_abs, latency_seconds,
+                   is_stress_event, recorded_at
+            FROM oracle_price_readings
+            {where}
+            ORDER BY oracle_address, recorded_at DESC
+            LIMIT %s""",
+        tuple(params),
+    )
+    return {"readings": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/oracle/readings/{oracle_address}/history")
+async def oracle_reading_history(
+    oracle_address: str,
+    hours: int = Query(default=24, ge=1, le=720),
+    limit: int = Query(default=200, ge=1, le=2000),
+):
+    """Reading history for a specific oracle."""
+    rows = fetch_all(
+        """SELECT oracle_price, cex_price, deviation_pct, deviation_abs,
+                  latency_seconds, round_id, answer_timestamp,
+                  is_stress_event, recorded_at
+           FROM oracle_price_readings
+           WHERE LOWER(oracle_address) = LOWER(%s)
+             AND recorded_at > NOW() - INTERVAL '%s hours'
+           ORDER BY recorded_at DESC LIMIT %s""",
+        (oracle_address, hours, limit),
+    )
+    return {"readings": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+def _with_triptych_url(row: dict) -> dict:
+    """Attach triptych_url to a stress-event row so consumers have a
+    one-hop link to the before/during/after artifact."""
+    d = dict(row)
+    if d.get("id") is not None:
+        d["triptych_url"] = f"/api/oracle/stress-events/{d['id']}/triptych"
+    return d
+
+
+@app.get("/api/oracle/stress-events")
+async def oracle_stress_events_list(
+    asset_symbol: Optional[str] = None,
+    event_type: Optional[str] = None,
+    open_only: bool = False,
+    days: int = Query(default=30, ge=1, le=365),
+):
+    """All stress events, with optional filters."""
+    conditions = ["event_start > NOW() - INTERVAL '%s days'"]
+    params = [days]
+
+    if asset_symbol:
+        conditions.append("UPPER(asset_symbol) = UPPER(%s)")
+        params.append(asset_symbol)
+    if event_type:
+        conditions.append("event_type = %s")
+        params.append(event_type)
+    if open_only:
+        conditions.append("event_end IS NULL")
+
+    where = " AND ".join(conditions)
+    rows = fetch_all(
+        f"""SELECT * FROM oracle_stress_events
+            WHERE {where}
+            ORDER BY event_start DESC""",
+        tuple(params),
+    )
+    return {"events": [_with_triptych_url(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/oracle/stress-events/active")
+async def oracle_stress_events_active():
+    """All currently open stress events."""
+    rows = fetch_all(
+        """SELECT * FROM oracle_stress_events
+           WHERE event_end IS NULL
+           ORDER BY event_start DESC"""
+    )
+    return {"events": [_with_triptych_url(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/oracle/stress-events/{event_id}/triptych")
+async def oracle_stress_event_triptych(event_id: int):
+    """Before / during / after readings for a single stress event.
+
+    - pre_stress: readings tagged with this event_id by the pre-stress
+      tagger at event-open time (up to pre_stress_window_hours of context).
+    - during: readings flagged is_stress_event between event_start and
+      event_end (or NOW() if still open).
+    - post_stress: readings in the 72 hours after event_end. Empty if the
+      event is still open.
+    """
+    event = fetch_one(
+        "SELECT * FROM oracle_stress_events WHERE id = %s",
+        (event_id,),
+    )
+    if not event:
+        raise HTTPException(status_code=404, detail="Stress event not found")
+
+    reading_cols = (
+        "id, recorded_at AS reading_timestamp, oracle_price, cex_price, "
+        "deviation_pct, latency_seconds, is_stress_event"
+    )
+
+    pre_rows = fetch_all(
+        f"""SELECT {reading_cols}
+            FROM oracle_price_readings
+            WHERE pre_stress_event_id = %s
+            ORDER BY recorded_at ASC""",
+        (event_id,),
+    ) or []
+
+    during_rows = fetch_all(
+        f"""SELECT {reading_cols}
+            FROM oracle_price_readings
+            WHERE is_stress_event = TRUE
+              AND oracle_address = %s
+              AND chain = %s
+              AND asset_symbol = %s
+              AND recorded_at >= %s
+              AND recorded_at <= COALESCE(%s, NOW())
+            ORDER BY recorded_at ASC""",
+        (event["oracle_address"], event["chain"], event["asset_symbol"],
+         event["event_start"], event.get("event_end")),
+    ) or []
+
+    if event.get("event_end"):
+        post_rows = fetch_all(
+            f"""SELECT {reading_cols}
+                FROM oracle_price_readings
+                WHERE oracle_address = %s
+                  AND chain = %s
+                  AND asset_symbol = %s
+                  AND recorded_at > %s
+                  AND recorded_at <= %s + INTERVAL '72 hours'
+                ORDER BY recorded_at ASC""",
+            (event["oracle_address"], event["chain"], event["asset_symbol"],
+             event["event_end"], event["event_end"]),
+        ) or []
+    else:
+        post_rows = []
+
+    return {
+        "event": _with_triptych_url(event),
+        "pre_stress": [dict(r) for r in pre_rows],
+        "during": [dict(r) for r in during_rows],
+        "post_stress": [dict(r) for r in post_rows],
+        "counts": {
+            "pre_stress": len(pre_rows),
+            "during": len(during_rows),
+            "post_stress": len(post_rows),
+        },
+    }
+
+
+@app.get("/api/oracle/{asset_symbol}/deviation-history")
+async def oracle_deviation_history(
+    asset_symbol: str,
+    hours: int = Query(default=168, ge=1, le=720),
+):
+    """Deviation time series for an asset across all its oracles."""
+    rows = fetch_all(
+        """SELECT oracle_address, oracle_name, oracle_provider,
+                  deviation_pct, latency_seconds, recorded_at
+           FROM oracle_price_readings
+           WHERE UPPER(asset_symbol) = UPPER(%s)
+             AND recorded_at > NOW() - INTERVAL '%s hours'
+           ORDER BY recorded_at DESC""",
+        (asset_symbol, hours),
+    )
+    return {"readings": [dict(r) for r in (rows or [])], "count": len(rows or [])}
+
+
+@app.get("/api/oracle/divergence")
+async def oracle_divergence():
+    """Current deviation between oracle and CEX for all active oracles, sorted by abs deviation."""
+    rows = fetch_all(
+        """SELECT DISTINCT ON (oracle_address)
+                  oracle_address, oracle_name, oracle_provider, chain,
+                  asset_symbol, oracle_price, cex_price,
+                  deviation_pct, deviation_abs, latency_seconds,
+                  is_stress_event, recorded_at
+           FROM oracle_price_readings
+           ORDER BY oracle_address, recorded_at DESC"""
+    )
+    sorted_rows = sorted(
+        (rows or []),
+        key=lambda r: abs(float(r.get("deviation_pct") or 0)),
+        reverse=True,
+    )
+    return {"oracles": [dict(r) for r in sorted_rows], "count": len(sorted_rows)}
+
+
 # =============================================================================
 
 def _register_spa_catch_all(app_instance):
@@ -7455,6 +9905,28 @@ def _register_spa_catch_all(app_instance):
             pass  # Fall through to SPA
         except Exception as e:
             logger.warning(f"Report page render failed for /{full_path}: {e}")
+
+        # Incident pages — SSR shell with OG meta, React renders the body.
+        # No-cache: title/summary/og-image are pulled from incident_snapshots,
+        # which can update when the populator re-runs.
+        try:
+            if full_path.startswith("incident/"):
+                from app.incidents import render_incident_ssr_shell
+                slug = full_path.split("incident/")[1].split("/")[0].split("?")[0]
+                index_path = os.path.join(FRONTEND_DIR, "index.html")
+                if slug and os.path.exists(index_path):
+                    with open(index_path, "r", encoding="utf-8") as _f:
+                        _idx = _f.read()
+                    return HTMLResponse(
+                        content=render_incident_ssr_shell(slug.lower(), _idx),
+                        headers={
+                            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                            "Pragma": "no-cache",
+                            "Expires": "0",
+                        },
+                    )
+        except Exception as e:
+            logger.warning(f"Incident SSR shell failed for /{full_path}: {e}")
 
         # Witness static evidence pages — server-rendered for all visitors
         try:

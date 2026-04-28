@@ -27,13 +27,13 @@ def generate_exposure(target_id: int) -> dict:
     holdings = []
     for addr in wallet_addresses:
         rows = fetch_all(
-            """SELECT wh.token_symbol, wh.balance_usd, wh.balance_raw,
+            """SELECT wh.symbol AS token_symbol, wh.value_usd AS balance_usd, wh.balance AS balance_raw,
                       wrs.risk_score, wrs.risk_grade
                FROM wallet_graph.wallet_holdings wh
                LEFT JOIN wallet_graph.wallet_risk_scores wrs
-                   ON wh.wallet_address = wrs.wallet_address AND wh.chain = wrs.chain
+                   ON wh.wallet_address = wrs.wallet_address
                WHERE LOWER(wh.wallet_address) = LOWER(%s)
-               ORDER BY wh.balance_usd DESC NULLS LAST""",
+               ORDER BY wh.value_usd DESC NULLS LAST""",
             (addr,),
         )
         if rows:

@@ -17,6 +17,7 @@ import requests
 from app.database import execute, fetch_all, fetch_one
 from app.index_definitions.psi_v01 import PSI_V01_DEFINITION, TARGET_PROTOCOLS
 from app.scoring_engine import score_entity
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,25 @@ def get_solana_program_authority(program_id: str) -> dict | None:
             "method": "getAccountInfo",
             "params": [program_id, {"encoding": "jsonParsed"}],
         }
-        resp = requests.post(_HELIUS_RPC_URL, json=payload, timeout=15)
+        _t0 = time.monotonic()
+        _status = None
+        try:
+            resp = requests.post(_HELIUS_RPC_URL, json=payload, timeout=15)
+            _status = resp.status_code
+        except Exception:
+            _status = 0
+            raise
+        finally:
+            try:
+                track_api_call(
+                    provider="helius",
+                    endpoint="/rpc/getAccountInfo",
+                    caller="collectors.psi_collector",
+                    status=_status,
+                    latency_ms=int((time.monotonic() - _t0) * 1000),
+                )
+            except Exception:
+                pass
         data = resp.json()
         account = data.get("result", {}).get("value")
         if not account:
@@ -87,7 +106,25 @@ def get_solana_program_authority(program_id: str) -> dict | None:
                     "method": "getAccountInfo",
                     "params": [program_data_addr, {"encoding": "jsonParsed"}],
                 }
-                pd_resp = requests.post(_HELIUS_RPC_URL, json=pd_payload, timeout=15)
+                _t1 = time.monotonic()
+                _status2 = None
+                try:
+                    pd_resp = requests.post(_HELIUS_RPC_URL, json=pd_payload, timeout=15)
+                    _status2 = pd_resp.status_code
+                except Exception:
+                    _status2 = 0
+                    raise
+                finally:
+                    try:
+                        track_api_call(
+                            provider="helius",
+                            endpoint="/rpc/getAccountInfo",
+                            caller="collectors.psi_collector",
+                            status=_status2,
+                            latency_ms=int((time.monotonic() - _t1) * 1000),
+                        )
+                    except Exception:
+                        pass
                 pd_data = pd_resp.json()
                 pd_account = pd_data.get("result", {}).get("value")
                 if pd_account:
@@ -260,36 +297,90 @@ ONCHAIN_GOVERNANCE_FALLBACK = {
 def fetch_protocol_data(slug):
     """Fetch protocol data from DeFiLlama."""
     time.sleep(1)  # rate limit
+    _t0 = time.monotonic()
+    _status = None
     try:
-        resp = requests.get(f"{DEFILLAMA_BASE}/protocol/{slug}", timeout=45)
+        resp = requests.get(f"{DEFILLAMA_BASE}/protocol/{slug}", timeout=15)
+        _status = resp.status_code
         resp.raise_for_status()
         return resp.json()
+    except requests.exceptions.Timeout:
+        _status = 0
+        logger.error(f"[psi_collector] {slug}: DL /protocol timeout after 15s, skipping")
+        return None
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.error(f"Failed to fetch {slug}: {e}")
         return None
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint=f"/protocol/{slug}",
+                caller="collectors.psi_collector",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 def fetch_fees_data(slug):
     """Fetch fee/revenue data from DeFiLlama."""
     time.sleep(1)
+    _t0 = time.monotonic()
+    _status = None
     try:
-        resp = requests.get(f"{DEFILLAMA_BASE}/summary/fees/{slug}", timeout=45)
+        resp = requests.get(f"{DEFILLAMA_BASE}/summary/fees/{slug}", timeout=15)
+        _status = resp.status_code
         if resp.status_code == 200:
             return resp.json()
+    except requests.exceptions.Timeout:
+        _status = 0
+        logger.error(f"[psi_collector] {slug}: DL /fees timeout after 15s, skipping")
     except Exception:
-        pass
+        if _status is None:
+            _status = 0
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint=f"/summary/fees/{slug}",
+                caller="collectors.psi_collector",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
     return None
 
 
 def fetch_treasury_data(slug):
     """Fetch protocol treasury data from DeFiLlama."""
     time.sleep(1)
+    _t0 = time.monotonic()
+    _status = None
     try:
         resp = requests.get(f"{DEFILLAMA_BASE}/treasury/{slug}", timeout=15)
+        _status = resp.status_code
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.debug(f"Treasury fetch failed for {slug}: {e}")
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint=f"/treasury/{slug}",
+                caller="collectors.psi_collector",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
     return None
 
 
@@ -333,6 +424,8 @@ def fetch_coingecko_token(gecko_id):
     if not gecko_id:
         return None
     time.sleep(1)
+    _t0 = time.monotonic()
+    _status = None
     try:
         from app.config import STABLECOIN_REGISTRY
         # Use the same API key pattern as the SII collectors
@@ -348,10 +441,24 @@ def fetch_coingecko_token(gecko_id):
             headers=headers,
             timeout=15,
         )
+        _status = resp.status_code
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.debug(f"CoinGecko token fetch failed for {gecko_id}: {e}")
+    finally:
+        try:
+            track_api_call(
+                provider="coingecko",
+                endpoint=f"/coins/{gecko_id}",
+                caller="collectors.psi_collector",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
     return None
 
 
@@ -360,6 +467,8 @@ def fetch_snapshot_proposals(space_id):
     if not space_id:
         return None
     time.sleep(0.5)
+    _t0 = time.monotonic()
+    _status = None
     try:
         query = """
         query {
@@ -378,12 +487,26 @@ def fetch_snapshot_proposals(space_id):
             json={"query": query},
             timeout=10,
         )
+        _status = resp.status_code
         if resp.status_code == 200:
             data = resp.json()
             proposals = data.get("data", {}).get("proposals", [])
             return len(proposals)
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.debug(f"Snapshot fetch failed for {space_id}: {e}")
+    finally:
+        try:
+            track_api_call(
+                provider="snapshot",
+                endpoint="/graphql",
+                caller="collectors.psi_collector",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
     return None
 
 
@@ -825,12 +948,28 @@ SII_SCORED_SYMBOLS = {"USDC", "USDT", "DAI", "FRAX", "PYUSD", "FDUSD", "TUSD", "
 
 def fetch_protocol_pools():
     """Fetch all pools from DeFiLlama yields API to map protocol stablecoin exposure."""
+    _t0 = time.monotonic()
+    _status = None
     try:
         resp = requests.get("https://yields.llama.fi/pools", timeout=60)
+        _status = resp.status_code
         if resp.status_code == 200:
             return resp.json().get("data", [])
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.error(f"Failed to fetch pools: {e}")
+    finally:
+        try:
+            track_api_call(
+                provider="defillama",
+                endpoint="/pools",
+                caller="collectors.psi_collector",
+                status=_status,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
     return []
 
 
@@ -1412,8 +1551,10 @@ def run_psi_scoring():
 
             execute("""
                 INSERT INTO psi_scores (protocol_slug, protocol_name, overall_score, grade,
-                    category_scores, component_scores, raw_values, formula_version, inputs_hash)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    category_scores, component_scores, raw_values, formula_version, inputs_hash,
+                    confidence, confidence_tag, component_coverage,
+                    components_populated, components_total, missing_categories)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT ON CONSTRAINT psi_scores_protocol_slug_scored_date_key
                 DO UPDATE SET
                     protocol_name = EXCLUDED.protocol_name,
@@ -1423,6 +1564,12 @@ def run_psi_scoring():
                     component_scores = EXCLUDED.component_scores,
                     raw_values = EXCLUDED.raw_values,
                     inputs_hash = EXCLUDED.inputs_hash,
+                    confidence = EXCLUDED.confidence,
+                    confidence_tag = EXCLUDED.confidence_tag,
+                    component_coverage = EXCLUDED.component_coverage,
+                    components_populated = EXCLUDED.components_populated,
+                    components_total = EXCLUDED.components_total,
+                    missing_categories = EXCLUDED.missing_categories,
                     computed_at = NOW()
             """, (
                 result["protocol_slug"],
@@ -1434,6 +1581,12 @@ def run_psi_scoring():
                 json.dumps(raw_for_storage, default=str),
                 result["version"],
                 inputs_hash,
+                result.get("confidence"),
+                result.get("confidence_tag"),
+                result.get("component_coverage"),
+                result.get("components_populated"),
+                result.get("components_total"),
+                json.dumps(result.get("missing_categories") or []),
             ))
             # Store per-token treasury holdings with SII cross-reference
             token_holdings = result.get("raw_values", {}).get("_token_holdings")

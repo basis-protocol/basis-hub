@@ -200,20 +200,37 @@ def run_daily_pulse():
         "psi_scores": psi_summary,
     }
 
-    # 8b. State accumulation — row counts from every state table
-    state_counts = {
-        "score_history": _safe_count("SELECT COUNT(*) AS count FROM score_history"),
-        "component_readings": _safe_count("SELECT COUNT(*) AS count FROM component_readings"),
-        "assessment_events": _safe_count("SELECT COUNT(*) AS count FROM assessment_events"),
-        "cda_extractions": _safe_count("SELECT COUNT(*) AS count FROM cda_vendor_extractions"),
-        "discovery_signals": _safe_count("SELECT COUNT(*) AS count FROM discovery_signals"),
-        "historical_prices": _safe_count("SELECT COUNT(*) AS count FROM historical_prices"),
-        "collateral_exposure": _safe_count("SELECT COUNT(*) AS count FROM protocol_collateral_exposure"),
-        "treasury_holdings": _safe_count("SELECT COUNT(*) AS count FROM protocol_treasury_holdings"),
-        "protocol_backlog": _safe_count("SELECT COUNT(*) AS count FROM protocol_backlog"),
-        "wallet_profiles": _safe_count("SELECT COUNT(*) AS count FROM wallet_graph.wallet_profiles"),
-        "daily_pulses": _safe_count("SELECT COUNT(*) AS count FROM daily_pulses"),
-    }
+    # 8b. State accumulation — row counts from pg_stat (instant, no table scans)
+    try:
+        from app.data_layer.state_growth import _bulk_row_counts, _resolve_count
+        _pg = _bulk_row_counts()
+        state_counts = {
+            "score_history": _resolve_count(_pg, "score_history"),
+            "component_readings": _resolve_count(_pg, "component_readings"),
+            "assessment_events": _resolve_count(_pg, "assessment_events"),
+            "cda_extractions": _resolve_count(_pg, "cda_vendor_extractions"),
+            "discovery_signals": _resolve_count(_pg, "discovery_signals"),
+            "historical_prices": _resolve_count(_pg, "historical_prices"),
+            "collateral_exposure": _resolve_count(_pg, "protocol_collateral_exposure"),
+            "treasury_holdings": _resolve_count(_pg, "protocol_treasury_holdings"),
+            "protocol_backlog": _resolve_count(_pg, "protocol_backlog"),
+            "wallet_profiles": _resolve_count(_pg, "wallet_graph.wallet_profiles"),
+            "daily_pulses": _resolve_count(_pg, "daily_pulses"),
+        }
+    except Exception:
+        state_counts = {
+            "score_history": _safe_count("SELECT COUNT(*) AS count FROM score_history"),
+            "component_readings": _safe_count("SELECT COUNT(*) AS count FROM component_readings"),
+            "assessment_events": _safe_count("SELECT COUNT(*) AS count FROM assessment_events"),
+            "cda_extractions": _safe_count("SELECT COUNT(*) AS count FROM cda_vendor_extractions"),
+            "discovery_signals": _safe_count("SELECT COUNT(*) AS count FROM discovery_signals"),
+            "historical_prices": _safe_count("SELECT COUNT(*) AS count FROM historical_prices"),
+            "collateral_exposure": _safe_count("SELECT COUNT(*) AS count FROM protocol_collateral_exposure"),
+            "treasury_holdings": _safe_count("SELECT COUNT(*) AS count FROM protocol_treasury_holdings"),
+            "protocol_backlog": _safe_count("SELECT COUNT(*) AS count FROM protocol_backlog"),
+            "wallet_profiles": _safe_count("SELECT COUNT(*) AS count FROM wallet_graph.wallet_profiles"),
+            "daily_pulses": _safe_count("SELECT COUNT(*) AS count FROM daily_pulses"),
+        }
     network = summary["network_state"]
     state_counts["total_records"] = (
         sum(state_counts.values())

@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Cache bust: 2026-04-14T01:40Z
 COPY app/ ./app/
 
-CMD ["python", "-c", "import traceback; from app.database import init_pool; init_pool(); import asyncio; from app.worker import run_scoring_cycle; asyncio.run(run_scoring_cycle())"]
+CMD ["python", "-m", "app.worker", "--loop"]

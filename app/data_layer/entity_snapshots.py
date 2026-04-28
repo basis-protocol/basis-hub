@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 CG_BASE = "https://pro-api.coingecko.com/api/v3" if API_KEY else "https://api.coingecko.com/api/v3"
 
+# CoinGecko ID corrections — fix IDs that return 404 due to renames/delistings
+CG_ID_CORRECTIONS = {
+    "susd": "nusd",             # Synthetix USD — CoinGecko lists as "nusd"
+    "spark": "spark-protocol",  # Spark Protocol — not just "spark"
+}
+
 
 def _headers() -> dict:
     h = {"Accept": "application/json"}
@@ -75,27 +81,46 @@ async def _fetch_coin_data(
 
 
 def _store_snapshots(snapshots: list[dict]):
-    """Store entity snapshots to database."""
+    """Store entity snapshots to database. Per-row error handling."""
     if not snapshots:
-        logger.error("_store_snapshots: called with EMPTY list — nothing to store")
         return
 
     from app.database import get_cursor
+    import math
 
-    # Log first row data for debugging
-    first = snapshots[0]
-    logger.error(
-        f"_store_snapshots: {len(snapshots)} snapshots to store. "
-        f"First row: entity_id={first.get('entity_id')}, "
-        f"entity_type={first.get('entity_type')}, "
-        f"price_usd={first.get('price_usd')}, "
-        f"market_cap={first.get('market_cap')}"
-    )
+    def _safe_num(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return f
+        except (TypeError, ValueError):
+            return None
 
     stored = 0
-    try:
-        with get_cursor() as cur:
-            for snap in snapshots:
+    errors = 0
+    for i, snap in enumerate(snapshots):
+        try:
+            vals = (
+                str(snap.get("entity_id", "")),
+                str(snap.get("entity_type", "")),
+                _safe_num(snap.get("market_cap")),
+                _safe_num(snap.get("total_volume")),
+                _safe_num(snap.get("price_usd")),
+                _safe_num(snap.get("price_change_24h")),
+                _safe_num(snap.get("circulating_supply")),
+                _safe_num(snap.get("total_supply")),
+                int(snap["exchange_tickers_count"]) if snap.get("exchange_tickers_count") is not None else None,
+                json.dumps(snap["developer_data"]) if snap.get("developer_data") else None,
+                json.dumps(snap["community_data"]) if snap.get("community_data") else None,
+                json.dumps(snap["raw_data"]) if snap.get("raw_data") else None,
+            )
+            if i == 0:
+                logger.error(f"ROW 0 VALUES: {vals}")
+
+            with get_cursor() as cur:
                 cur.execute(
                     """INSERT INTO entity_snapshots_hourly
                        (entity_id, entity_type, market_cap, total_volume,
@@ -108,24 +133,17 @@ def _store_snapshots(snapshots: list[dict]):
                            market_cap = EXCLUDED.market_cap,
                            total_volume = EXCLUDED.total_volume,
                            price_usd = EXCLUDED.price_usd""",
-                    (
-                        snap["entity_id"], snap["entity_type"],
-                        snap.get("market_cap"), snap.get("total_volume"),
-                        snap.get("price_usd"), snap.get("price_change_24h"),
-                        snap.get("circulating_supply"), snap.get("total_supply"),
-                        snap.get("exchange_tickers_count"),
-                        json.dumps(snap.get("developer_data")) if snap.get("developer_data") else None,
-                        json.dumps(snap.get("community_data")) if snap.get("community_data") else None,
-                        json.dumps(snap.get("raw_data")) if snap.get("raw_data") else None,
-                    ),
+                    vals,
                 )
-                stored += 1
+            stored += 1
+            logger.error(f"ROW {i} INSERT OK: {snap.get('entity_id')}")
+        except Exception as e:
+            errors += 1
+            logger.error(f"ROW {i} INSERT FAILED: {snap.get('entity_id')}: {type(e).__name__}: {e}")
+            if errors <= 3:
+                logger.error(f"_store_snapshots row FAILED: entity_id={snap.get('entity_id')}: {type(e).__name__}: {e}")
 
-        logger.error(f"_store_snapshots: COMMITTED {stored} rows to entity_snapshots_hourly")
-    except Exception as e:
-        logger.error(f"_store_snapshots FAILED after {stored}/{len(snapshots)} rows: {type(e).__name__}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    logger.error(f"_store_snapshots: {stored} stored, {errors} errors out of {len(snapshots)}")
 
 
 async def run_entity_snapshots() -> dict:
@@ -144,17 +162,19 @@ async def run_entity_snapshots() -> dict:
     )
     if stablecoins:
         for sc in stablecoins:
-            if sc.get("coingecko_id"):
+            cg_id = sc.get("coingecko_id")
+            if cg_id:
+                cg_id = CG_ID_CORRECTIONS.get(cg_id, cg_id)
                 entities.append({
                     "entity_id": sc["id"],
                     "entity_type": "stablecoin",
-                    "coingecko_id": sc["coingecko_id"],
+                    "coingecko_id": cg_id,
                 })
 
     # PSI protocol tokens
     PSI_CG_MAP = {
         "aave": "aave", "compound-finance": "compound-governance-token",
-        "morpho": "morpho", "spark": "spark",
+        "morpho": "morpho", "spark": "spark-protocol",
         "lido": "lido-dao", "rocket-pool": "rocket-pool",
         "uniswap": "uniswap", "curve-finance": "curve-dao-token",
         "convex-finance": "convex-finance", "eigenlayer": "eigenlayer",
@@ -290,4 +310,5 @@ async def run_entity_snapshots() -> dict:
     return {
         "entities_targeted": len(entities),
         "snapshots_stored": total_snapshots,
+        "_raw_snapshots": snapshots,  # Return ALL for worker.py direct store
     }

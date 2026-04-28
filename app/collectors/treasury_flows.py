@@ -31,6 +31,7 @@ from datetime import datetime, timezone, timedelta
 import httpx
 
 from app.database import fetch_all, fetch_one, get_conn
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -542,13 +543,15 @@ async def collect_treasury_events(
     """
     api_key = os.environ.get("ETHERSCAN_API_KEY", "")
     if not api_key:
-        logger.warning("Treasury flows: no ETHERSCAN_API_KEY set")
+        logger.error("[treasury_events] no ETHERSCAN_API_KEY set — skipping")
         return []
 
     treasuries = get_registered_treasuries()
     if not treasuries:
-        logger.info("Treasury flows: no registered treasuries")
+        logger.error("[treasury_events] no registered treasuries — nothing to scan")
         return []
+
+    logger.error(f"[treasury_events] starting: {len(treasuries)} wallets to scan")
 
     labels = _get_known_labels()
     all_events = []
@@ -600,7 +603,10 @@ async def collect_treasury_events(
         if own_client:
             await client.aclose()
 
-    logger.info(f"Treasury flow detection complete: {len(all_events)} total events from {len(treasuries)} treasuries")
+    logger.error(
+        f"[treasury_events] SUMMARY: wallets_scanned={len(treasuries)}, "
+        f"events_detected={len(all_events)}"
+    )
     return all_events
 
 

@@ -5,7 +5,7 @@ Protected by X-Admin-Key (same pattern as existing admin endpoints).
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import traceback as _traceback_mod
 from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -1582,9 +1582,47 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
                 "provenance": live.get("provenance", {}),
                 "data_quality": live.get("data_quality", {}),
                 "storage": live.get("storage", {}),
+                "collector_health": live.get("collector_health", []),
+                "active_alerts": live.get("active_alerts", {}),
+                "keeper_status": live.get("keeper_status", {}),
+                "scoring_performance": live.get("scoring_performance", {}),
+                "cda_freshness": live.get("cda_freshness", []),
+                "component_coverage": live.get("component_coverage", {}),
+                "cqi_contagion": live.get("cqi_contagion", {}),
+                "x402_revenue": live.get("x402_revenue", {}),
+                "security_scanning": live.get("security_scanning", {}),
             }
         except Exception as dlx:
             data_layer_live = {"error": str(dlx)}
+
+        # Reconciliation: compare daily_pulses state_accumulation with live pg_stat
+        try:
+            if day_entries and data_layer_live.get("tables"):
+                newest_breakdown = day_entries[0].get("breakdown", {})
+                live_tables = data_layer_live["tables"]
+                mismatches = []
+                pulse_to_live = {
+                    "component_readings": "component_readings",
+                    "score_history": "score_history",
+                    "assessment_events": "assessment_events",
+                }
+                for pulse_key, live_key in pulse_to_live.items():
+                    pulse_val = newest_breakdown.get(pulse_key, {}).get("value", 0)
+                    live_val = live_tables.get(live_key, {}).get("row_count", 0)
+                    if pulse_val and live_val:
+                        diff_pct = abs(pulse_val - live_val) / max(pulse_val, 1) * 100
+                        if diff_pct > 5:
+                            mismatches.append(f"{pulse_key}: pulse={pulse_val} pg_stat={live_val} diff={diff_pct:.1f}%")
+                if mismatches:
+                    logger.error(f"=== DASHBOARD RECONCILIATION: {len(mismatches)} mismatches ===")
+                    for m in mismatches:
+                        logger.error(f"  {m}")
+                    logger.error("Pulse values are from daily snapshot, pg_stat values are live estimates. "
+                                 "Run ANALYZE to refresh pg_stat. Mismatches >5% may indicate stale statistics.")
+                else:
+                    logger.info("Dashboard reconciliation: pulse and pg_stat agree within 5%")
+        except Exception as reconcile_err:
+            logger.debug(f"Dashboard reconciliation skipped: {reconcile_err}")
 
         return {
             "days": day_entries,
@@ -2916,6 +2954,793 @@ async def data_catalog_endpoint(request: Request):
         return {"catalog": [dict(r) for r in rows]}
     except Exception as e:
         logger.warning(f"Data catalog failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================================
+# =============================================================================
+# Composition Playground — ops-auth gated v1
+# =============================================================================
+
+@router.post("/playground/compute")
+async def playground_compute(request: Request):
+    """Compute CQI, stress, and Basel preview for a portfolio."""
+    _check_admin_key(request)
+    import hashlib as _ph
+    from datetime import datetime as _pdt, timezone as _ptz
+
+    body = await request.json()
+    portfolio = body.get("portfolio", [])
+
+    from app.playground import validate_portfolio, compute_aggregate_cqi, compute_stress_scenarios, render_basel_sco60_preview, compute_content_hash
+
+    errors = validate_portfolio(portfolio)
+    if errors:
+        return JSONResponse({"errors": [{"field": e.field, "message": e.message} for e in errors]}, status_code=400)
+
+    # Rate limit: 10 per IP per hour
+    ip = request.client.host if request.client else "unknown"
+    ip_hash = _ph.sha256(ip.encode()).hexdigest()
+    try:
+        recent = fetch_one(
+            "SELECT COUNT(*) as cnt FROM playground_submissions WHERE submitter_ip_hash = %s AND submitted_at > NOW() - INTERVAL '1 hour'",
+            (ip_hash,),
+        )
+        if recent and recent["cnt"] >= 10:
+            return JSONResponse({"error": "Rate limit exceeded (10 submissions per hour)"}, status_code=429)
+    except Exception:
+        pass
+
+    cqi = compute_aggregate_cqi(portfolio)
+    stress = compute_stress_scenarios(portfolio)
+    preview = render_basel_sco60_preview(portfolio, cqi)
+
+    now = _pdt.now(_ptz.utc)
+    content_hash = compute_content_hash(portfolio, now.isoformat())
+
+    # Store submission
+    try:
+        row = fetch_one("""
+            INSERT INTO playground_submissions
+                (submitter_ip_hash, portfolio, computed_cqi, computed_stress, content_hash)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING submission_id
+        """, (ip_hash, json.dumps(portfolio), json.dumps(cqi, default=str), json.dumps(stress, default=str), content_hash))
+        submission_id = str(row["submission_id"]) if row else None
+    except Exception as e:
+        logger.warning(f"Playground submission store failed: {e}")
+        submission_id = None
+
+    return {
+        "submission_id": submission_id,
+        "cqi": cqi,
+        "stress": stress,
+        "preview_markdown": preview,
+    }
+
+
+@router.post("/playground/request-report")
+async def playground_request_report(request: Request):
+    """Request full Basel SCO60 report via email link."""
+    _check_admin_key(request)
+    import secrets
+    import re as _re
+
+    body = await request.json()
+    submission_id = body.get("submission_id")
+    email = body.get("email", "").strip()
+
+    if not submission_id:
+        return JSONResponse({"error": "submission_id required"}, status_code=400)
+    if not email or not _re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+        return JSONResponse({"error": "Valid email address required"}, status_code=400)
+
+    sub = fetch_one("SELECT * FROM playground_submissions WHERE submission_id = %s", (submission_id,))
+    if not sub:
+        return JSONResponse({"error": "Submission not found"}, status_code=404)
+    if sub.get("report_requested"):
+        return JSONResponse({"error": "Report already requested for this submission"}, status_code=400)
+
+    token = secrets.token_urlsafe(32)
+
+    execute("""
+        UPDATE playground_submissions SET
+            report_requested = TRUE,
+            submitter_email = %s,
+            report_request_at = NOW(),
+            report_link_token = %s,
+            report_link_expires = NOW() + INTERVAL '7 days'
+        WHERE submission_id = %s
+    """, (email, token, submission_id))
+
+    # Send email via Resend
+    report_url = f"https://basisprotocol.xyz/playground/report/{token}"
+    try:
+        import httpx
+        resend_key = os.environ.get("RESEND_API_KEY")
+        if resend_key:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://api.resend.com/emails",
+                    headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+                    json={
+                        "from": "Basis Protocol <noreply@basisprotocol.xyz>",
+                        "to": [email],
+                        "subject": "Your Basel SCO60 report for the portfolio you submitted",
+                        "text": (
+                            f"Thanks for submitting a portfolio to the Basis composition playground.\n\n"
+                            f"Your full Basel SCO60 report is ready. View it here:\n"
+                            f"{report_url}\n\n"
+                            f"This link expires in 7 days. You received this because you requested "
+                            f"this report. We will not use your email for anything else. To delete "
+                            f"your email from our records, reply to this email.\n"
+                        ),
+                    },
+                )
+            execute("UPDATE playground_submissions SET email_sent_at = NOW() WHERE submission_id = %s", (submission_id,))
+        else:
+            logger.warning("RESEND_API_KEY not set — email not sent")
+    except Exception as e:
+        logger.warning(f"Playground email send failed: {e}")
+
+    return {"status": "report_requested", "report_url": report_url}
+
+
+@router.get("/playground/submissions")
+async def playground_submissions(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    since: Optional[str] = None,
+):
+    """List recent playground submissions."""
+    _check_admin_key(request)
+
+    sql = "SELECT submission_id, submitted_at, portfolio, computed_cqi, report_requested, report_access_count FROM playground_submissions"
+    params = []
+    if since:
+        sql += " WHERE submitted_at >= %s"
+        params.append(since)
+    sql += " ORDER BY submitted_at DESC LIMIT %s"
+    params.append(limit)
+
+    rows = fetch_all(sql, tuple(params))
+    return {
+        "submissions": [{
+            "id": str(r["submission_id"]),
+            "submitted_at": r["submitted_at"].isoformat() if r.get("submitted_at") else None,
+            "position_count": len(r["portfolio"]) if isinstance(r.get("portfolio"), list) else 0,
+            "aggregate_cqi": (r.get("computed_cqi") or {}).get("aggregate_cqi"),
+            "report_requested": r.get("report_requested", False),
+            "access_count": r.get("report_access_count", 0),
+        } for r in (rows or [])],
+        "count": len(rows or []),
+    }
+
+
+# =============================================================================
+# Track Record — internal ops ledger
+# =============================================================================
+
+@router.get("/track-record/entries")
+async def track_record_entries(
+    request: Request,
+    entity: Optional[str] = None,
+    trigger_kind: Optional[str] = None,
+    featured: Optional[bool] = None,
+    since: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """List track record entries with filtering."""
+    _check_admin_key(request)
+    try:
+        conditions = []
+        params = []
+
+        if entity:
+            conditions.append("entity_slug = %s")
+            params.append(entity)
+        if trigger_kind:
+            conditions.append("trigger_kind = %s")
+            params.append(trigger_kind)
+        if featured is not None:
+            conditions.append("featured = %s")
+            params.append(featured)
+        if since:
+            conditions.append("triggered_at >= %s")
+            params.append(since)
+
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        params.append(limit)
+
+        rows = fetch_all(
+            f"""SELECT entry_id, entry_type, entity_slug, index_name,
+                       trigger_kind, trigger_detail, triggered_at,
+                       featured, featured_by, featured_at,
+                       narrative_markdown, content_hash, created_at
+                FROM track_record_entries
+                {where}
+                ORDER BY triggered_at DESC LIMIT %s""",
+            tuple(params),
+        )
+
+        # Add followup status for each entry
+        entries = []
+        for row in (rows or []):
+            entry = dict(row)
+            followups = fetch_all(
+                "SELECT checkpoint, outcome_category FROM track_record_followups WHERE entry_id = %s",
+                (str(row["entry_id"]),),
+            )
+            entry["followups"] = [dict(f) for f in followups] if followups else []
+            entries.append(entry)
+
+        return {"entries": entries, "count": len(entries)}
+    except Exception as e:
+        logger.warning(f"Track record entries failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/track-record/entries/{entry_id}")
+async def track_record_entry_detail(entry_id: str, request: Request):
+    """Single entry with full detail + all followups."""
+    _check_admin_key(request)
+    try:
+        entry = fetch_one(
+            "SELECT * FROM track_record_entries WHERE entry_id = %s::uuid",
+            (entry_id,),
+        )
+        if not entry:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Entry not found")
+
+        followups = fetch_all(
+            "SELECT * FROM track_record_followups WHERE entry_id = %s::uuid ORDER BY checkpoint",
+            (entry_id,),
+        )
+
+        result = dict(entry)
+        result["followups"] = [dict(f) for f in followups] if followups else []
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/track-record/entries/{entry_id}/feature")
+async def track_record_feature(entry_id: str, request: Request):
+    """Promote an auto entry to featured with narrative."""
+    _check_admin_key(request)
+    try:
+        body = await request.json()
+        narrative = body.get("narrative_markdown", "")
+        featured_by = body.get("featured_by", "admin")
+
+        execute(
+            """UPDATE track_record_entries
+               SET featured = TRUE, featured_by = %s, featured_at = NOW(),
+                   narrative_markdown = %s
+               WHERE entry_id = %s::uuid""",
+            (featured_by, narrative, entry_id),
+        )
+        return {"status": "featured", "entry_id": entry_id}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/track-record/entries")
+async def track_record_create_manual(request: Request):
+    """Create a manual featured entry."""
+    _check_admin_key(request)
+    try:
+        body = await request.json()
+        from app.track_record import _get_entity_baseline, _compute_content_hash, _get_state_root
+
+        entity_slug = body["entity_slug"]
+        index_name = body.get("index_name", "sii")
+        narrative = body.get("narrative_markdown", "")
+        featured_by = body.get("featured_by", "admin")
+
+        baseline = _get_entity_baseline(entity_slug, index_name)
+        trigger_detail = body.get("trigger_detail", {"source": "manual"})
+        now = datetime.now(timezone.utc)
+        content_hash = _compute_content_hash(
+            entity_slug, "manual", trigger_detail, now.isoformat(), baseline,
+        )
+
+        import json
+        execute(
+            """INSERT INTO track_record_entries
+               (entry_type, entity_slug, index_name, trigger_kind,
+                trigger_detail, triggered_at, state_root_at_trigger,
+                baseline_snapshot, narrative_markdown,
+                featured, featured_by, featured_at,
+                content_hash)
+               VALUES ('featured', %s, %s, 'manual', %s, NOW(), %s, %s, %s,
+                       TRUE, %s, NOW(), %s)""",
+            (
+                entity_slug, index_name,
+                json.dumps(trigger_detail),
+                _get_state_root(),
+                json.dumps(baseline, default=str),
+                narrative,
+                featured_by,
+                content_hash,
+            ),
+        )
+        return {"status": "created", "content_hash": content_hash}
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "traceback": traceback.format_exc()}, status_code=500)
+
+
+@router.post("/track-record/followups/{followup_id}/narrative")
+async def track_record_followup_narrative(followup_id: str, request: Request):
+    """Add human narrative to a computed followup."""
+    _check_admin_key(request)
+    try:
+        body = await request.json()
+        execute(
+            "UPDATE track_record_followups SET narrative_markdown = %s WHERE followup_id = %s::uuid",
+            (body.get("narrative_markdown", ""), followup_id),
+        )
+        return {"status": "updated"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/track-record/summary")
+async def track_record_summary(request: Request):
+    """Summary for the ops dashboard section."""
+    _check_admin_key(request)
+    try:
+        # Total entries
+        total = fetch_one("SELECT COUNT(*) as cnt FROM track_record_entries")
+
+        # By trigger kind in last 30 days
+        by_kind = fetch_all("""
+            SELECT trigger_kind, COUNT(*) as cnt
+            FROM track_record_entries
+            WHERE triggered_at >= NOW() - INTERVAL '30 days'
+            GROUP BY trigger_kind ORDER BY cnt DESC
+        """)
+
+        # Featured entries
+        featured = fetch_all("""
+            SELECT entry_id, entity_slug, index_name, trigger_kind,
+                   narrative_markdown, featured_at
+            FROM track_record_entries
+            WHERE featured = TRUE
+            ORDER BY featured_at DESC LIMIT 10
+        """)
+
+        # Pending followups this week
+        pending = fetch_all("""
+            SELECT e.entry_id, e.entity_slug, e.trigger_kind, e.triggered_at,
+                   CASE
+                     WHEN e.triggered_at <= NOW() - INTERVAL '90 days' THEN '90d'
+                     WHEN e.triggered_at <= NOW() - INTERVAL '60 days' THEN '60d'
+                     ELSE '30d'
+                   END as next_checkpoint
+            FROM track_record_entries e
+            WHERE (
+                (e.triggered_at <= NOW() - INTERVAL '30 days'
+                 AND NOT EXISTS (SELECT 1 FROM track_record_followups f WHERE f.entry_id = e.entry_id AND f.checkpoint = '30d'))
+                OR
+                (e.triggered_at <= NOW() - INTERVAL '60 days'
+                 AND NOT EXISTS (SELECT 1 FROM track_record_followups f WHERE f.entry_id = e.entry_id AND f.checkpoint = '60d'))
+                OR
+                (e.triggered_at <= NOW() - INTERVAL '90 days'
+                 AND NOT EXISTS (SELECT 1 FROM track_record_followups f WHERE f.entry_id = e.entry_id AND f.checkpoint = '90d'))
+            )
+            ORDER BY e.triggered_at LIMIT 20
+        """)
+
+        # Calibration: outcome distribution
+        calibration = fetch_all("""
+            SELECT e.trigger_kind, f.outcome_category, COUNT(*) as cnt
+            FROM track_record_followups f
+            JOIN track_record_entries e ON f.entry_id = e.entry_id
+            WHERE f.outcome_category != 'insufficient_data'
+            GROUP BY e.trigger_kind, f.outcome_category
+            ORDER BY e.trigger_kind, f.outcome_category
+        """)
+
+        return {
+            "total_entries": total["cnt"] if total else 0,
+            "by_trigger_kind_30d": [dict(r) for r in by_kind] if by_kind else [],
+            "featured": [dict(r) for r in featured] if featured else [],
+            "pending_followups": [dict(r) for r in pending] if pending else [],
+            "calibration": [dict(r) for r in calibration] if calibration else [],
+        }
+    except Exception as e:
+        logger.warning(f"Track record summary failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/track-record/pending-on-chain")
+async def track_record_pending_on_chain(request: Request, chain: str = "base"):
+    _check_admin(request)
+    if chain not in ("base", "arbitrum"):
+        return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
+
+    col = f"committed_on_chain_{chain}"
+    try:
+        from app.track_record import compute_on_chain_entity_id
+        rows = fetch_all(
+            f"""SELECT entry_id, entity_slug, trigger_kind, triggered_at,
+                       content_hash, baseline_snapshot, trigger_detail
+                FROM track_record_entries
+                WHERE {col} = FALSE
+                ORDER BY triggered_at ASC
+                LIMIT 100"""
+        )
+        results = []
+        for r in (rows or []):
+            entry = dict(r)
+            entry["entity_id_bytes32"] = compute_on_chain_entity_id(entry)
+            for k in ("baseline_snapshot", "trigger_detail"):
+                if isinstance(entry.get(k), str):
+                    entry[k] = json.loads(entry[k])
+            results.append(entry)
+        return results
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/track-record/entries/{entry_id}/committed/{chain}")
+async def track_record_mark_committed(entry_id: str, chain: str, request: Request):
+    _check_admin(request)
+    if chain not in ("base", "arbitrum"):
+        return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
+
+    body = await request.json()
+    tx_hash = body.get("tx_hash")
+    if not tx_hash:
+        return JSONResponse({"error": "tx_hash required"}, status_code=400)
+
+    col_flag = f"committed_on_chain_{chain}"
+    col_hash = f"on_chain_tx_hash_{chain}"
+    try:
+        existing = fetch_one(
+            "SELECT entry_id FROM track_record_entries WHERE entry_id = %s::uuid",
+            (entry_id,),
+        )
+        if not existing:
+            return JSONResponse({"error": "entry not found"}, status_code=404)
+
+        execute(
+            f"""UPDATE track_record_entries
+                SET {col_flag} = TRUE,
+                    {col_hash} = %s,
+                    committed_at = COALESCE(committed_at, NOW())
+                WHERE entry_id = %s::uuid""",
+            (tx_hash, entry_id),
+        )
+        return {"status": "ok", "entry_id": entry_id, "chain": chain, "tx_hash": tx_hash}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/track-record/on-chain-status")
+async def track_record_on_chain_status(request: Request):
+    _check_admin(request)
+    try:
+        row = fetch_one("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE committed_on_chain_base = TRUE) AS committed_base,
+                COUNT(*) FILTER (WHERE committed_on_chain_arbitrum = TRUE) AS committed_arbitrum,
+                COUNT(*) FILTER (WHERE committed_on_chain_base = TRUE AND committed_on_chain_arbitrum = TRUE) AS committed_both,
+                COUNT(*) FILTER (WHERE committed_on_chain_base = FALSE OR committed_on_chain_arbitrum = FALSE) AS uncommitted_either
+            FROM track_record_entries
+        """)
+        return dict(row) if row else {}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+
+# =============================================================================
+# Methodology Hashes
+# =============================================================================
+
+@router.post("/methodology")
+async def ops_register_methodology(request: Request):
+    """Register an immutable methodology hash."""
+    _check_admin_key(request)
+    try:
+        body = await request.json()
+        methodology_id = body.get("methodology_id")
+        content = body.get("content")
+        description = body.get("description", "")
+        if not methodology_id or not content:
+            return JSONResponse({"error": "methodology_id and content are required"}, status_code=400)
+
+        from app.methodology_hashes import register_methodology
+        content_hash = register_methodology(methodology_id, content, description)
+        return {"status": "registered", "methodology_id": methodology_id, "content_hash": content_hash}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"error": str(e), "traceback": _traceback_mod.format_exc()}, status_code=500)
+
+
+@router.get("/methodology")
+async def ops_list_methodologies(request: Request):
+    """List all registered methodologies (without content)."""
+    _check_admin_key(request)
+    try:
+        from app.methodology_hashes import list_methodologies
+        return {"methodologies": list_methodologies()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/methodology/pending-on-chain")
+async def ops_methodology_pending_on_chain(request: Request, chain: str = "base"):
+    """Get methodologies not yet committed on-chain for a given chain."""
+    _check_admin_key(request)
+    if chain not in ("base", "arbitrum"):
+        return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
+
+    col = f"committed_on_chain_{chain}"
+    try:
+        from app.methodology_hashes import compute_on_chain_entity_id
+        rows = fetch_all(
+            f"""SELECT methodology_id, content_hash, description, registered_at
+                FROM methodology_hashes
+                WHERE {col} = FALSE
+                ORDER BY registered_at ASC"""
+        )
+        results = []
+        for r in (rows or []):
+            entry = dict(r)
+            entry["entity_id_bytes32"] = compute_on_chain_entity_id(entry)
+            results.append(entry)
+        return results
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/methodology/{methodology_id}")
+async def ops_get_methodology(methodology_id: str, request: Request):
+    """Get a single methodology including full content."""
+    _check_admin_key(request)
+    try:
+        from app.methodology_hashes import get_methodology
+        m = get_methodology(methodology_id)
+        if not m:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return m
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/methodology/{methodology_id}/committed/{chain}")
+async def ops_methodology_mark_committed(methodology_id: str, chain: str, request: Request):
+    """Mark a methodology as committed on-chain for a given chain."""
+    _check_admin_key(request)
+    if chain not in ("base", "arbitrum"):
+        return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
+
+    try:
+        body = await request.json()
+        tx_hash = body.get("tx_hash")
+        if not tx_hash:
+            return JSONResponse({"error": "tx_hash required"}, status_code=400)
+
+        existing = fetch_one(
+            "SELECT methodology_id FROM methodology_hashes WHERE methodology_id = %s",
+            (methodology_id,),
+        )
+        if not existing:
+            return JSONResponse({"error": "methodology not found"}, status_code=404)
+
+        col_flag = f"committed_on_chain_{chain}"
+        col_hash = f"on_chain_tx_hash_{chain}"
+        execute(
+            f"""UPDATE methodology_hashes
+                SET {col_flag} = TRUE,
+                    {col_hash} = %s,
+                    committed_at = COALESCE(committed_at, NOW())
+                WHERE methodology_id = %s""",
+            (tx_hash, methodology_id),
+        )
+        return {"status": "ok", "methodology_id": methodology_id, "chain": chain, "tx_hash": tx_hash}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================================
+# Disputes
+# =============================================================================
+
+@router.post("/disputes")
+async def submit_dispute(request: Request):
+    _check_admin_key(request)
+    try:
+        body = await request.json()
+        required = ["entity_slug", "submitter_identifier", "submitter_type", "submission_text"]
+        for field in required:
+            if not body.get(field):
+                return JSONResponse({"error": f"{field} required"}, status_code=400)
+        if body["submitter_type"] not in ("issuer", "third_party", "regulator", "anonymous"):
+            return JSONResponse({"error": "submitter_type must be one of: issuer, third_party, regulator, anonymous"}, status_code=400)
+
+        from app.disputes import submit_dispute as _submit
+        dispute_id = _submit(
+            entity_slug=body["entity_slug"],
+            submitter_identifier=body["submitter_identifier"],
+            submitter_type=body["submitter_type"],
+            submission_text=body["submission_text"],
+            submission_evidence_url=body.get("submission_evidence_url"),
+            disputed_score_content_hash=body.get("disputed_score_content_hash"),
+        )
+        return {"status": "ok", "dispute_id": dispute_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dispute submission failed: {e}")
+        return JSONResponse({"error": str(e), "traceback": _traceback_mod.format_exc()}, status_code=500)
+
+
+@router.post("/disputes/{dispute_id}/counter-evidence")
+async def dispute_counter_evidence(dispute_id: str, request: Request):
+    _check_admin_key(request)
+    try:
+        body = await request.json()
+        if not body.get("payload"):
+            return JSONResponse({"error": "payload required"}, status_code=400)
+        if not body.get("author"):
+            return JSONResponse({"error": "author required"}, status_code=400)
+
+        from app.disputes import issue_counter_evidence
+        transition_id = issue_counter_evidence(
+            dispute_id=dispute_id,
+            payload_dict=body["payload"],
+            author=body["author"],
+        )
+        return {"status": "ok", "transition_id": transition_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Counter-evidence failed: {e}")
+        return JSONResponse({"error": str(e), "traceback": _traceback_mod.format_exc()}, status_code=500)
+
+
+@router.post("/disputes/{dispute_id}/resolve")
+async def dispute_resolve(dispute_id: str, request: Request):
+    _check_admin_key(request)
+    try:
+        body = await request.json()
+        if not body.get("resolution_category"):
+            return JSONResponse({"error": "resolution_category required"}, status_code=400)
+        if body["resolution_category"] not in ("accepted", "partially_accepted", "rejected"):
+            return JSONResponse({"error": "resolution_category must be one of: accepted, partially_accepted, rejected"}, status_code=400)
+        if not body.get("resolution_narrative"):
+            return JSONResponse({"error": "resolution_narrative required"}, status_code=400)
+        if not body.get("author"):
+            return JSONResponse({"error": "author required"}, status_code=400)
+
+        from app.disputes import resolve_dispute
+        transition_id = resolve_dispute(
+            dispute_id=dispute_id,
+            resolution_category=body["resolution_category"],
+            resolution_narrative=body["resolution_narrative"],
+            author=body["author"],
+        )
+        return {"status": "ok", "transition_id": transition_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dispute resolution failed: {e}")
+        return JSONResponse({"error": str(e), "traceback": _traceback_mod.format_exc()}, status_code=500)
+
+
+@router.get("/disputes")
+async def list_disputes(request: Request, status: Optional[str] = None):
+    _check_admin_key(request)
+    try:
+        if status:
+            rows = fetch_all(
+                "SELECT * FROM disputes WHERE status = %s ORDER BY created_at DESC",
+                (status,),
+            )
+        else:
+            rows = fetch_all("SELECT * FROM disputes ORDER BY created_at DESC")
+        return {"disputes": [dict(r) for r in rows] if rows else []}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/disputes/pending-on-chain")
+async def disputes_pending_on_chain(request: Request, chain: str = "base"):
+    _check_admin_key(request)
+    if chain not in ("base", "arbitrum"):
+        return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
+
+    col = f"committed_on_chain_{chain}"
+    try:
+        from app.disputes import compute_on_chain_entity_id
+        rows = fetch_all(
+            f"SELECT * FROM dispute_transitions WHERE {col} = FALSE ORDER BY created_at"
+        )
+        results = []
+        for r in (rows or []):
+            entry = dict(r)
+            entry["entity_id_bytes32"] = compute_on_chain_entity_id(entry)
+            if isinstance(entry.get("transition_payload"), str):
+                entry["transition_payload"] = json.loads(entry["transition_payload"])
+            results.append(entry)
+        return results
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/disputes/{dispute_id}")
+async def get_dispute(dispute_id: str, request: Request):
+    _check_admin_key(request)
+    try:
+        dispute = fetch_one(
+            "SELECT * FROM disputes WHERE dispute_id = %s::uuid", (dispute_id,)
+        )
+        if not dispute:
+            return JSONResponse({"error": "dispute not found"}, status_code=404)
+
+        transitions = fetch_all(
+            "SELECT * FROM dispute_transitions WHERE dispute_id = %s::uuid ORDER BY transition_index",
+            (dispute_id,),
+        )
+        result = dict(dispute)
+        result["transitions"] = [dict(t) for t in transitions] if transitions else []
+        for t in result["transitions"]:
+            if isinstance(t.get("transition_payload"), str):
+                t["transition_payload"] = json.loads(t["transition_payload"])
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/disputes/transitions/{transition_id}/committed/{chain}")
+async def dispute_transition_mark_committed(transition_id: str, chain: str, request: Request):
+    _check_admin_key(request)
+    if chain not in ("base", "arbitrum"):
+        return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
+
+    body = await request.json()
+    tx_hash = body.get("tx_hash")
+    if not tx_hash:
+        return JSONResponse({"error": "tx_hash required"}, status_code=400)
+
+    col_flag = f"committed_on_chain_{chain}"
+    col_hash = f"on_chain_tx_hash_{chain}"
+    try:
+        existing = fetch_one(
+            "SELECT transition_id FROM dispute_transitions WHERE transition_id = %s::uuid",
+            (transition_id,),
+        )
+        if not existing:
+            return JSONResponse({"error": "transition not found"}, status_code=404)
+
+        execute(
+            f"""UPDATE dispute_transitions
+                SET {col_flag} = TRUE,
+                    {col_hash} = %s,
+                    committed_at = COALESCE(committed_at, NOW())
+                WHERE transition_id = %s::uuid""",
+            (tx_hash, transition_id),
+        )
+        return {"status": "ok", "transition_id": transition_id, "chain": chain, "tx_hash": tx_hash}
+    except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

@@ -24,6 +24,7 @@ import time
 from datetime import date, datetime, timezone
 
 from app.database import execute, fetch_one
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -113,16 +114,26 @@ def _store_extraction(entity_slug: str, entity_name: str, source_url: str,
                       source_type: str, structured_data: dict,
                       extraction_method: str, confidence: float):
     """Store an extraction in the tti_disclosure_extractions table."""
+    # Ensure simple unique index exists (expression index doesn't work with ON CONFLICT)
+    try:
+        execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tti_disc_entity_source
+            ON tti_disclosure_extractions(entity_slug, source_url)
+        """)
+    except Exception:
+        pass
+
     execute("""
         INSERT INTO tti_disclosure_extractions
             (entity_slug, entity_name, source_url, source_type,
              structured_data, extraction_method, confidence, extracted_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-        ON CONFLICT (entity_slug, source_url, extracted_at::date)
+        ON CONFLICT (entity_slug, source_url)
         DO UPDATE SET
             structured_data = EXCLUDED.structured_data,
             extraction_method = EXCLUDED.extraction_method,
-            confidence = EXCLUDED.confidence
+            confidence = EXCLUDED.confidence,
+            extracted_at = EXCLUDED.extracted_at
     """, (
         entity_slug, entity_name, source_url, source_type,
         json.dumps(structured_data), extraction_method, confidence,
@@ -313,7 +324,21 @@ def _try_scrape_page(url: str, entity_slug: str = "") -> str | None:
     # Last resort: plain requests
     try:
         import requests
-        resp = requests.get(url, timeout=15, allow_redirects=True)
+        _t0 = time.monotonic()
+        _status = None
+        try:
+            resp = requests.get(url, timeout=15, allow_redirects=True)
+            _status = resp.status_code
+        except Exception:
+            _status = 0
+            raise
+        finally:
+            try:
+                from urllib.parse import urlparse as _urlparse
+                _provider = _urlparse(url).netloc or "unknown"
+                track_api_call(provider=_provider, endpoint="GET", caller="services.tti_disclosure_collector", status=_status, latency_ms=int((time.monotonic() - _t0) * 1000))
+            except Exception:
+                pass
         if resp.status_code == 200:
             text = re.sub(r'<[^>]+>', ' ', resp.text)
             return re.sub(r'\s+', ' ', text).strip()

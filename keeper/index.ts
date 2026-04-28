@@ -119,7 +119,7 @@ function buildTokenAddressMap(apiScores: ApiScore[]): Record<string, string> {
 
   for (const s of apiScores) {
     if (s.token_contract) {
-      dynamic[s.id.toLowerCase()] = s.token_contract;
+      dynamic[s.id.toLowerCase()] = s.token_contract.toLowerCase();
     } else {
       missingCount++;
     }
@@ -173,10 +173,17 @@ async function runCycle(
   }
 
   // 2. Diff on-chain state for both chains in parallel
-  const [onChainBase, onChainArb] = await Promise.all([
+  const [onChainBaseResult, onChainArbResult] = await Promise.allSettled([
     fetchOnChainScores(providerBase, config.chains.base.oracleAddress),
     fetchOnChainScores(providerArb, config.chains.arbitrum.oracleAddress),
   ]);
+
+  const onChainBase = onChainBaseResult.status === "fulfilled"
+    ? onChainBaseResult.value
+    : (() => { logger.error("Failed to fetch on-chain scores from Base", { error: onChainBaseResult.reason?.stack ?? String(onChainBaseResult.reason) }); return new Map<string, import("./differ.js").OnChainScore>(); })();
+  const onChainArb = onChainArbResult.status === "fulfilled"
+    ? onChainArbResult.value
+    : (() => { logger.error("Failed to fetch on-chain scores from Arbitrum", { error: onChainArbResult.reason?.stack ?? String(onChainArbResult.reason) }); return new Map<string, import("./differ.js").OnChainScore>(); })();
 
   const updatesBase = computeUpdates(
     apiScores,
@@ -507,11 +514,11 @@ async function main(): Promise<void> {
     try {
       await runCycle(config, walletBase, walletArb, providerBase, providerArb);
     } catch (err) {
-      const msg = `Unhandled error in keeper cycle`;
-      const errStr = err instanceof Error ? err.message : String(err);
-      logger.error(msg, { error: errStr });
+      const errStr = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      const msg = `Unhandled error in keeper cycle\n\n${errStr}`;
+      logger.error("Unhandled error in keeper cycle", { error: errStr });
       cycleErrors.push(errStr);
-      await sendAlert(msg, err);
+      await sendAlert(msg);
     }
 
     if (cycleId != null) {
@@ -527,7 +534,8 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (err) => {
-  logger.error("Fatal keeper error", { error: err instanceof Error ? err.message : String(err) });
-  await sendAlert("Keeper crashed — fatal error", err);
+  const errStr = err instanceof Error ? (err.stack ?? err.message) : String(err);
+  logger.error("Fatal keeper error", { error: errStr });
+  await sendAlert(`Keeper crashed — fatal error\n\n${errStr}`);
   process.exit(1);
 });

@@ -88,9 +88,9 @@ def _compute_wallet_metrics(address: str) -> dict:
 
     # Current holdings value
     holdings = fetch_all(
-        """SELECT token_symbol, balance_usd, chain
+        """SELECT symbol, value_usd
            FROM wallet_graph.wallet_holdings
-           WHERE wallet_address = %s AND balance_usd > 0""",
+           WHERE wallet_address = %s AND value_usd > 0""",
         (address,),
     )
 
@@ -98,20 +98,19 @@ def _compute_wallet_metrics(address: str) -> dict:
         metrics["total_value"] = 0
         return metrics
 
-    total_value = sum(float(h.get("balance_usd") or 0) for h in holdings)
+    total_value = sum(float(h.get("value_usd") or 0) for h in holdings)
     metrics["total_value"] = total_value
 
-    # Chain diversity
-    chains = set(h.get("chain", "ethereum") for h in holdings if h.get("chain"))
-    metrics["chain_count"] = len(chains)
+    # Chain diversity — wallet_holdings doesn't have a chain column yet
+    metrics["chain_count"] = 1
 
     # DeFi share (receipt tokens like aUSDC, cUSDC, etc.)
     defi_prefixes = {"a", "c", "s", "w", "st"}
     defi_value = 0
     for h in holdings:
-        symbol = (h.get("token_symbol") or "").lower()
+        symbol = (h.get("symbol") or "").lower()
         if any(symbol.startswith(p) and len(symbol) > len(p) + 2 for p in defi_prefixes):
-            defi_value += float(h.get("balance_usd") or 0)
+            defi_value += float(h.get("value_usd") or 0)
     metrics["defi_share"] = defi_value / total_value if total_value > 0 else 0
 
     # Risk score data
@@ -149,20 +148,20 @@ def _compute_wallet_metrics(address: str) -> dict:
     # Edge count (counterparties)
     edge_count = fetch_one(
         """SELECT COUNT(*) as cnt FROM wallet_graph.wallet_edges
-           WHERE source_address = %s OR target_address = %s""",
+           WHERE from_address = %s OR to_address = %s""",
         (address, address),
     )
     metrics["edge_count"] = edge_count["cnt"] if edge_count else 0
 
     # Inflow/outflow ratio from edges
     inflow = fetch_one(
-        """SELECT COALESCE(SUM(transfer_value_usd), 0) as total
-           FROM wallet_graph.wallet_edges WHERE target_address = %s""",
+        """SELECT COALESCE(SUM(total_value_usd), 0) as total
+           FROM wallet_graph.wallet_edges WHERE to_address = %s""",
         (address,),
     )
     outflow = fetch_one(
-        """SELECT COALESCE(SUM(transfer_value_usd), 0) as total
-           FROM wallet_graph.wallet_edges WHERE source_address = %s""",
+        """SELECT COALESCE(SUM(total_value_usd), 0) as total
+           FROM wallet_graph.wallet_edges WHERE from_address = %s""",
         (address,),
     )
 
@@ -175,7 +174,7 @@ def _compute_wallet_metrics(address: str) -> dict:
 
     # Composition changes (unique token types held)
     metrics["composition_changes_30d"] = len(set(
-        (h.get("token_symbol") or "") for h in holdings
+        (h.get("symbol") or "") for h in holdings
     ))
 
     return metrics
@@ -201,27 +200,57 @@ def _classify_wallet(metrics: dict) -> list[dict]:
     return tags
 
 
+def _sanitize_float(val):
+    """Return None if val is NaN or Infinity, else return val."""
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
+    return val
+
+
 def _store_behavior_tags(address: str, tags: list[dict]):
-    """Store wallet behavior tags to database."""
+    """Store wallet behavior tags to database (per-row transactions)."""
     if not tags:
         return
 
-    with get_cursor() as cur:
-        for tag in tags:
-            cur.execute(
-                """INSERT INTO wallet_behavior_tags
-                   (wallet_address, behavior_type, confidence, metrics, computed_at)
-                   VALUES (%s, %s, %s, %s, NOW())
-                   ON CONFLICT (wallet_address, behavior_type, computed_at)
-                   DO UPDATE SET confidence = EXCLUDED.confidence,
-                                 metrics = EXCLUDED.metrics""",
-                (
-                    address,
-                    tag["behavior_type"],
-                    tag["confidence"],
-                    json.dumps(tag["metrics"]),
-                ),
-            )
+    stored = 0
+    errors = 0
+
+    for tag in tags:
+        try:
+            # Sanitize numeric fields in metrics
+            sanitized_metrics = {
+                k: _sanitize_float(v) if isinstance(v, float) else v
+                for k, v in tag.get("metrics", {}).items()
+            }
+            with get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO wallet_behavior_tags
+                       (wallet_address, behavior_type, confidence, metrics, computed_at)
+                       VALUES (%s, %s, %s, %s, NOW())
+                       ON CONFLICT (wallet_address, behavior_type, computed_at)
+                       DO UPDATE SET confidence = EXCLUDED.confidence,
+                                     metrics = EXCLUDED.metrics""",
+                    (
+                        address,
+                        tag["behavior_type"],
+                        _sanitize_float(tag["confidence"]),
+                        json.dumps(sanitized_metrics),
+                    ),
+                )
+            stored += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 3:
+                logger.error(
+                    "Failed to store behavior tag %s for %s: %s",
+                    tag.get("behavior_type"), address, e,
+                )
+
+    if errors:
+        logger.error(
+            "Behavior tags store complete: %d stored, %d errors for %s",
+            stored, errors, address,
+        )
 
 
 def run_behavioral_classification(batch_size: int = 2000) -> dict:

@@ -15,10 +15,12 @@ import re
 import json
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone, date
 
 from app.database import fetch_all, fetch_one, execute
 from app.services import parallel_client, reducto_client, firecrawl_client
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -1066,7 +1068,21 @@ async def _collect_api_source(symbol: str, url: str, prefix: str) -> dict | None
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url)
+            _t0 = time.monotonic()
+            _status = None
+            try:
+                resp = await client.get(url)
+                _status = resp.status_code
+            except Exception:
+                _status = 0
+                raise
+            finally:
+                try:
+                    from urllib.parse import urlparse as _urlparse
+                    _provider = _urlparse(url).netloc or "issuer"
+                    track_api_call(provider=_provider, endpoint="GET", caller="services.cda_collector", status=_status, latency_ms=int((time.monotonic() - _t0) * 1000))
+                except Exception:
+                    pass
             resp.raise_for_status()
             data = resp.json()
 
@@ -1167,11 +1183,11 @@ async def run_collection():
     )
 
     if not issuers:
-        logger.warning("No active issuers in registry")
+        logger.error("[cda_vendor] no active issuers in registry")
         return
 
     total = len(issuers)
-    logger.info(f"Processing {total} issuers")
+    logger.error(f"[cda_vendor] starting: {total} issuers to scan")
 
     results = {"success": 0, "partial": 0, "failed": 0, "skipped": 0}
 
@@ -1204,11 +1220,9 @@ async def run_collection():
         if i < total:
             await asyncio.sleep(2)
 
-    logger.info(
-        f"=== CDA Collection Complete: "
-        f"{results['success']} success, {results['partial']} partial, "
-        f"{results['failed']} failed, {results['skipped']} skipped "
-        f"out of {total} ==="
+    logger.error(
+        f"[cda_vendor] SUMMARY: scanned={total}, success={results['success']}, "
+        f"partial={results['partial']}, failed={results['failed']}, skipped={results['skipped']}"
     )
 
     # Attest CDA extractions from this run

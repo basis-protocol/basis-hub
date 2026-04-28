@@ -20,6 +20,7 @@ Schedule: Every slow cycle (3h)
 
 import json
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -95,31 +96,58 @@ async def _fetch_pool_ohlcv(
         return []
 
 
+def _safe_float(val):
+    """Return None if val is NaN or Infinity, otherwise float."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
 def _store_ohlcv_records(records: list[dict]):
-    """Store OHLCV records to database."""
+    """Store OHLCV records to database (per-row transactions)."""
     if not records:
         return
 
     from app.database import get_cursor
 
-    with get_cursor() as cur:
-        for rec in records:
-            cur.execute(
-                """INSERT INTO dex_pool_ohlcv
-                   (pool_address, chain, dex, asset_id, timestamp,
-                    open, high, low, close, volume, trades_count)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (pool_address, chain, timestamp) DO UPDATE SET
-                       volume = EXCLUDED.volume,
-                       close = EXCLUDED.close""",
-                (
-                    rec["pool_address"], rec["chain"], rec.get("dex"),
-                    rec.get("asset_id"), rec["timestamp"],
-                    rec.get("open"), rec.get("high"),
-                    rec.get("low"), rec.get("close"),
-                    rec.get("volume"), rec.get("trades_count"),
-                ),
-            )
+    stored = 0
+    errors = 0
+
+    for rec in records:
+        try:
+            with get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO dex_pool_ohlcv
+                       (pool_address, chain, dex, asset_id, timestamp,
+                        open, high, low, close, volume, trades_count)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (pool_address, chain, timestamp) DO UPDATE SET
+                           volume = EXCLUDED.volume,
+                           close = EXCLUDED.close""",
+                    (
+                        rec["pool_address"], rec["chain"], rec.get("dex"),
+                        rec.get("asset_id"), rec["timestamp"],
+                        _safe_float(rec.get("open")), _safe_float(rec.get("high")),
+                        _safe_float(rec.get("low")), _safe_float(rec.get("close")),
+                        _safe_float(rec.get("volume")), rec.get("trades_count"),
+                    ),
+                )
+            stored += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 3:
+                logger.error(f"Failed to store ohlcv record pool={rec.get('pool_address')}: {e}")
+
+    if errors:
+        logger.error(f"dex_pool_ohlcv: stored={stored}, errors={errors} out of {len(records)}")
+    else:
+        logger.info(f"Stored {stored} OHLCV records")
 
 
 def _get_tracked_pools_tiered() -> tuple[list[dict], list[dict]]:
@@ -175,7 +203,13 @@ async def run_ohlcv_collection() -> dict:
     top_pools, other_pools = _get_tracked_pools_tiered()
     all_pools = len(top_pools) + len(other_pools)
 
+    logger.error(
+        f"[dex_pool_ohlcv] starting: top_pools={len(top_pools)}, other_pools={len(other_pools)}, "
+        f"total={all_pools} (sourced from liquidity_depth WHERE venue_type='dex')"
+    )
+
     if all_pools == 0:
+        logger.error("[dex_pool_ohlcv] ZERO pools found — liquidity_depth has no DEX rows. OHLCV depends on liquidity collector producing pool data first.")
         return {"pools_found": 0, "records_stored": 0}
 
     total_records = 0
@@ -235,6 +269,10 @@ async def run_ohlcv_collection() -> dict:
     except Exception:
         pass
 
+    logger.error(
+        f"[dex_pool_ohlcv] SUMMARY: pools_queried={pools_processed}, bars_received={total_records}, "
+        f"top_pools_processed={top_processed}"
+    )
     logger.info(
         f"OHLCV collection complete: {total_records} candles from "
         f"{pools_processed}/{all_pools} pools ({top_processed} at 15-min resolution)"

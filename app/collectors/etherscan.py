@@ -16,11 +16,13 @@ import os
 import asyncio
 import logging
 import json
+import time as _time
 from typing import Optional
 
 import httpx
 
 from app.config import STABLECOIN_REGISTRY
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,8 @@ async def fetch_token_balance(
     api_key: str,
 ) -> Optional[int]:
     """Fetch ERC-20 token balance for one address via Etherscan V2 API."""
+    _t0 = _time.monotonic()
+    _status = None
     try:
         resp = await client.get(
             ETHERSCAN_V2_BASE,
@@ -134,6 +138,7 @@ async def fetch_token_balance(
             },
             timeout=10.0,
         )
+        _status = resp.status_code
         data = resp.json()
         if data.get("status") == "1":
             return int(data["result"])
@@ -144,8 +149,20 @@ async def fetch_token_balance(
                 await asyncio.sleep(1.0)
             return None
     except Exception as e:
+        _status = 0
         logger.debug(f"Etherscan balance fetch error for {holder_address[:10]}...: {e}")
         return None
+    finally:
+        try:
+            track_api_call(
+                provider="etherscan",
+                endpoint="/v2/api?module=account&action=tokenbalance",
+                caller="collectors.etherscan",
+                status=_status,
+                latency_ms=int((_time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -158,6 +175,8 @@ async def fetch_token_holder_count(
     api_key: str,
 ) -> Optional[int]:
     """Fetch live unique holder count for an ERC-20 token via Etherscan tokenholdercount."""
+    _t0 = _time.monotonic()
+    _status = None
     try:
         resp = await client.get(
             ETHERSCAN_V2_BASE,
@@ -170,6 +189,7 @@ async def fetch_token_holder_count(
             },
             timeout=10.0,
         )
+        _status = resp.status_code
         data = resp.json()
         if data.get("status") == "1":
             return int(data["result"])
@@ -177,8 +197,20 @@ async def fetch_token_holder_count(
             logger.debug(f"tokenholdercount returned status 0: {data.get('result')}")
             return None
     except Exception as e:
+        _status = 0
         logger.debug(f"tokenholdercount fetch error for {contract_address[:10]}...: {e}")
         return None
+    finally:
+        try:
+            track_api_call(
+                provider="etherscan",
+                endpoint="/v2/api?module=token&action=tokenholdercount",
+                caller="collectors.etherscan",
+                status=_status,
+                latency_ms=int((_time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def collect_holder_distribution(

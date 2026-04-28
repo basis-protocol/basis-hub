@@ -24,6 +24,114 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Provenance source auto-registration
+# ---------------------------------------------------------------------------
+
+def _infer_source_type(url: str) -> str:
+    """Infer provenance source type from URL pattern."""
+    if "api.github.com" in url or "raw.githubusercontent.com" in url:
+        return "static_github"
+    elif "etherscan.io" in url or "basescan.org" in url or "arbiscan.io" in url:
+        return "etherscan_api"
+    elif "coingecko.com" in url or "llama.fi" in url:
+        return "live_api"
+    elif "docs." in url or "documentation" in url:
+        return "html_docs"
+    else:
+        return "protocol_api"
+
+
+def register_provenance_source(
+    source_id: str,
+    entity: str,
+    component: str,
+    url: str,
+    schedule: str = "hourly",
+    source_type: str = None,
+):
+    """
+    Register (or update) a provenance source in the DB.
+    Called when a collector registers or when syncing from PROVENANCE_SOURCES.
+
+    Uses ON CONFLICT DO UPDATE for the URL so endpoint changes propagate
+    to the prover automatically.
+
+    Non-critical — failures are logged but never block collector registration.
+    """
+    if source_type is None:
+        source_type = _infer_source_type(url)
+    try:
+        execute(
+            """INSERT INTO provenance_sources (id, entity, component, source_type, url, schedule)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (id) DO UPDATE SET
+                   url = EXCLUDED.url,
+                   source_type = EXCLUDED.source_type,
+                   updated_at = now()""",
+            (source_id, entity, component, source_type, url, schedule),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to register provenance source {source_id}: {e}")
+
+
+def sync_provenance_sources():
+    """
+    Sync all known provenance sources from PROVENANCE_SOURCES dict into the DB.
+    Called at the start of each scoring cycle so new collectors automatically
+    get provenance coverage on the next prover run.
+    """
+    try:
+        from app.data_layer.provenance_scaling import PROVENANCE_SOURCES
+    except ImportError:
+        logger.debug("provenance_scaling not available — skipping provenance sync")
+        return 0
+
+    synced = 0
+    for source_id, src in PROVENANCE_SOURCES.items():
+        provider = src.get("provider", "unknown")
+        endpoint = src.get("endpoint", "")
+        # Build a representative URL from provider + endpoint
+        url = _build_url(provider, endpoint)
+        component = source_id.replace(f"{provider}_", "", 1) if source_id.startswith(f"{provider}_") else source_id
+        source_type = _infer_source_type(url)
+
+        try:
+            execute(
+                """INSERT INTO provenance_sources (id, entity, component, source_type, url, schedule)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (id) DO UPDATE SET
+                       url = EXCLUDED.url,
+                       source_type = EXCLUDED.source_type,
+                       updated_at = now()""",
+                (source_id, provider, component, source_type, url, "hourly"),
+            )
+            synced += 1
+        except Exception as e:
+            logger.warning(f"Failed to sync provenance source {source_id}: {e}")
+
+    if synced:
+        logger.info(f"Synced {synced} provenance sources to DB")
+    return synced
+
+
+def _build_url(provider: str, endpoint: str) -> str:
+    """Map provider + endpoint path to a full URL."""
+    base_urls = {
+        "coingecko": "https://pro-api.coingecko.com/api/v3",
+        "defillama": "https://api.llama.fi",
+        "etherscan": "https://api.etherscan.io/v2/api",
+        "snapshot": "https://hub.snapshot.org",
+        "blockscout": "https://eth.blockscout.com/api",
+        "tally": "https://api.tally.xyz",
+        "issuer_website": "dynamic:cda_source_urls",
+    }
+    base = base_urls.get(provider, "")
+    if not base or base.startswith("dynamic:"):
+        return base or endpoint
+    return f"{base}{endpoint}"
+
+
+# ---------------------------------------------------------------------------
 # CycleStats — per-cycle performance tracking
 # ---------------------------------------------------------------------------
 
@@ -52,19 +160,29 @@ class CycleStats:
         self._data[name]["error"] += 1
 
     def log_summary(self):
+        # Bumped from logger.info to logger.error so Railway surfaces this
+        # prominently. Prior level meant the fast-cycle 30-min timeout
+        # diagnosis was invisible to operators — exactly when we need it.
         if not self._data:
-            logger.info("CycleStats: no collector data recorded")
+            logger.error("[cycle_stats] no collector data recorded")
             return
-        logger.info("=== Collector cycle stats ===")
-        for name, d in sorted(self._data.items()):
+        logger.error("=== [cycle_stats] Collector cycle stats ===")
+        # Sort by avg latency descending so slowest collectors surface first.
+        rows = []
+        for name, d in self._data.items():
             avg_ms = (
                 int(sum(d["latencies"]) / len(d["latencies"]))
                 if d["latencies"]
                 else 0
             )
-            logger.info(
+            max_ms = max(d["latencies"]) if d["latencies"] else 0
+            rows.append((name, d, avg_ms, max_ms))
+        rows.sort(key=lambda r: -r[2])
+        for name, d, avg_ms, max_ms in rows:
+            logger.error(
                 f"  {name:30s}  ok={d['ok']:3d}  timeout={d['timeout']:2d}  "
-                f"error={d['error']:2d}  avg={avg_ms:5d}ms  components={d['components']}"
+                f"error={d['error']:2d}  avg={avg_ms:5d}ms  max={max_ms:5d}ms  "
+                f"components={d['components']}"
             )
 
     def store(self):
@@ -129,11 +247,33 @@ def _make_async_collectors():
     async def _smart_contract(client, _cg_id, sid):
         return await collect_smart_contract_components(client, sid)
 
+    # Per-collector inner timeout. Production observation (PR #35 timing
+    # diagnostics) shows solana + actor_metrics regularly consume 30s+
+    # each per stablecoin, pushing the fast cycle past its 30-min outer
+    # budget (36 coins × 30s = ~18 min on these two alone). Capping the
+    # inner wait at 10s lets the registry's `_instrumented` timeout path
+    # record the miss and move on. Other collectors keep the default 20s.
+    _SLOW_COLLECTOR_TIMEOUT_SEC = 10.0
+
+    async def _with_inner_timeout(name, coro):
+        try:
+            return await asyncio.wait_for(coro, timeout=_SLOW_COLLECTOR_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"{name} collector inner-timeout ({_SLOW_COLLECTOR_TIMEOUT_SEC:.0f}s) — "
+                f"skipping this cycle's reading"
+            )
+            return []
+
     async def _solana(client, _cg_id, sid):
-        return await collect_solana_components(client, sid)
+        return await _with_inner_timeout(
+            "solana", collect_solana_components(client, sid),
+        )
 
     async def _actor(client, _cg_id, sid):
-        return await collect_actor_metrics(client, sid)
+        return await _with_inner_timeout(
+            "actor_metrics", collect_actor_metrics(client, sid),
+        )
 
     return [
         ("peg", collect_peg_components),
@@ -188,11 +328,23 @@ async def run_all_collectors(
     Run every registered SII collector for one stablecoin.
     Returns flat list of component dicts (not yet tagged with stablecoin_id).
     """
-    cg_id = cfg["coingecko_id"]
+    # CoinGecko ID corrections — map delisted/renamed IDs to current ones
+    CG_ID_CORRECTIONS = {
+        "susd": "nusd",              # Synthetix USD — CoinGecko lists as 'nusd'
+        "spark": "spark-protocol",   # Spark Protocol — CoinGecko renamed to 'spark-protocol'
+    }
+    cg_id = CG_ID_CORRECTIONS.get(cfg["coingecko_id"], cfg["coingecko_id"])
     all_components: list[dict] = []
 
     # --- async collectors (parallel with per-collector timeout) ---
     async_collectors = _make_async_collectors()
+
+    # Per-collector call that exceeds this fraction of its timeout is
+    # logged as a slow call so fast-cycle 30-min timeouts can be
+    # attributed to specific (collector, stablecoin) pairs without
+    # re-running the cycle.
+    SLOW_CALL_FRACTION = 0.75
+    slow_threshold_ms = int(timeout * SLOW_CALL_FRACTION * 1000)
 
     async def _instrumented(name, coro):
         t0 = time.monotonic()
@@ -202,6 +354,11 @@ async def run_all_collectors(
             count = len(result) if result else 0
             if cycle_stats:
                 cycle_stats.record_ok(name, elapsed_ms, count)
+            if elapsed_ms >= slow_threshold_ms:
+                logger.error(
+                    f"[slow_collector] {name} took {elapsed_ms}ms for {stablecoin_id} "
+                    f"(>={int(SLOW_CALL_FRACTION*100)}% of {int(timeout*1000)}ms timeout)"
+                )
             return result or []
         except asyncio.TimeoutError:
             logger.warning(f"{name} timed out for {stablecoin_id}")

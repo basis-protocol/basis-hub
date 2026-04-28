@@ -27,6 +27,7 @@ import requests
 from app.database import execute, fetch_all, fetch_one
 from app.index_definitions.lsti_v01 import LSTI_V01_DEFINITION, LST_ENTITIES
 from app.scoring_engine import score_entity
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,11 @@ LST_STATIC_CONFIG = {
     },
     "kelp-rseth": {
         "audit_status": 3, "upgradeability_risk": 50, "admin_key_risk": 55,
-        "withdrawal_queue_impl": 60, "exploit_history_lst": 100,
+        # exploit_history_lst lowered 100 -> 10 per audits/lsti_rseth_audit_2026-04-20.md:
+        # 2026-04-18 LayerZero-bridge mint of 116,500 unbacked rsETH (~$292M).
+        # Severity band ($100M+) = 10, recency <90d = full weight. Held as static
+        # floor until DeFiLlama hacks ingestion confirms (min(live, static) keeps it low).
+        "withdrawal_queue_impl": 60, "exploit_history_lst": 10,
         "slashing_insurance": 40, "beacon_chain_dependency": 50, "mev_exposure": 60,
     },
 }
@@ -528,8 +533,9 @@ def store_lst_score(result: dict) -> None:
         INSERT INTO generic_index_scores
             (index_id, entity_slug, entity_name, overall_score,
              category_scores, component_scores, raw_values,
-             formula_version, inputs_hash, confidence, confidence_tag)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             formula_version, inputs_hash, confidence, confidence_tag,
+             component_coverage, components_populated, components_total, missing_categories)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (index_id, entity_slug, scored_date)
         DO UPDATE SET
             entity_name = EXCLUDED.entity_name,
@@ -540,6 +546,10 @@ def store_lst_score(result: dict) -> None:
             inputs_hash = EXCLUDED.inputs_hash,
             confidence = EXCLUDED.confidence,
             confidence_tag = EXCLUDED.confidence_tag,
+            component_coverage = EXCLUDED.component_coverage,
+            components_populated = EXCLUDED.components_populated,
+            components_total = EXCLUDED.components_total,
+            missing_categories = EXCLUDED.missing_categories,
             computed_at = NOW()
     """, (
         "lsti",
@@ -553,6 +563,10 @@ def store_lst_score(result: dict) -> None:
         inputs_hash,
         result.get("confidence", "limited"),
         result.get("confidence_tag"),
+        result.get("component_coverage"),
+        result.get("components_populated"),
+        result.get("components_total"),
+        json.dumps(result.get("missing_categories") or []),
     ))
 
 

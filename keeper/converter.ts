@@ -44,11 +44,11 @@ export const TOKEN_ADDRESSES: Record<string, string> = {
   dai:   "0x6b175474e89094c44da98b954eedeac495271d0f",
   frax:  "0x853d955acef822db058eb8505911ed77f175b99e",
   pyusd: "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
-  fdusd: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409",
-  tusd:  "0x0000000000085d4780B73119b644AE5ecd22b376",
-  usdd:  "0x0C10bF8FcB7Bf5412187A595ab97a3609160b5c6",
-  usde:  "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
-  usd1:  "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+  fdusd: "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409",
+  tusd:  "0x0000000000085d4780b73119b644ae5ecd22b376",
+  usdd:  "0x0c10bf8fcb7bf5412187a595ab97a3609160b5c6",
+  usde:  "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+  usd1:  "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
 };
 
 export function tokenIdToAddress(id: string): string | undefined {
@@ -59,20 +59,15 @@ export function tokenIdToAddress(id: string): string | undefined {
 // Grade→bytes2 lookup table (for reference/validation)
 // ============================================================
 
-export const GRADE_BYTES2: Record<string, string> = {
-  "A+": "0x412b",
-  "A":  "0x4100",
-  "A-": "0x412d",
-  "B+": "0x422b",
-  "B":  "0x4200",
-  "B-": "0x422d",
-  "C+": "0x432b",
-  "C":  "0x4300",
-  "C-": "0x432d",
-  "D":  "0x4400",
-  "F":  "0x4600",
+// Confidence tier codes — the bytes2 "grade" slot now carries a
+// methodological confidence tier, not a credit rating.
+export const CONFIDENCE_TIER_BYTES2: Record<string, string> = {
+  "HI": "0x4849",  // High confidence (>=80% coverage)
+  "ST": "0x5354",  // Standard confidence (>=60% coverage)
+  "LD": "0x4c44",  // Limited Data (<60% coverage)
+  "XX": "0x5858",  // Unknown / fallback
 };
 
-export function validateGrade(grade: string): boolean {
-  return grade in GRADE_BYTES2;
+export function validateTierCode(code: string): boolean {
+  return code in CONFIDENCE_TIER_BYTES2;
 }

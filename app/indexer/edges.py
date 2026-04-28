@@ -16,6 +16,7 @@ import json
 from datetime import datetime, timezone
 
 import httpx
+import psycopg2
 
 from app.database import fetch_all, fetch_one, execute
 from app.indexer.config import (
@@ -186,9 +187,9 @@ async def build_edges_for_wallet(
             """
             INSERT INTO wallet_graph.wallet_edges
                 (from_address, to_address, chain, transfer_count, total_value_usd,
-                 first_transfer_at, last_transfer_at, tokens_transferred, weight)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (from_address, to_address, chain) DO UPDATE SET
+                 first_transfer_at, last_transfer_at, tokens_transferred, weight, edge_type)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'shared_holder')
+            ON CONFLICT (from_address, to_address, chain, edge_type) DO UPDATE SET
                 transfer_count = wallet_graph.wallet_edges.transfer_count + EXCLUDED.transfer_count,
                 total_value_usd = wallet_graph.wallet_edges.total_value_usd + EXCLUDED.total_value_usd,
                 first_transfer_at = LEAST(wallet_graph.wallet_edges.first_transfer_at, EXCLUDED.first_transfer_at),
@@ -247,21 +248,39 @@ async def run_edge_builder(
     if priority == "unbuilt":
         order_clause = "w.created_at ASC"
 
+    # Include wallets that haven't been built in 7+ days (re-scan for new transfers)
     wallets = fetch_all(
         f"""
         SELECT w.address, w.total_stablecoin_value
         FROM wallet_graph.wallets w
         LEFT JOIN wallet_graph.edge_build_status e
             ON w.address = e.wallet_address AND e.chain = %s
-        WHERE e.wallet_address IS NULL OR e.status = 'pending'
+        WHERE e.wallet_address IS NULL
+           OR e.status = 'pending'
+           OR e.last_built_at < NOW() - INTERVAL '7 days'
         ORDER BY {order_clause}
         LIMIT %s
         """,
         (chain, max_wallets),
     )
 
+    # Count how many are fresh vs stale
+    unbuilt = fetch_one(
+        "SELECT COUNT(*) as cnt FROM wallet_graph.wallets w "
+        "LEFT JOIN wallet_graph.edge_build_status e ON w.address = e.wallet_address AND e.chain = %s "
+        "WHERE e.wallet_address IS NULL", (chain,)
+    )
+    stale = fetch_one(
+        "SELECT COUNT(*) as cnt FROM wallet_graph.edge_build_status "
+        "WHERE chain = %s AND last_built_at < NOW() - INTERVAL '7 days'", (chain,)
+    )
+    logger.error(
+        f"[edge_builder] {chain}: {len(wallets)} candidates "
+        f"(unbuilt={unbuilt['cnt'] if unbuilt else 0}, stale_7d={stale['cnt'] if stale else 0})"
+    )
+
     if not wallets:
-        logger.info(f"No wallets need edge building on {chain}")
+        logger.error(f"[edge_builder] {chain}: no wallets need edge building")
         return {"chain": chain, "wallets_processed": 0, "total_edges_created": 0, "total_transfers": 0}
 
     api_key = os.environ.get("ETHERSCAN_API_KEY", "") if chain == "ethereum" else ""
@@ -269,11 +288,17 @@ async def run_edge_builder(
     total_transfers = 0
     wallets_processed = 0
 
-    async with httpx.AsyncClient() as client:
+    _edge_client = httpx.AsyncClient(
+        timeout=30, follow_redirects=True,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    )
+    try:
         for i, w in enumerate(wallets):
+            if i < 5 or i % 50 == 0:
+                logger.error(f"[edge_builder] wallet {w['address'][:12]}... start ({i}/{len(wallets)})")
             try:
                 result = await build_edges_for_wallet(
-                    client, w["address"], api_key,
+                    _edge_client, w["address"], api_key,
                     max_pages=max_pages_per_wallet,
                     chain=chain,
                 )
@@ -281,13 +306,14 @@ async def run_edge_builder(
                 total_transfers += result["transfers_processed"]
                 wallets_processed += 1
 
-                if (i + 1) % 10 == 0:
-                    logger.info(
-                        f"Edge builder progress: {i + 1}/{len(wallets)} wallets, "
-                        f"{total_edges} edges, {total_transfers} transfers"
+                if i < 5 or (i + 1) % 50 == 0:
+                    logger.error(
+                        f"[edge_builder] wallet {w['address'][:12]}... done: "
+                        f"edges={result['edges_upserted']}, txs={result['transfers_processed']}, "
+                        f"pages={result['pages_fetched']} | running_total: {total_edges} edges, {wallets_processed} wallets"
                     )
             except Exception as e:
-                logger.error(f"Edge build failed for {w['address'][:10]}…: {e}")
+                logger.error(f"[edge_builder] wallet {w['address'][:12]}... FAILED: {type(e).__name__}: {e}")
                 execute(
                     """
                     INSERT INTO wallet_graph.edge_build_status (wallet_address, chain, status)
@@ -296,10 +322,12 @@ async def run_edge_builder(
                     """,
                     (w["address"], chain),
                 )
+    finally:
+        await _edge_client.aclose()
 
-    logger.info(
-        f"Edge builder [{chain}] complete: {wallets_processed} wallets, "
-        f"{total_edges} edges, {total_transfers} transfers"
+    logger.error(
+        f"[edge_builder] {chain}: examined {wallets_processed} wallets, "
+        f"new_edges={total_edges}, transfers={total_transfers}"
     )
 
     # Attest edges for this chain
@@ -409,3 +437,89 @@ def prune_stale_edges() -> dict:
 
     logger.info(f"Edge pruning: {to_archive} edges archived, {remaining} remaining")
     return {"edges_archived": to_archive, "edges_remaining": remaining}
+
+
+# =============================================================================
+# Sprint 3 background loop — high-throughput edge building
+# =============================================================================
+
+EDGE_BUILDER_BATCH_SIZE = 2000
+EDGE_BUILDER_ETHERSCAN_CAP = 120_000
+
+
+def _get_etherscan_24h_usage() -> int:
+    try:
+        row = fetch_one("""
+            SELECT SUM(total_calls) AS total FROM api_usage_hourly
+            WHERE provider = 'etherscan' AND hour > NOW() - INTERVAL '24 hours'
+        """)
+        return int(row["total"]) if row and row.get("total") else 0
+    except Exception:
+        return 0
+
+
+async def edge_builder_background_loop():
+    """Independent background loop for Sprint 3 edge graph density."""
+    logger.error("[edge_builder_bg] background loop started")
+    await asyncio.sleep(240)  # stagger behind other Phase 2 loops
+    consecutive_db_failures = 0
+
+    while True:
+        try:
+            logger.error("[edge_builder_bg] loop tick")
+
+            usage = _get_etherscan_24h_usage()
+            if usage > EDGE_BUILDER_ETHERSCAN_CAP:
+                logger.error(f"[edge_builder_bg] PAUSED: Etherscan 24h usage {usage:,}/{EDGE_BUILDER_ETHERSCAN_CAP:,}")
+                await asyncio.sleep(3600)
+                continue
+
+            # Check how many wallets are scannable
+            scannable = fetch_one("""
+                SELECT COUNT(*) AS cnt FROM wallet_graph.wallets w
+                LEFT JOIN wallet_graph.edge_build_status e
+                    ON w.address = e.wallet_address AND e.chain = 'ethereum'
+                WHERE e.wallet_address IS NULL
+                   OR e.last_built_at < NOW() - INTERVAL '24 hours'
+            """)
+            scannable_count = int(scannable["cnt"]) if scannable else 0
+
+            if scannable_count == 0:
+                logger.error("[edge_builder_bg] no wallets need scanning, sleeping 1h")
+                await asyncio.sleep(3600)
+                continue
+
+            batch = min(EDGE_BUILDER_BATCH_SIZE, scannable_count)
+            logger.error(f"[edge_builder_bg] {scannable_count} wallets need scanning, running batch of {batch}")
+
+            result = await run_edge_builder(
+                max_wallets=batch,
+                max_pages_per_wallet=10,
+                priority="value",
+                chain="ethereum",
+            )
+
+            logger.error(
+                f"[edge_builder_bg] BATCH SUMMARY: "
+                f"wallets={result.get('wallets_processed', 0)}, "
+                f"new_edges={result.get('total_edges_created', 0)}, "
+                f"transfers={result.get('total_transfers', 0)}"
+            )
+
+            # Short sleep before next batch — continuous while there are wallets to scan
+            await asyncio.sleep(300)
+            consecutive_db_failures = 0
+
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            consecutive_db_failures += 1
+            if consecutive_db_failures >= 10:
+                logger.critical(f"[edge_builder_bg] {consecutive_db_failures} consecutive DB failures — exiting")
+                raise SystemExit(1)
+            elif consecutive_db_failures >= 3:
+                logger.error(f"[edge_builder_bg] DB failure #{consecutive_db_failures}: {e}")
+            else:
+                logger.warning(f"[edge_builder_bg] DB failure (will retry): {e}")
+            await asyncio.sleep(60)
+        except Exception as e:
+            logger.error(f"[edge_builder_bg] ERROR: {type(e).__name__}: {e}")
+            await asyncio.sleep(600)

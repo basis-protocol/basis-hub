@@ -18,6 +18,8 @@ from typing import Optional
 
 import httpx
 
+from app.api_usage_tracker import track_api_call
+
 logger = logging.getLogger(__name__)
 
 BLOCKSCOUT_BASE = "https://api.blockscout.com/v2/api"
@@ -87,8 +89,10 @@ async def blockscout_call(
         params.update(extra_params)
 
     start = time.monotonic()
+    _status = None
     try:
         resp = await client.get(BLOCKSCOUT_BASE, params=params, timeout=timeout)
+        _status = resp.status_code
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _track_credit()
 
@@ -97,6 +101,7 @@ async def blockscout_call(
         return data
 
     except Exception as e:
+        _status = 0
         elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.debug(f"Blockscout call failed: {module}/{action} chain={chain_id}: {e}")
         return {
@@ -106,6 +111,17 @@ async def blockscout_call(
             "_blockscout_response_time_ms": elapsed_ms,
             "_blockscout_error": True,
         }
+    finally:
+        try:
+            track_api_call(
+                provider="blockscout",
+                endpoint=f"/v2/api?module={module}&action={action}&chain_id={chain_id}",
+                caller="utils.blockscout_client",
+                status=_status,
+                latency_ms=int((time.monotonic() - start) * 1000),
+            )
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -180,14 +196,64 @@ async def get_token_holder_count(
     chain_id: int = 1,
 ) -> dict:
     """
-    Get holder count for a token — equivalent to Etherscan tokenholdercount.
-    Used by holder_analysis.py.
+    Get holder count for a token.
+    Uses Blockscout V2 native /tokens/{address}/counters endpoint
+    because the Etherscan-compatible tokenholdercount action returns 400.
     """
-    return await blockscout_call(
-        client, "token", "tokenholdercount",
-        chain_id=chain_id,
-        extra_params={"contractaddress": contract_address},
-    )
+    # Map chain_id to Blockscout instance hostname
+    chain_hosts = {
+        1: "eth.blockscout.com",
+        42161: "arbitrum.blockscout.com",
+        10: "optimism.blockscout.com",
+        8453: "base.blockscout.com",
+        137: "polygon.blockscout.com",
+    }
+    host = chain_hosts.get(chain_id, "eth.blockscout.com")
+    url = f"https://{host}/api/v2/tokens/{contract_address}/counters"
+
+    start = time.monotonic()
+    _status = None
+    try:
+        resp = await client.get(url, timeout=20)
+        _status = resp.status_code
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        _track_credit()
+
+        if resp.status_code != 200:
+            return {
+                "status": "0", "message": "NOTOK",
+                "result": f"HTTP {resp.status_code}",
+                "_blockscout_response_time_ms": elapsed_ms,
+            }
+
+        data = resp.json()
+        holder_count = data.get("token_holders_count", "0")
+        return {
+            "status": "1", "message": "OK",
+            "result": str(holder_count),
+            "_blockscout_response_time_ms": elapsed_ms,
+        }
+    except Exception as e:
+        _status = 0
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.debug(f"Blockscout V2 token holder count failed: {e}")
+        return {
+            "status": "0", "message": "NOTOK",
+            "result": str(e),
+            "_blockscout_response_time_ms": elapsed_ms,
+            "_blockscout_error": True,
+        }
+    finally:
+        try:
+            track_api_call(
+                provider="blockscout",
+                endpoint=f"/api/v2/tokens/counters?chain_id={chain_id}",
+                caller="utils.blockscout_client",
+                status=_status,
+                latency_ms=int((time.monotonic() - start) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def get_token_holder_list(
@@ -232,3 +298,58 @@ async def get_address_token_balance(
             "offset": offset,
         },
     )
+
+
+async def get_token_holders(
+    client: httpx.AsyncClient,
+    contract_address: str,
+    chain_id: int = 1,
+    page: int = 1,
+    offset: int = 100,
+) -> dict:
+    """Get token holder list — equivalent to Etherscan tokenholderlist."""
+    return await blockscout_call(
+        client, "token", "tokenholderlist",
+        chain_id=chain_id,
+        extra_params={
+            "contractaddress": contract_address,
+            "page": page,
+            "offset": offset,
+        },
+    )
+
+
+async def get_address_info(
+    client: httpx.AsyncClient,
+    address: str,
+    chain_id: int = 1,
+) -> dict:
+    """Get address balance/tx count — equivalent to Etherscan balance + txlist count."""
+    return await blockscout_call(
+        client, "account", "balance",
+        chain_id=chain_id,
+        extra_params={"address": address},
+    )
+
+
+async def get_address_txcount(
+    client: httpx.AsyncClient,
+    address: str,
+    chain_id: int = 1,
+) -> int:
+    """Get transaction count for an address via txlist with offset=1."""
+    result = await blockscout_call(
+        client, "account", "txlist",
+        chain_id=chain_id,
+        extra_params={
+            "address": address,
+            "startblock": 0,
+            "endblock": 99999999,
+            "page": 1,
+            "offset": 1,
+            "sort": "desc",
+        },
+    )
+    if result.get("status") == "1" and result.get("result"):
+        return len(result["result"])
+    return 0

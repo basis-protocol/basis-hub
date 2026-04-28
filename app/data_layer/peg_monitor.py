@@ -23,6 +23,19 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_float(val):
+    """Return None if val is NaN or Infinity, otherwise float."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
 API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 CG_BASE = "https://pro-api.coingecko.com/api/v3" if API_KEY else "https://api.coingecko.com/api/v3"
 
@@ -69,26 +82,65 @@ async def _fetch_market_chart(
 
 
 def _store_peg_snapshots(stablecoin_id: str, price_points: list[tuple]):
-    """Store 5-minute peg snapshots."""
+    """Store 5-minute peg snapshots — batched into one transaction."""
     if not price_points:
         return
 
+    import time as _t
     from app.database import get_cursor
 
-    with get_cursor() as cur:
-        for ts_ms, price in price_points:
-            ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-            deviation_bps = round(abs(price - 1.0) * 10000, 2)
+    _start = _t.monotonic()
 
-            cur.execute(
+    # Build batch, filtering invalid values
+    rows = []
+    skipped = 0
+    for ts_ms, price in price_points:
+        safe_price = _safe_float(price)
+        if safe_price is None:
+            skipped += 1
+            continue
+        ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        deviation_bps = round(abs(safe_price - 1.0) * 10000, 2)
+        rows.append((stablecoin_id, safe_price, ts, deviation_bps))
+
+    if not rows:
+        return
+
+    # Batch insert — single round-trip via execute_values
+    stored = 0
+    try:
+        from psycopg2.extras import execute_values
+        with get_cursor() as cur:
+            execute_values(cur,
                 """INSERT INTO peg_snapshots_5m
                    (stablecoin_id, price, timestamp, deviation_bps)
-                   VALUES (%s, %s, %s, %s)
+                   VALUES %s
                    ON CONFLICT (stablecoin_id, timestamp) DO UPDATE SET
                        price = EXCLUDED.price,
                        deviation_bps = EXCLUDED.deviation_bps""",
-                (stablecoin_id, price, ts, deviation_bps),
+                rows, page_size=500,
             )
+        stored = len(rows)
+    except Exception as batch_err:
+        # Fall back to per-row on batch failure
+        logger.error(f"peg batch insert failed for {stablecoin_id}, falling back to per-row: {batch_err}")
+        for row in rows:
+            try:
+                with get_cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO peg_snapshots_5m
+                           (stablecoin_id, price, timestamp, deviation_bps)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (stablecoin_id, timestamp) DO UPDATE SET
+                               price = EXCLUDED.price, deviation_bps = EXCLUDED.deviation_bps""",
+                        row,
+                    )
+                stored += 1
+            except Exception:
+                pass
+
+    elapsed = _t.monotonic() - _start
+    logger.error(f"peg {stablecoin_id}: {stored} rows in {elapsed:.1f}s (skipped={skipped})")
 
 
 def _compute_volatility_surface(
@@ -145,26 +197,28 @@ def _compute_volatility_surface(
 
 
 def _store_volatility_surface(surface: dict):
-    """Store volatility surface to database."""
+    """Store volatility surface to database (per-row transaction)."""
     from app.database import get_cursor
-    import json
 
-    with get_cursor() as cur:
-        cur.execute(
-            """INSERT INTO volatility_surfaces
-               (asset_id, realized_vol_1d, max_drawdown_7d,
-                raw_prices, computed_at)
-               VALUES (%s, %s, %s, %s, NOW())
-               ON CONFLICT (asset_id, computed_at) DO UPDATE SET
-                   realized_vol_1d = EXCLUDED.realized_vol_1d,
-                   max_drawdown_7d = EXCLUDED.max_drawdown_7d""",
-            (
-                surface["asset_id"],
-                surface.get("realized_vol"),
-                surface.get("max_drawdown"),
-                None,  # Don't store raw prices to save space
-            ),
-        )
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """INSERT INTO volatility_surfaces
+                   (asset_id, realized_vol_1d, max_drawdown_7d,
+                    raw_prices, computed_at)
+                   VALUES (%s, %s, %s, %s, NOW())
+                   ON CONFLICT (asset_id, computed_at) DO UPDATE SET
+                       realized_vol_1d = EXCLUDED.realized_vol_1d,
+                       max_drawdown_7d = EXCLUDED.max_drawdown_7d""",
+                (
+                    surface["asset_id"],
+                    _safe_float(surface.get("realized_vol")),
+                    _safe_float(surface.get("max_drawdown")),
+                    None,  # Don't store raw prices to save space
+                ),
+            )
+    except Exception as e:
+        logger.error(f"Failed to store volatility surface for asset={surface.get('asset_id')}: {e}")
 
 
 async def run_peg_monitoring() -> dict:

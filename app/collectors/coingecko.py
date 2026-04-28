@@ -8,6 +8,7 @@ Produces peg_stability, liquidity, and market_activity components.
 import os
 import statistics
 import logging
+import time as _time
 from typing import Any
 
 import httpx
@@ -15,6 +16,7 @@ import httpx
 from app.scoring import (
     normalize_inverse_linear, normalize_linear, normalize_log,
 )
+from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -39,27 +41,59 @@ async def fetch_current(client: httpx.AsyncClient, coingecko_id: str) -> dict:
         "community_data": "false",
         "developer_data": "false",
     }
+    _t0 = _time.monotonic()
+    _status = None
     try:
         resp = await client.get(url, params=params, headers=_headers(), timeout=15)
+        _status = resp.status_code
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.error(f"CoinGecko current data error for {coingecko_id}: {e}")
         return {}
+    finally:
+        try:
+            track_api_call(
+                provider="coingecko",
+                endpoint=f"/coins/{coingecko_id}",
+                caller="collectors.coingecko",
+                status=_status,
+                latency_ms=int((_time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 async def fetch_price_history(client: httpx.AsyncClient, coingecko_id: str, days: int = 7) -> list[float]:
     """Get historical USD prices for peg analysis."""
     url = f"{BASE_URL}/coins/{coingecko_id}/market_chart"
     params = {"vs_currency": "usd", "days": days}
+    _t0 = _time.monotonic()
+    _status = None
     try:
         resp = await client.get(url, params=params, headers=_headers(), timeout=15)
+        _status = resp.status_code
         resp.raise_for_status()
         data = resp.json()
         return [p[1] for p in data.get("prices", [])]
     except Exception as e:
+        if _status is None:
+            _status = 0
         logger.error(f"CoinGecko history error for {coingecko_id} ({days}d): {e}")
         return []
+    finally:
+        try:
+            track_api_call(
+                provider="coingecko",
+                endpoint=f"/coins/{coingecko_id}/market_chart",
+                caller="collectors.coingecko",
+                status=_status,
+                latency_ms=int((_time.monotonic() - _t0) * 1000),
+            )
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -257,8 +291,12 @@ async def collect_liquidity_components(
     
     md = current.get("market_data", {})
     
-    # Market Cap
-    market_cap = md.get("market_cap", {}).get("usd", 0)
+    # Coerce None to 0 for illiquid assets (e.g. stkgho returns null fields)
+    market_cap = md.get("market_cap", {}).get("usd") or 0
+    volume = md.get("total_volume", {}).get("usd") or 0
+    circ = md.get("circulating_supply") or 0
+    total = md.get("total_supply") or 0
+
     components.append({
         "component_id": "market_cap",
         "category": "liquidity",
@@ -268,9 +306,8 @@ async def collect_liquidity_components(
         }), 2),
         "data_source": "coingecko",
     })
-    
+
     # 24h Volume
-    volume = md.get("total_volume", {}).get("usd", 0)
     components.append({
         "component_id": "volume_24h",
         "category": "liquidity",
@@ -280,9 +317,9 @@ async def collect_liquidity_components(
         }), 2),
         "data_source": "coingecko",
     })
-    
+
     # Volume/MCap Ratio
-    if market_cap > 0:
+    if market_cap and market_cap > 0 and volume is not None:
         ratio = volume / market_cap
         components.append({
             "component_id": "volume_mcap_ratio",
@@ -291,11 +328,9 @@ async def collect_liquidity_components(
             "normalized_score": round(min(100, normalize_linear(ratio, 0.01, 0.15)), 2),
             "data_source": "coingecko",
         })
-    
+
     # Circulating/Total Ratio
-    circ = md.get("circulating_supply", 0)
-    total = md.get("total_supply", 0)
-    if total > 0:
+    if total and total > 0 and circ is not None:
         circ_ratio = circ / total
         components.append({
             "component_id": "circulating_ratio",
@@ -350,10 +385,14 @@ async def collect_liquidity_components(
                 "data_source": "coingecko",
             })
         
-        # Volume Concentration
+        # Volume Concentration (guard against None values)
         volumes = sorted(
-            [t.get("converted_volume", {}).get("usd", 0) for t in tickers if t.get("converted_volume", {}).get("usd", 0) > 0],
-            reverse=True
+            [
+                (t.get("converted_volume") or {}).get("usd") or 0
+                for t in tickers
+                if ((t.get("converted_volume") or {}).get("usd") or 0) > 0
+            ],
+            reverse=True,
         )
         if len(volumes) >= 3:
             total_vol = sum(volumes)

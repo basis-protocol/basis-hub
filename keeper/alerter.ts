@@ -2,7 +2,7 @@ import { logger } from "./logger.js";
 
 export async function sendAlert(message: string, error?: unknown): Promise<void> {
   const errorStr = error instanceof Error
-    ? error.message
+    ? (error.stack ?? error.message)
     : error != null
     ? String(error)
     : undefined;
