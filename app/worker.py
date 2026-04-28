@@ -3305,10 +3305,10 @@ async def main():
     # migrations/090_rpc_provider_usage.sql.
     try:
         from app.utils.rpc_provider import probe_rpc_capabilities
-        logger.error("[startup] running Dwellir capability probe")
-        await probe_rpc_capabilities(chain="ethereum")
+        logger.error("[startup] launching Dwellir capability probe (non-blocking)")
+        asyncio.create_task(probe_rpc_capabilities(chain="ethereum"), name="rpc_probe")
     except Exception as e:
-        logger.error(f"[startup] rpc_probe skipped: {type(e).__name__}: {e}")
+        logger.error(f"[startup] rpc_probe launch failed: {type(e).__name__}: {e}")
 
     # Mempool observation watcher — long-lived WebSocket subscription to
     # Alchemy's alchemy_pendingTransactions with server-side address
