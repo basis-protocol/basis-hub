@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -464,7 +464,7 @@ async def collect_governance_proposals() -> dict:
     for protocol_slug, sources in PROTOCOL_GOVERNANCE_SOURCES.items():
         # Look up protocol_id — try psi_scores first (most protocols),
         # fall back to rpi_protocol_config
-        proto_row = fetch_one(
+        proto_row = await fetch_one_async(
             "SELECT DISTINCT protocol_slug FROM psi_scores WHERE protocol_slug = %s LIMIT 1",
             (protocol_slug,),
         )

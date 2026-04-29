@@ -10,7 +10,7 @@ Part of Primitive #21: Actor Classification.
 
 import logging
 
-from app.database import fetch_one
+from app.database import fetch_one, fetch_one_async
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ async def collect_actor_metrics(client, stablecoin_id: str) -> list[dict]:
 
     try:
         # Get contract address for this stablecoin
-        contract_row = fetch_one(
+        contract_row = await fetch_one_async(
             "SELECT contract FROM stablecoins WHERE id = %s",
             (stablecoin_id,),
         )
@@ -34,7 +34,7 @@ async def collect_actor_metrics(client, stablecoin_id: str) -> list[dict]:
         contract = contract_row["contract"].lower()
 
         # Agent holder share: % of USD value held by autonomous_agent wallets
-        row = fetch_one(
+        row = await fetch_one_async(
             """
             SELECT
                 COALESCE(SUM(CASE WHEN ac.actor_type = 'autonomous_agent' THEN wh.value_usd ELSE 0 END), 0) AS agent_usd,
@@ -75,7 +75,7 @@ async def collect_actor_metrics(client, stablecoin_id: str) -> list[dict]:
         # Correlated response risk: agent_share × agent HHI concentration
         # If agent holders are concentrated (few big agents), correlated exit risk is high
         if agent_wallets > 0 and agent_usd > 0:
-            hhi_row = fetch_one(
+            hhi_row = await fetch_one_async(
                 """
                 SELECT COALESCE(SUM(pct * pct), 0) AS hhi
                 FROM (

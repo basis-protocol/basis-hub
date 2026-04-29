@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.database import fetch_all, fetch_one, get_cursor
+from app.database import fetch_all, fetch_all_async, fetch_one, get_cursor
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ async def _sample_oracles(client: httpx.AsyncClient) -> dict:
     """One sampling pass across all active oracles."""
     global _consecutive_errors
 
-    oracles = fetch_all("SELECT * FROM oracle_registry WHERE is_active = TRUE")
+    oracles = await fetch_all_async("SELECT * FROM oracle_registry WHERE is_active = TRUE")
     if not oracles:
         return {"oracles": 0}
 

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.database import fetch_all, fetch_one, execute, get_cursor
+from app.database import fetch_all, fetch_one, execute, get_cursor, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -573,7 +573,7 @@ async def collect_oracle_readings() -> dict:
     }
 
     # Load active oracles
-    oracles = fetch_all("SELECT * FROM oracle_registry WHERE is_active = TRUE")
+    oracles = await fetch_all_async("SELECT * FROM oracle_registry WHERE is_active = TRUE")
     if not oracles:
         logger.error("[oracle] no active oracles in oracle_registry table")
         return results
@@ -641,7 +641,7 @@ async def collect_oracle_readings() -> dict:
                 content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
 
                 # Store reading
-                execute(
+                await execute_async(
                     """INSERT INTO oracle_price_readings
                         (oracle_address, oracle_name, oracle_provider, chain,
                          asset_symbol, quote_symbol, oracle_price, oracle_price_raw,

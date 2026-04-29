@@ -30,7 +30,7 @@ from pathlib import Path
 
 import httpx
 
-from app.database import fetch_one
+from app.database import fetch_one, fetch_one_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -732,7 +732,7 @@ async def collect_smart_contract_components(
     api_key = os.environ.get("ETHERSCAN_API_KEY", "")
 
     # Get contract address
-    row = fetch_one(
+    row = await fetch_one_async(
         "SELECT contract FROM stablecoins WHERE id = %s", (stablecoin_id,)
     )
     contract = row.get("contract", "") if row else ""

@@ -594,13 +594,16 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
     await _loop.run_in_executor(None, store_history_snapshot, stablecoin_id, score_data)
     await _loop.run_in_executor(None, store_provenance, components)
 
-    # State attestation for component readings
+    # State attestation for component readings (run in thread pool)
     try:
         from app.state_attestation import attest_state
-        attest_state("sii_components", [
+        _attest_records = [
             {"id": c.get("component_id", ""), "score": round(float(c.get("normalized_score") or 0), 4)}
             for c in components
-        ], entity_id=stablecoin_id)
+        ]
+        await _loop.run_in_executor(
+            None, attest_state, "sii_components", _attest_records, stablecoin_id
+        )
     except Exception as e:
         logger.debug(f"SII attestation skipped for {stablecoin_id}: {e}")
 

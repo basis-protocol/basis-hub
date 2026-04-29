@@ -18,7 +18,7 @@ import logging
 import time
 from datetime import date, datetime, timezone
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_all_async, fetch_one_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -247,12 +247,12 @@ async def collect_clustered_concentration() -> dict:
     today = date.today()
 
     # Load scored stablecoins
-    stablecoins = fetch_all(
+    stablecoins = await fetch_all_async(
         "SELECT id, symbol FROM stablecoins WHERE scoring_enabled = TRUE"
     )
     if not stablecoins:
         # Fallback: try without scoring_enabled filter
-        stablecoins = fetch_all("SELECT id, symbol FROM stablecoins")
+        stablecoins = await fetch_all_async("SELECT id, symbol FROM stablecoins")
 
     if not stablecoins:
         logger.info("Clustered concentration: no stablecoins found")
@@ -265,7 +265,7 @@ async def collect_clustered_concentration() -> dict:
 
         try:
             # Check if today's snapshot already exists
-            existing = fetch_one(
+            existing = await fetch_one_async(
                 """SELECT id FROM concentration_snapshots
                    WHERE stablecoin_symbol = %s AND snapshot_date = %s""",
                 (symbol.upper(), today),
@@ -279,7 +279,7 @@ async def collect_clustered_concentration() -> dict:
 
             # Store clusters
             for cluster in clusters:
-                execute(
+                await execute_async(
                     """INSERT INTO holder_clusters
                         (stablecoin_symbol, stablecoin_id, snapshot_date, cluster_id,
                          seed_wallet, member_wallets, member_count,
@@ -306,7 +306,7 @@ async def collect_clustered_concentration() -> dict:
             )
             content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
 
-            execute(
+            await execute_async(
                 """INSERT INTO concentration_snapshots
                     (stablecoin_symbol, stablecoin_id, snapshot_date,
                      nominal_gini, clustered_gini,

@@ -19,7 +19,7 @@ import logging
 
 import httpx
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_all_async, execute_async
 from app.indexer.config import EXPLORER_RATE_LIMIT_DELAY
 from app.indexer.scanner import fetch_top_holders
 
@@ -162,7 +162,7 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 30) -> dict:
     logger.info(f"Pool wallet collection: {len(registry)} receipt tokens across all protocols")
 
     # Pre-fetch existing wallet addresses to avoid redundant inserts
-    existing_rows = fetch_all("SELECT address FROM wallet_graph.wallets")
+    existing_rows = await fetch_all_async("SELECT address FROM wallet_graph.wallets")
     existing_addrs = {row["address"].lower() for row in existing_rows}
 
     total_discovered = 0
@@ -200,7 +200,7 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 30) -> dict:
 
                     # Upsert into protocol_pool_wallets
                     try:
-                        execute("""
+                        await execute_async("""
                             INSERT INTO protocol_pool_wallets
                                 (protocol_slug, stablecoin_symbol, chain,
                                  wallet_address, pool_contract_address,
@@ -219,7 +219,7 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 30) -> dict:
                     # Seed into wallet_graph.wallets if new
                     if addr_lower not in existing_addrs:
                         try:
-                            execute("""
+                            await execute_async("""
                                 INSERT INTO wallet_graph.wallets
                                     (address, source, label, created_at, updated_at)
                                 VALUES (%s, 'pool_discovery', %s, NOW(), NOW())

@@ -175,6 +175,26 @@ def fetch_all(sql: str, params: tuple = None) -> list[dict]:
         return cur.fetchall()
 
 
+# =============================================================================
+# Async wrappers — run sync psycopg2 calls in thread pool so they don't
+# block the asyncio event loop. Use these from async functions.
+# =============================================================================
+
+import asyncio
+
+async def fetch_one_async(sql: str, params: tuple = None) -> Optional[dict]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, fetch_one, sql, params)
+
+async def fetch_all_async(sql: str, params: tuple = None) -> list[dict]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, fetch_all, sql, params)
+
+async def execute_async(sql: str, params: tuple = None) -> None:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, execute, sql, params)
+
+
 def run_migration(migration_path: str) -> bool:
     """Run a SQL migration file."""
     try:
