@@ -132,8 +132,16 @@ def track_api_call(
             len(_buffer) >= _FLUSH_THRESHOLD
             or (now - _last_flush) >= _FLUSH_INTERVAL
         )
-        if should_flush:
-            _flush_buffer()
+        # DISABLED 2026-04-29: inline _flush_buffer() was blocking the event
+        # loop with sequential DB INSERTs (Neon US-East-2 round-trip latency
+        # × 50 entries = 5-30s of starvation per flush). Called from inside
+        # async HTTP collectors via track_api_call(), this caused total event
+        # loop death and 30-min cycle timeouts since 2026-04-26 20:55 UTC.
+        # Buffer now accumulates in-memory; a background thread flusher
+        # should be added separately.
+        # if should_flush:
+        #     _flush_buffer()
+        _ = should_flush
 
 
 def _flush_buffer():
