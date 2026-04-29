@@ -132,15 +132,10 @@ def track_api_call(
             len(_buffer) >= _FLUSH_THRESHOLD
             or (now - _last_flush) >= _FLUSH_INTERVAL
         )
-        # DISABLED 2026-04-29: inline _flush_buffer() was blocking the event
-        # loop with sequential DB INSERTs (Neon US-East-2 round-trip latency
-        # × 50 entries = 5-30s of starvation per flush). Called from inside
-        # async HTTP collectors via track_api_call(), this caused total event
-        # loop death and 30-min cycle timeouts since 2026-04-26 20:55 UTC.
-        # Buffer now accumulates in-memory; a background thread flusher
-        # should be added separately.
-        # if should_flush:
-        #     _flush_buffer()
+        # Inline _flush_buffer() removed 2026-04-29: it blocked the event
+        # loop with sequential DB INSERTs from inside async collector
+        # paths. Flushing now happens in start_background_flusher() below,
+        # which runs on its own kernel thread.
         _ = should_flush
 
 
@@ -415,3 +410,46 @@ def get_usage_history(provider: str, hours: int = 24) -> list[dict]:
     except Exception as e:
         logger.warning(f"Usage history query failed: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Background flusher thread
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+_BG_FLUSH_INTERVAL_SEC = 5.0
+_bg_flusher_started = False
+_bg_flusher_lock = _threading.Lock()
+
+
+def _bg_flusher_loop():
+    while True:
+        try:
+            time.sleep(_BG_FLUSH_INTERVAL_SEC)
+            with _buffer_lock:
+                pending = len(_buffer)
+            if pending > 0:
+                _flush_buffer()
+        except Exception as _e:
+            logger.warning(f"[api_usage_bg_flusher] iteration failed: {_e}")
+            try:
+                time.sleep(_BG_FLUSH_INTERVAL_SEC)
+            except Exception:
+                pass
+
+
+def start_background_flusher() -> None:
+    """Start the background flusher thread (idempotent)."""
+    global _bg_flusher_started
+    with _bg_flusher_lock:
+        if _bg_flusher_started:
+            return
+        t = _threading.Thread(
+            target=_bg_flusher_loop,
+            name="api_usage_bg_flusher",
+            daemon=True,
+        )
+        t.start()
+        _bg_flusher_started = True
+        logger.info(f"[api_usage_bg_flusher] started (flush every {_BG_FLUSH_INTERVAL_SEC}s)")

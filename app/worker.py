@@ -17,6 +17,7 @@ import functools
 import logging
 import sys
 import os
+import traceback as _traceback_mod
 import time
 from datetime import datetime, timezone, date
 from typing import Optional
@@ -41,6 +42,27 @@ logging.basicConfig(
 logger = logging.getLogger("worker")
 
 _current_cycle_stats = None
+
+
+def _record_cycle_error(
+    error_type: str,
+    error_message: str,
+    cycle_phase: str = "unknown",
+    severity: str = "caught",
+    consecutive_failure_count: int | None = None,
+) -> None:
+    """Record a cycle exception to cycle_errors table. Never raises."""
+    try:
+        from app.database import execute as _exec
+        tb = _traceback_mod.format_exc()
+        _exec(
+            """INSERT INTO cycle_errors
+                (error_type, error_message, traceback, cycle_phase, severity, consecutive_failure_count)
+            VALUES (%s, %s, %s, %s, %s, %s)""",
+            (error_type, error_message[:2000], tb[:8000], cycle_phase, severity, consecutive_failure_count),
+        )
+    except Exception as _e:
+        logger.warning(f"[cycle_errors] failed to record error: {_e}")
 
 
 # =============================================================================
@@ -3332,6 +3354,14 @@ async def main():
 
     logger.error("[startup] schema fixes complete, diagnostics will fire in 60s via independent loop")
 
+    # Start background API-usage flusher (drains track_api_call buffer without blocking event loop)
+    try:
+        from app.api_usage_tracker import start_background_flusher
+        start_background_flusher()
+        logger.error("[startup] api_usage background flusher started")
+    except Exception as _bgf_err:
+        logger.warning(f"[startup] api_usage background flusher failed to start: {_bgf_err}")
+
     # Seed methodology hashes (idempotent — skips existing)
     try:
         from app.methodology_hashes import register_methodology
@@ -3566,11 +3596,24 @@ async def main():
                         )
                         raise SystemExit(1)
                     logger.error(f"[main_loop] DB failure #{consecutive_cycle_db_failures}: {db_err}")
+                    _record_cycle_error(
+                        error_type=type(db_err).__name__,
+                        error_message=str(db_err),
+                        cycle_phase="cycle_db",
+                        severity="fatal" if consecutive_cycle_db_failures >= 5 else "caught",
+                        consecutive_failure_count=consecutive_cycle_db_failures,
+                    )
                     await asyncio.sleep(60)
                 except asyncio.CancelledError:
                     raise
                 except Exception as cycle_err:
-                    logger.error(f"[main_loop] cycle error: {type(cycle_err).__name__}: {cycle_err}")
+                    logger.critical(f"[main_loop] cycle error (caught — see cycle_errors table): {type(cycle_err).__name__}: {cycle_err}")
+                    _record_cycle_error(
+                        error_type=type(cycle_err).__name__,
+                        error_message=str(cycle_err),
+                        cycle_phase="unknown",
+                        severity="caught",
+                    )
                     await asyncio.sleep(60)
         else:
             # Single-run mode: run both cycles (backward compat)
