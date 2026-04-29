@@ -1769,7 +1769,8 @@ async def run_slow_cycle():
             try:
                 from app.state_attestation import attest_state
                 if rpi_results:
-                    attest_state("rpi_components", [
+                    _loop = asyncio.get_event_loop()
+                    await _loop.run_in_executor(None, attest_state, "rpi_components", [
                         {"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")}
                         for r in rpi_results if isinstance(r, dict)
                     ])
@@ -2237,7 +2238,8 @@ async def run_slow_cycle():
             from app.state_attestation import attest_state
             signals = div_result.get("divergence_signals", [])
             if signals:
-                attest_state("divergence_signals", [
+                _loop = asyncio.get_event_loop()
+                await _loop.run_in_executor(None, attest_state, "divergence_signals", [
                     {"type": s.get("type"), "severity": s.get("severity")}
                     for s in signals
                 ])
@@ -2362,7 +2364,8 @@ async def run_slow_cycle():
         from app.database import fetch_all
         prov_rows = fetch_all("SELECT source_domain, attestation_hash, proved_at FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '2 hours'")
         if prov_rows:
-            attest_state("provenance", [dict(r) for r in prov_rows])
+            _loop = asyncio.get_event_loop()
+            await _loop.run_in_executor(None, attest_state, "provenance", [dict(r) for r in prov_rows])
     except Exception as e:
         logger.debug(f"Provenance attestation skipped: {e}")
 
@@ -2402,7 +2405,8 @@ async def run_slow_cycle():
             try:
                 from app.state_attestation import attest_state
                 if discovered or promoted:
-                    attest_state("psi_discoveries", [{"synced": synced, "discovered": discovered, "enriched": enriched, "promoted": promoted}])
+                    _loop = asyncio.get_event_loop()
+                    await _loop.run_in_executor(None, attest_state, "psi_discoveries", [{"synced": synced, "discovered": discovered, "enriched": enriched, "promoted": promoted}])
             except Exception as ae:
                 logger.debug(f"PSI discovery attestation skipped: {ae}")
         else:
