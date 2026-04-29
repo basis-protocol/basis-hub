@@ -564,7 +564,8 @@ async def collect_governance_reads(client: httpx.AsyncClient) -> list[dict]:
     try:
         from app.state_attestation import attest_state
         if all_components:
-            attest_state("governance_reads", [
+            _loop = asyncio.get_event_loop()
+            await _loop.run_in_executor(None, attest_state, "governance_reads", [
                 {"slug": c.get("entity_slug"), "id": c.get("component_id"), "score": c.get("normalized_score")}
                 for c in all_components
             ])
@@ -813,9 +814,11 @@ async def collect_smart_contract_components(
 
     # Attest smart contract components
     try:
+        from functools import partial
         from app.state_attestation import attest_state
         if components:
-            attest_state("smart_contracts", [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components], entity_id=stablecoin_id)
+            _loop = asyncio.get_event_loop()
+            await _loop.run_in_executor(None, partial(attest_state, "smart_contracts", [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components], entity_id=stablecoin_id))
     except Exception as ae:
         pass  # attestation is non-critical
 

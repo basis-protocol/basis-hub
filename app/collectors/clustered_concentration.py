@@ -12,6 +12,7 @@ time — those edges are pruned on a 180-day rolling basis.
 Runs daily in the slow cycle.  Never raises — all errors logged and skipped.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -334,7 +335,8 @@ async def collect_clustered_concentration() -> dict:
             # Attest
             try:
                 from app.state_attestation import attest_state
-                attest_state("clustered_concentration", [{
+                _loop = asyncio.get_event_loop()
+                await _loop.run_in_executor(None, attest_state, "clustered_concentration", [{
                     "stablecoin": symbol.upper(),
                     "snapshot_date": today.isoformat(),
                     "clustered_gini": metrics["clustered_gini"],

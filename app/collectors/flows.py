@@ -257,14 +257,15 @@ async def collect_flows_components(
         logger.warning("ETHERSCAN_API_KEY not set — skipping flows collection")
         return []
 
-    cfg = _get_stablecoin_config(stablecoin_id)
+    _fl = asyncio.get_event_loop()
+    cfg = await _fl.run_in_executor(None, _get_stablecoin_config, stablecoin_id)
     if not cfg:
         return []
 
     contract = cfg["contract"]
     decimals = cfg["decimals"]
-    price = _get_current_price(stablecoin_id)
-    market_cap = _get_market_cap(stablecoin_id)
+    price = await _fl.run_in_executor(None, _get_current_price, stablecoin_id)
+    market_cap = await _fl.run_in_executor(None, _get_market_cap, stablecoin_id)
 
     # Fetch recent transfers
     transfers = await _fetch_recent_transfers(client, contract, api_key)
@@ -314,7 +315,7 @@ async def collect_flows_components(
     })
 
     # 4. supply_change_velocity (from stored market cap history)
-    velocity = _compute_supply_change_velocity(stablecoin_id)
+    velocity = await _fl.run_in_executor(None, _compute_supply_change_velocity, stablecoin_id)
     if velocity is not None:
         velocity_score = _normalize_velocity(velocity)
         components.append({
@@ -326,7 +327,7 @@ async def collect_flows_components(
         })
 
     # 5. unusual_minting_detection (z-score vs 30d rolling)
-    z_score = _compute_unusual_minting(stablecoin_id, mint_usd)
+    z_score = await _fl.run_in_executor(None, _compute_unusual_minting, stablecoin_id, mint_usd)
     # z_score is None when insufficient history — default to neutral score
     if z_score is None:
         z_raw = 0.0
@@ -346,7 +347,8 @@ async def collect_flows_components(
     try:
         from app.state_attestation import attest_state
         if components:
-            attest_state("flows", [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components], entity_id=stablecoin_id)
+            _attest_records = [{"id": c.get("component_id"), "score": c.get("normalized_score")} for c in components]
+            await _fl.run_in_executor(None, attest_state, "flows", _attest_records, stablecoin_id)
     except Exception:
         pass  # attestation is non-critical
 

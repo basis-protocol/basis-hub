@@ -254,7 +254,8 @@ async def run_pool_wallet_collection(max_pages_per_pool: int = 30) -> dict:
     try:
         from app.state_attestation import attest_state
         if total_discovered > 0:
-            attest_state("pool_wallet_discovery", [{
+            _loop = asyncio.get_event_loop()
+            await _loop.run_in_executor(None, attest_state, "pool_wallet_discovery", [{
                 "pools": pools_processed,
                 "discovered": total_discovered,
                 "seeded": total_seeded,

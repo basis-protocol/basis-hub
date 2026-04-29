@@ -14,6 +14,7 @@ Components produced:
 Data source: Parallel.ai Task API (structured JSON output)
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -537,7 +538,8 @@ async def run_web_research_collection() -> list[dict]:
         from app.state_attestation import attest_state
         scored = [r for r in results if "score" in r]
         if scored:
-            attest_state("web_research", [
+            _loop = asyncio.get_event_loop()
+            await _loop.run_in_executor(None, attest_state, "web_research", [
                 {"type": r["entity_type"], "slug": r["entity_slug"],
                  "component": r["component"], "score": r["score"]}
                 for r in scored

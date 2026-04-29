@@ -665,7 +665,8 @@ async def collect_oracle_readings() -> dict:
 
                 try:
                     from app.state_attestation import attest_state
-                    attest_state("oracle_readings", [{
+                    _loop = asyncio.get_event_loop()
+                    await _loop.run_in_executor(None, attest_state, "oracle_readings", [{
                         "oracle_address": oracle["oracle_address"],
                         "oracle_price": oracle_price,
                         "deviation_pct": deviation_pct,

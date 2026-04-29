@@ -937,6 +937,7 @@ async def run_fast_cycle():
         timeout=30, follow_redirects=True,
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     )
+    _fc_loop = asyncio.get_event_loop()
     try:
         for idx, sid in enumerate(stablecoins):
             if sid in KNOWN_HANGING_COINS or sid in _runtime_blacklist:
@@ -950,9 +951,9 @@ async def run_fast_cycle():
             logger.error(f"[fc-2] starting coin {idx+1}/{len(stablecoins)}: {sid}")
             is_promoted = sid not in STABLECOIN_REGISTRY
             if is_promoted:
-                cfg = get_stablecoin_config(sid)
+                cfg = await _fc_loop.run_in_executor(None, get_stablecoin_config, sid)
                 if cfg:
-                    _mark_scoring_status(cfg["coingecko_id"], "in_progress")
+                    await _fc_loop.run_in_executor(None, _mark_scoring_status, cfg["coingecko_id"], "in_progress")
             sid_t0 = time.time()
             try:
                 result = await asyncio.wait_for(
@@ -962,9 +963,9 @@ async def run_fast_cycle():
                 logger.error(f"[fc-3] coin {sid} computed in {sid_elapsed:.1f}s, score={'score' in result}")
                 results.append(result)
                 if is_promoted and "score" in result:
-                    cfg = get_stablecoin_config(sid)
+                    cfg = await _fc_loop.run_in_executor(None, get_stablecoin_config, sid)
                     if cfg:
-                        _mark_scoring_status(cfg["coingecko_id"], "scored")
+                        await _fc_loop.run_in_executor(None, _mark_scoring_status, cfg["coingecko_id"], "scored")
                 if sid_elapsed >= SLOW_SID_THRESHOLD_SEC:
                     logger.error(f"[slow_stablecoin] {sid} scored in {sid_elapsed:.1f}s")
                 await asyncio.sleep(0.5)
@@ -999,7 +1000,8 @@ async def run_fast_cycle():
         try:
             from app.state_attestation import attest_state
             if psi_results:
-                attest_state("psi_components", [{"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")} for r in psi_results if isinstance(r, dict)])
+                _psi_attest = [{"slug": r.get("protocol_slug", ""), "score": r.get("overall_score")} for r in psi_results if isinstance(r, dict)]
+                await _fc_loop.run_in_executor(None, attest_state, "psi_components", _psi_attest)
         except Exception as ae:
             logger.debug(f"PSI attestation skipped: {ae}")
     except Exception as e:
