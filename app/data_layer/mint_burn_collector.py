@@ -125,35 +125,34 @@ def _safe_float(val):
         return None
 
 
-def _store_mint_burn_events(events: list[dict]):
+async def _store_mint_burn_events(events: list[dict]):
     """Store mint/burn events to database (per-row transactions)."""
     if not events:
         return
 
-    from app.database import get_cursor
+    from app.database import execute_async
 
     stored = 0
     errors = 0
 
     for evt in events:
         try:
-            with get_cursor() as cur:
-                cur.execute(
-                    """INSERT INTO mint_burn_events
-                       (stablecoin_id, chain, event_type, amount, tx_hash,
-                        block_number, from_address, to_address, timestamp,
-                        raw_data, collected_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                       ON CONFLICT (chain, tx_hash, event_type) DO NOTHING""",
-                    (
-                        evt["stablecoin_id"], evt["chain"], evt["event_type"],
-                        _safe_float(evt["amount"]), evt["tx_hash"],
-                        evt.get("block_number"),
-                        evt.get("from_address"), evt.get("to_address"),
-                        evt.get("timestamp"),
-                        json.dumps(evt.get("raw_data")) if evt.get("raw_data") else None,
-                    ),
-                )
+            await execute_async(
+                """INSERT INTO mint_burn_events
+                   (stablecoin_id, chain, event_type, amount, tx_hash,
+                    block_number, from_address, to_address, timestamp,
+                    raw_data, collected_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                   ON CONFLICT (chain, tx_hash, event_type) DO NOTHING""",
+                (
+                    evt["stablecoin_id"], evt["chain"], evt["event_type"],
+                    _safe_float(evt["amount"]), evt["tx_hash"],
+                    evt.get("block_number"),
+                    evt.get("from_address"), evt.get("to_address"),
+                    evt.get("timestamp"),
+                    json.dumps(evt.get("raw_data")) if evt.get("raw_data") else None,
+                ),
+            )
             stored += 1
         except Exception as e:
             errors += 1
@@ -166,10 +165,10 @@ def _store_mint_burn_events(events: list[dict]):
         logger.info(f"Stored {stored} mint/burn events")
 
 
-def _get_last_block(stablecoin_id: str, chain: str) -> int:
+async def _get_last_block(stablecoin_id: str, chain: str) -> int:
     """Get the last block we collected for this stablecoin on this chain."""
-    from app.database import fetch_one
-    row = fetch_one(
+    from app.database import fetch_one_async
+    row = await fetch_one_async(
         """SELECT MAX(block_number) as last_block FROM mint_burn_events
            WHERE stablecoin_id = %s AND chain = %s""",
         (stablecoin_id, chain),
@@ -185,9 +184,9 @@ async def run_mint_burn_collection() -> dict:
 
     Returns summary + any anomaly signals.
     """
-    from app.database import fetch_all
+    from app.database import fetch_all_async
 
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT id, symbol, contract, decimals
            FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL"""
     )
@@ -207,7 +206,7 @@ async def run_mint_burn_collection() -> dict:
 
             for chain in ["ethereum", "base", "arbitrum"]:
                 try:
-                    last_block = _get_last_block(stablecoin_id, chain)
+                    last_block = await _get_last_block(stablecoin_id, chain)
                     transfers = await _fetch_token_transfers(
                         client, contract, chain, start_block=last_block
                     )
@@ -266,7 +265,7 @@ async def run_mint_burn_collection() -> dict:
                             })
 
                     if events:
-                        _store_mint_burn_events(events)
+                        await _store_mint_burn_events(events)
 
                 except Exception as e:
                     logger.warning(
@@ -276,9 +275,9 @@ async def run_mint_burn_collection() -> dict:
     # Emit discovery signals for large events
     if large_events:
         try:
-            from app.database import execute as db_execute
+            from app.database import execute_async
             for evt in large_events[:10]:  # Cap at 10 signals per cycle
-                db_execute(
+                await execute_async(
                     """INSERT INTO discovery_signals
                        (signal_type, domain, entity_id, severity, title, details, created_at)
                        VALUES ('large_mint_burn', 'sii', %s, 'notable', %s, %s, NOW())
@@ -293,7 +292,7 @@ async def run_mint_burn_collection() -> dict:
             logger.debug(f"Mint/burn signal emission failed: {e}")
 
     # Check for redemption acceleration pattern
-    anomalies = _detect_redemption_acceleration()
+    anomalies = await _detect_redemption_acceleration()
 
     # Provenance
     try:
@@ -317,19 +316,19 @@ async def run_mint_burn_collection() -> dict:
     }
 
 
-def _detect_redemption_acceleration() -> list[dict]:
+async def _detect_redemption_acceleration() -> list[dict]:
     """
     Detect acceleration patterns: burns >$1M in last 6h significantly above
     30d mean. Emit discovery signals.
     """
-    from app.database import fetch_all
+    from app.database import fetch_all_async
     import statistics
 
     anomalies = []
 
     try:
         # Get 6h burn counts per stablecoin
-        recent = fetch_all(
+        recent = await fetch_all_async(
             """SELECT stablecoin_id, COUNT(*) as burn_count, SUM(amount) as total_amount
                FROM mint_burn_events
                WHERE event_type = 'burn' AND amount >= 1000000
@@ -342,7 +341,7 @@ def _detect_redemption_acceleration() -> list[dict]:
             recent_count = row["burn_count"]
 
             # Get 30d mean per 6h window
-            historical = fetch_all(
+            historical = await fetch_all_async(
                 """SELECT DATE_TRUNC('hour', timestamp) as hour_bucket,
                           COUNT(*) as burn_count
                    FROM mint_burn_events
