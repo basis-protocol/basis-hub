@@ -343,7 +343,7 @@ async def run_health_check(request: Request, background_tasks: BackgroundTasks):
             import app.ops.tools.health_checker as _hc_mod
             importlib.reload(_hc_mod)
             try:
-                results = _hc_mod.run_all_checks()
+                results = asyncio.run(_hc_mod.run_all_checks())
                 # Fire alerts for failures
                 import asyncio
                 try:
@@ -1573,7 +1573,7 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
         data_layer_live = {}
         try:
             from app.data_layer.state_growth import get_state_growth
-            live = get_state_growth()
+            live = await get_state_growth()
             data_layer_live = {
                 "tables": live.get("tables", {}),
                 "by_category": live.get("by_category", {}),

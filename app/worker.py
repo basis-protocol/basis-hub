@@ -1536,7 +1536,7 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     try:
         from app.agent.watcher import run_agent_cycle
-        result = run_agent_cycle()
+        result = await run_agent_cycle()
         if result:
             logger.info(f"Agent cycle: {result.get('assessments', 0)} assessments")
     except Exception as e:
@@ -1548,7 +1548,7 @@ async def run_fast_cycle():
     try:
         from app.ops.tools.health_checker import run_all_checks
         logger.info("Running health sweep...")
-        health_results = run_all_checks()
+        health_results = await run_all_checks()
         healthy_count = sum(1 for r in health_results if r.get("status") == "healthy")
         total_count = len(health_results)
         logger.info(f"Health sweep: {healthy_count}/{total_count} healthy")
@@ -1569,7 +1569,7 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     try:
         from app.pulse_generator import run_daily_pulse
-        run_daily_pulse()
+        await run_daily_pulse()
     except Exception as e:
         logger.warning(f"Daily pulse generation failed: {e}")
 
@@ -1642,7 +1642,7 @@ async def run_fast_cycle():
     # Pipeline 9: Parameter change check (lightweight — every cycle)
     try:
         from app.collectors.parameter_history import check_parameter_changes
-        param_result = check_parameter_changes()
+        param_result = await check_parameter_changes()
         if param_result.get("changes_detected", 0) > 0:
             logger.warning(f"Parameter changes detected: {param_result['changes_detected']}")
         elif param_result.get("parameters_checked", 0) > 0:
@@ -1686,7 +1686,7 @@ async def run_fast_cycle():
     # Snapshot row counts for dashboard delta computation (pg_stat, instant)
     try:
         from app.data_layer.state_growth import snapshot_row_counts
-        snapshot_row_counts()
+        await snapshot_row_counts()
     except Exception:
         pass
 

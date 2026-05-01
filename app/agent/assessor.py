@@ -76,7 +76,7 @@ async def _get_previous_assessment(wallet_address: str) -> dict | None:
     return dict(row) if row else None
 
 
-def generate_assessment(
+async def generate_assessment(
     wallet_address: str,
     trigger_type: str,
     trigger_detail: dict,
@@ -93,14 +93,14 @@ def generate_assessment(
     """
     # Fetch data if not provided
     if current_holdings is None:
-        current_holdings = _get_wallet_holdings(wallet_address)
+        current_holdings = await _get_wallet_holdings(wallet_address)
     if not current_holdings:
         return None
 
     if sii_scores is None:
-        sii_scores = _get_sii_scores()
+        sii_scores = await _get_sii_scores()
 
-    deltas = _get_sii_7d_deltas()
+    deltas = await _get_sii_7d_deltas()
 
     # Compute risk from holdings
     if current_risk is None:
@@ -109,7 +109,7 @@ def generate_assessment(
         return None
 
     if previous_assessment is None:
-        previous_assessment = _get_previous_assessment(wallet_address)
+        previous_assessment = await _get_previous_assessment(wallet_address)
 
     # Build holdings snapshot with SII data
     holdings_snapshot = []

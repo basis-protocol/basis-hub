@@ -39,15 +39,16 @@ def compute_batch_hash(records: list[dict]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-async def store_attestation(
+def store_attestation(
     domain: str,
     batch_hash: str,
     record_count: int,
     entity_id: str = None,
     methodology_version: str = None,
 ) -> None:
-    """Store a state attestation record."""
-    await execute_async(
+    """Store a state attestation record. Sync because called from sync
+    attest_state(), which itself has many sync callers."""
+    execute(
         """
         INSERT INTO state_attestations
             (domain, entity_id, batch_hash, record_count, methodology_version, cycle_timestamp)
@@ -67,10 +68,12 @@ def attest_state(domain: str, records: list[dict], entity_id: str = None) -> str
     return batch_hash
 
 
-async def get_latest_attestation(domain: str, entity_id: str = None) -> dict | None:
-    """Get the most recent attestation for a domain/entity."""
+def get_latest_attestation(domain: str, entity_id: str = None) -> dict | None:
+    """Get the most recent attestation for a domain/entity. Sync because
+    called from sync report.py:_get_state_hashes which has many sync
+    callers in assemble_*_report functions."""
     if entity_id:
-        return await fetch_one_async(
+        return fetch_one(
             """
             SELECT domain, entity_id, batch_hash, record_count, methodology_version, cycle_timestamp
             FROM state_attestations
@@ -79,7 +82,7 @@ async def get_latest_attestation(domain: str, entity_id: str = None) -> dict | N
             """,
             (domain, entity_id),
         )
-    return await fetch_one_async(
+    return fetch_one(
         """
         SELECT domain, entity_id, batch_hash, record_count, methodology_version, cycle_timestamp
         FROM state_attestations

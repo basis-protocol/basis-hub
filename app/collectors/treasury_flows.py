@@ -175,7 +175,7 @@ async def _fetch_transfers(
 # Event Detector 1: Large Single Transfer
 # ---------------------------------------------------------------------------
 
-def detect_large_transfers(
+async def detect_large_transfers(
     transfers: list[dict],
     wallet_address: str,
     labels: dict,
@@ -185,7 +185,7 @@ def detect_large_transfers(
     wallet_lower = wallet_address.lower()
 
     for tx in transfers:
-        usd_value = _transfer_value_usd(tx)
+        usd_value = await _transfer_value_usd(tx)
         if usd_value < LARGE_TRANSFER_THRESHOLD:
             continue
 
@@ -215,7 +215,7 @@ def detect_large_transfers(
             "detected_at": datetime.now(timezone.utc).isoformat(),
             "confidence": "high",
             "severity": severity,
-            "stablecoins_involved": [symbol] if _get_token_price_usd(tx.get("contractAddress", "")) > 0 else [],
+            "stablecoins_involved": [symbol] if (await _get_token_price_usd(tx.get("contractAddress", ""))) > 0 else [],
         })
 
     return events
@@ -225,7 +225,7 @@ def detect_large_transfers(
 # Event Detector 2: TWAP Conversion Pattern
 # ---------------------------------------------------------------------------
 
-def detect_twap_pattern(
+async def detect_twap_pattern(
     transfers: list[dict],
     wallet_address: str,
 ) -> list[dict]:
@@ -262,7 +262,7 @@ def detect_twap_pattern(
             # Compute USD values
             fills = []
             for tx in token_txs:
-                usd = _transfer_value_usd(tx)
+                usd = await _transfer_value_usd(tx)
                 ts_val = int(tx.get("timeStamp", 0))
                 if usd > 0 and ts_val > 0:
                     fills.append({"usd": usd, "ts": ts_val, "tx": tx})
@@ -458,7 +458,7 @@ async def detect_quality_shift(wallet_address: str) -> list[dict]:
 # Event Detector 5: Rebalancing Event
 # ---------------------------------------------------------------------------
 
-def detect_rebalance(
+async def detect_rebalance(
     transfers: list[dict],
     wallet_address: str,
     labels: dict,
@@ -487,7 +487,7 @@ def detect_rebalance(
     for tx in recent:
         from_addr = (tx.get("from") or "").lower()
         to_addr = (tx.get("to") or "").lower()
-        usd = _transfer_value_usd(tx)
+        usd = await _transfer_value_usd(tx)
         if usd < 10_000:
             continue
 
@@ -575,10 +575,10 @@ async def collect_treasury_events(
                 wallet_events = []
 
                 # 1. Large transfers
-                wallet_events.extend(detect_large_transfers(transfers, addr, labels))
+                wallet_events.extend(await detect_large_transfers(transfers, addr, labels))
 
                 # 2. TWAP patterns
-                wallet_events.extend(detect_twap_pattern(transfers, addr))
+                wallet_events.extend(await detect_twap_pattern(transfers, addr))
 
                 # 3. Concentration drift (reads existing DB data, no API call)
                 wallet_events.extend(await detect_concentration_drift(addr))
@@ -587,7 +587,7 @@ async def collect_treasury_events(
                 wallet_events.extend(await detect_quality_shift(addr))
 
                 # 5. Rebalance (uses transfers already fetched)
-                wallet_events.extend(detect_rebalance(transfers, addr, labels))
+                wallet_events.extend(await detect_rebalance(transfers, addr, labels))
 
                 # Store events
                 for event in wallet_events:

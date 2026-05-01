@@ -11,6 +11,7 @@ Data sources:
 Pattern follows psi_collector.py — collect → score_entity → store → attest.
 """
 
+import asyncio
 import json
 import hashlib
 import logging
@@ -574,7 +575,7 @@ def run_bri_scoring() -> list[dict]:
             result = score_bridge(entity, bridges_data, holder_cache=holder_cache,
                                   hacks_cache=hacks_cache)
             if result:
-                store_bridge_score(result)
+                asyncio.run(store_bridge_score(result))
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

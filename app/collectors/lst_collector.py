@@ -15,6 +15,7 @@ Data sources:
 Pattern follows flows.py / psi_collector.py — collect → normalize → store → attest.
 """
 
+import asyncio
 import json
 import hashlib
 import logging
@@ -608,7 +609,7 @@ def run_lsti_scoring() -> list[dict]:
             result = score_lst(entity, eth_price=eth_price, pool_cache=pool_cache,
                                holder_cache=holder_cache, hacks_cache=hacks_cache)
             if result:
-                store_lst_score(result)
+                asyncio.run(store_lst_score(result))
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

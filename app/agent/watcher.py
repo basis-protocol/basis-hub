@@ -45,7 +45,7 @@ async def _process_assessment(wallet_address: str, trigger_type: str,
     """Generate, classify, and store a single assessment."""
     previous = await _get_previous_assessment(wallet_address)
 
-    assessment = generate_assessment(
+    assessment = await generate_assessment(
         wallet_address=wallet_address,
         trigger_type=trigger_type,
         trigger_detail=trigger_detail,

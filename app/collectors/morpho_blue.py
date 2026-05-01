@@ -22,6 +22,7 @@ Feature flag: MORPHO_BLUE_COLLECTOR_ENABLED (default: true).
 Cadence: hourly, invoked from worker fast cycle. Never raises.
 """
 
+import asyncio
 import logging
 import os
 from collections import defaultdict
@@ -348,7 +349,7 @@ def run_morpho_blue_collection() -> dict[str, Any]:
     stable_usd_total = 0.0
     for (chain, sym), tvl in agg.items():
         is_stable = _is_stablecoin_token(None, sym)
-        if _write_exposure_row(chain, sym, tvl, is_stable):
+        if asyncio.run(_write_exposure_row(chain, sym, tvl, is_stable)):
             rows_written += 1
             if is_stable:
                 stable_rows += 1

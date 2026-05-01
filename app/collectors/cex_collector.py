@@ -15,6 +15,7 @@ Data sources:
 Per-exchange parsers follow the CDA pattern (type-aware verification per issuer).
 """
 
+import asyncio
 import json
 import hashlib
 import logging
@@ -334,7 +335,7 @@ def extract_cex_raw_values(entity: dict, hacks_cache: list = None) -> dict:
     # --- Phase 3B: Regulatory registry checks ---
     try:
         from app.collectors.regulatory_scraper import check_exchange_regulatory
-        reg_scores = check_exchange_regulatory(slug)
+        reg_scores = asyncio.run(check_exchange_regulatory(slug))
         if reg_scores:
             for comp_id, live_score in reg_scores.items():
                 static_score = static.get(comp_id, 0)
@@ -426,7 +427,7 @@ def run_cxri_scoring() -> list[dict]:
         try:
             result = score_cex(entity, hacks_cache=hacks_cache)
             if result:
-                store_cex_score(result)
+                asyncio.run(store_cex_score(result))
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

@@ -5,6 +5,7 @@ Fetches protocol data from DeFiLlama's free API and scores protocols
 using the generic scoring engine with the PSI v0.1 definition.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -1649,7 +1650,7 @@ def run_psi_scoring():
                             "content_hash": inputs_hash,
                             "methodology_version": result["version"],
                         }
-                        event_id = store_assessment(event)
+                        event_id = asyncio.run(store_assessment(event))
                         if event_id:
                             logger.info(f"PSI event: {slug} {severity} ({delta:+.1f} pts)")
             except Exception as e:
@@ -1828,7 +1829,7 @@ def run_chain_discovery() -> dict:
                 "content_hash": None,
                 "methodology_version": "chain-discovery-v1",
             }
-            store_assessment(event)
+            asyncio.run(store_assessment(event))
             logger.info(f"Chain expansion event created for {chain}: ${candidate['stablecoin_tvl']/1e6:,.0f}M")
 
         except Exception as e:

@@ -16,6 +16,7 @@ Data sources:
 Composition: TTI x PSI = CQI pattern for "is this RWA safe in this protocol?"
 """
 
+import asyncio
 import json
 import hashlib
 import logging
@@ -530,7 +531,7 @@ def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
         from app.services.tti_disclosure_collector import (
             collect_entity_disclosures, map_disclosure_to_components,
         )
-        disclosure_data = collect_entity_disclosures(slug, entity.get("name", slug))
+        disclosure_data = asyncio.run(collect_entity_disclosures(slug, entity.get("name", slug)))
         if disclosure_data:
             disclosure_components = map_disclosure_to_components(disclosure_data, static)
             raw.update(disclosure_components)
@@ -636,7 +637,7 @@ def run_tti_scoring() -> list[dict]:
         try:
             result = score_tti(entity, holder_cache=holder_cache)
             if result:
-                store_tti_score(result)
+                asyncio.run(store_tti_score(result))
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

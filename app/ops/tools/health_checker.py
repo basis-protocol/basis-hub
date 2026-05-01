@@ -2,6 +2,7 @@
 Health checker — direct database queries against existing Basis tables.
 All queries are read-only SELECT with statement_timeout.
 """
+import asyncio
 import logging
 import os
 import time
@@ -260,11 +261,11 @@ def check_coingecko_usage():
     }
 
 
-def check_integrity():
+async def check_integrity():
     """Check integrity status via direct DB query (not HTTP — avoids self-call latency)."""
     try:
         from app.integrity import check_all
-        data = check_all()
+        data = await check_all()
         domains = data.get("domains", {})
         failing = [d for d, v in domains.items() if v.get("status") not in ("fresh", "healthy", "empty")]
         status = "healthy" if not failing else ("degraded" if len(failing) < 3 else "down")
@@ -536,6 +537,8 @@ async def run_all_checks():
     for check_fn in ALL_CHECKS:
         try:
             result = check_fn()
+            if asyncio.iscoroutine(result):
+                result = await result
             results.append(result)
             await execute_async(
                 "INSERT INTO ops_health_checks (system, status, details) VALUES (%s, %s, %s)",

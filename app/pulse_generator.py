@@ -256,7 +256,7 @@ async def run_daily_pulse():
 
         state_root_inputs = {}
         for domain in ATTESTATION_DOMAINS:
-            att = await get_latest_attestation(domain)
+            att = get_latest_attestation(domain)
             if att:
                 state_root_inputs[domain] = {
                     "batch_hash": att["batch_hash"],

@@ -210,12 +210,13 @@ def route(method: str, params: list, chain: str = "ethereum",
 # Usage tracking — hourly upserts into rpc_provider_usage
 # ---------------------------------------------------------------------------
 
-async def _track(provider: str, method: str, chain: str, status: str,
+def _track(provider: str, method: str, chain: str, status: str,
            fallback_reason: str | None = None) -> None:
     """Hourly counter upsert. Non-fatal on error — tracking must never
-    break an RPC call path."""
+    break an RPC call path. Sync because called from many fire-and-forget
+    sites; best-effort fast write is fine."""
     try:
-        await execute_async(
+        execute(
             """
             INSERT INTO rpc_provider_usage
                 (provider, method, chain, status, fallback_reason, hour, calls)

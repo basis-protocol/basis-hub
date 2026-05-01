@@ -17,6 +17,7 @@ Cache: 30 days (regulatory status changes slowly).
 Follows firecrawl_client + docs_scorer patterns.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -428,7 +429,7 @@ def run_regulatory_registry_checks() -> dict:
     all_results = {}
     for slug, names in EXCHANGE_LEGAL_NAMES.items():
         try:
-            result = check_exchange_regulatory(slug, names)
+            result = asyncio.run(check_exchange_regulatory(slug, names))
             all_results[slug] = result
         except Exception as e:
             logger.warning(f"Regulatory check failed for {slug}: {e}")
