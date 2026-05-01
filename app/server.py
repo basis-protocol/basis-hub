@@ -4,6 +4,7 @@ Basis Protocol - API Server
 Clean FastAPI server. Reads from database only. No data collection.
 """
 
+import asyncio
 import atexit
 import hashlib
 import hmac
@@ -4899,7 +4900,7 @@ async def verify_psi_score(slug: str):
 
     # Re-derive score from stored raw values
     from app.collectors.psi_collector import score_protocol_from_raw
-    recomputed = score_protocol_from_raw(slug, raw_values)
+    recomputed = await asyncio.to_thread(score_protocol_from_raw, slug, raw_values)
     recomputed_score = recomputed.get("overall_score") if recomputed else None
 
     hash_match = stored_hash == recomputed_hash if stored_hash else None
@@ -5015,7 +5016,7 @@ async def protocol_governance_history(slug: str):
     """Governance config snapshot history with change detection events."""
     try:
         from app.collectors.governance_detector import get_governance_history
-        return get_governance_history(slug)
+        return await asyncio.to_thread(get_governance_history, slug)
     except Exception as e:
         logger.error(f"governance-history failed for {slug}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -5026,7 +5027,7 @@ async def protocol_market_history(slug: str):
     """Market listing snapshot history with diffs and velocity events."""
     try:
         from app.collectors.collateral_coverage import get_market_history
-        return get_market_history(slug)
+        return await asyncio.to_thread(get_market_history, slug)
     except Exception as e:
         logger.error(f"market-history failed for {slug}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -7964,7 +7965,7 @@ async def drift_exploit_analysis():
     # 5. Market impact (DRIFT token from CoinGecko)
     try:
         from app.collectors.psi_collector import fetch_coingecko_token
-        token_data = fetch_coingecko_token("drift-protocol")
+        token_data = await asyncio.to_thread(fetch_coingecko_token, "drift-protocol")
         if token_data:
             market = token_data.get("market_data", {})
             result["market_impact"] = {

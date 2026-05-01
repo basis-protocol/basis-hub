@@ -12,6 +12,7 @@ Priority order:
 Each phase checks and updates the shared budget in ops.api_budget.
 """
 
+import asyncio
 import logging
 from app.budget.manager import ApiBudgetManager
 
@@ -130,7 +131,7 @@ async def _run_psi_phase(budget: ApiBudgetManager):
     try:
         from app.collectors.psi_collector import run_psi_scoring
         logger.info("Running PSI scoring...")
-        results = run_psi_scoring()
+        results = await asyncio.to_thread(run_psi_scoring)
         logger.info(f"PSI scoring complete: {len(results)} protocols scored")
     except Exception as e:
         logger.error(f"PSI scoring cycle failed: {e}")
@@ -139,14 +140,14 @@ async def _run_psi_phase(budget: ApiBudgetManager):
     try:
         from app.collectors.psi_collector import collect_collateral_exposure
         logger.info("Collecting protocol collateral exposure...")
-        collect_collateral_exposure()
+        await asyncio.to_thread(collect_collateral_exposure)
     except Exception as e:
         logger.error(f"Collateral exposure collection failed: {e}")
 
     # Sync collateral exposure data to auto-promote backlog
     try:
         from app.collectors.psi_collector import sync_collateral_to_backlog
-        synced = sync_collateral_to_backlog()
+        synced = await asyncio.to_thread(sync_collateral_to_backlog)
         logger.info(f"Synced {synced} unscored collateral stablecoins to backlog")
     except Exception as e:
         logger.error(f"Collateral-to-backlog sync failed: {e}")
@@ -156,9 +157,9 @@ async def _run_psi_phase(budget: ApiBudgetManager):
         from app.collectors.psi_collector import (
             discover_protocols, enrich_protocol_backlog, promote_eligible_protocols,
         )
-        discovered = discover_protocols()
-        enriched = enrich_protocol_backlog()
-        promoted = promote_eligible_protocols()
+        discovered = await asyncio.to_thread(discover_protocols)
+        enriched = await asyncio.to_thread(enrich_protocol_backlog)
+        promoted = await asyncio.to_thread(promote_eligible_protocols)
         logger.info(
             f"Protocol backlog: {discovered} discovered, "
             f"{enriched} enriched, {promoted} promoted"
@@ -169,7 +170,7 @@ async def _run_psi_phase(budget: ApiBudgetManager):
     # Discover chains needing coverage
     try:
         from app.collectors.psi_collector import run_chain_discovery
-        chain_result = run_chain_discovery()
+        chain_result = await asyncio.to_thread(run_chain_discovery)
         if chain_result.get("specs_generated", 0) > 0:
             logger.info(
                 f"Chain discovery: {chain_result['specs_generated']} new spec(s) "

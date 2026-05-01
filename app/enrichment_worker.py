@@ -558,11 +558,11 @@ async def run_enrichment_pipeline() -> dict:
             enrich_protocol_backlog,
             promote_eligible_protocols,
         )
-        collect_collateral_exposure()
-        synced = sync_collateral_to_backlog()
-        discovered = discover_protocols()
-        enriched = enrich_protocol_backlog()
-        promoted = promote_eligible_protocols()
+        await asyncio.to_thread(collect_collateral_exposure)
+        synced = await asyncio.to_thread(sync_collateral_to_backlog)
+        discovered = await asyncio.to_thread(discover_protocols)
+        enriched = await asyncio.to_thread(enrich_protocol_backlog)
+        promoted = await asyncio.to_thread(promote_eligible_protocols)
         return {
             "synced": synced, "discovered": discovered,
             "enriched": enriched, "promoted": promoted,

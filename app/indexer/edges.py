@@ -106,7 +106,7 @@ async def build_edges_for_wallet(
     chain_cfg = CHAIN_CONFIGS.get(chain, CHAIN_CONFIGS["ethereum"])
     explorer_base = chain_cfg["explorer_base"]
     chain_id = chain_cfg.get("chain_id", 1)
-    scored_contracts = get_chain_contracts(chain)
+    scored_contracts = await asyncio.to_thread(get_chain_contracts, chain)
     wallet_lower = wallet_address.lower()
 
     # Accumulate edges: (from, to) -> {count, total_value, first_ts, last_ts, tokens}
@@ -317,7 +317,7 @@ async def run_edge_builder(
                     )
             except Exception as e:
                 logger.error(f"[edge_builder] wallet {w['address'][:12]}... FAILED: {type(e).__name__}: {e}")
-                execute(
+                await execute_async(
                     """
                     INSERT INTO wallet_graph.edge_build_status (wallet_address, chain, status)
                     VALUES (%s, %s, 'pending')

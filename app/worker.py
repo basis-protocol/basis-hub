@@ -1036,7 +1036,7 @@ async def run_fast_cycle():
     try:
         from app.collectors.psi_collector import run_psi_scoring
         logger.info("Running PSI scoring cycle...")
-        psi_results = run_psi_scoring()
+        psi_results = await asyncio.to_thread(run_psi_scoring)
         logger.info(f"PSI scoring complete: {len(psi_results)} protocols scored")
         # Attest PSI scores
         try:
@@ -2379,7 +2379,7 @@ async def run_slow_cycle():
             # Protocol reports
             try:
                 from app.collectors.psi_collector import get_scoring_protocols
-                for slug in get_scoring_protocols():
+                for slug in await asyncio.to_thread(get_scoring_protocols):
                     try:
                         assemble_report_data("protocol", slug)
                         report_count += 1
@@ -2449,11 +2449,11 @@ async def run_slow_cycle():
 
         if hours_since >= 24:
             logger.info("Running PSI expansion pipeline...")
-            collect_collateral_exposure()
-            synced = sync_collateral_to_backlog()
-            discovered = discover_protocols()
-            enriched = enrich_protocol_backlog()
-            promoted = promote_eligible_protocols()
+            await asyncio.to_thread(collect_collateral_exposure)
+            synced = await asyncio.to_thread(sync_collateral_to_backlog)
+            discovered = await asyncio.to_thread(discover_protocols)
+            enriched = await asyncio.to_thread(enrich_protocol_backlog)
+            promoted = await asyncio.to_thread(promote_eligible_protocols)
             logger.info(
                 f"PSI expansion: {synced} stablecoins synced, {discovered} discovered, "
                 f"{enriched} enriched, {promoted} promoted"

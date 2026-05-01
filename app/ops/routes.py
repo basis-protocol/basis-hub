@@ -2,6 +2,7 @@
 Operations Hub API routes — all under /api/ops/*
 Protected by X-Admin-Key (same pattern as existing admin endpoints).
 """
+import asyncio
 import os
 import json
 import logging
@@ -1398,7 +1399,7 @@ async def ops_chain_candidates(request: Request):
     try:
         from app.collectors.psi_collector import discover_chain_candidates
 
-        candidates = discover_chain_candidates()
+        candidates = await asyncio.to_thread(discover_chain_candidates)
 
         # Check which have specs and serialise sets for JSON
         for c in candidates:
@@ -1421,7 +1422,7 @@ async def ops_chain_expand(request: Request):
     _check_admin_key(request)
     try:
         from app.collectors.psi_collector import run_chain_discovery
-        result = run_chain_discovery()
+        result = await asyncio.to_thread(run_chain_discovery)
         return result
     except HTTPException:
         raise
