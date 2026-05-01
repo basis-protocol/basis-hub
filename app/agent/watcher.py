@@ -8,7 +8,7 @@ Generates assessment events when trigger conditions are met.
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one
+from app.database import fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.agent.config import AGENT_CONFIG
 from app.agent.assessor import generate_assessment, _get_sii_scores
 from app.agent.classifier import classify_severity
@@ -17,9 +17,9 @@ from app.agent.store import store_assessment
 logger = logging.getLogger(__name__)
 
 
-def _get_previous_assessment(wallet_address: str) -> dict | None:
+async def _get_previous_assessment(wallet_address: str) -> dict | None:
     """Get the most recent assessment for a wallet (used as baseline)."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT wallet_risk_score, concentration_hhi,
                coverage_ratio, total_stablecoin_value, holdings_snapshot
         FROM assessment_events
@@ -29,9 +29,9 @@ def _get_previous_assessment(wallet_address: str) -> dict | None:
     return dict(row) if row else None
 
 
-def _broadcasts_today() -> int:
+async def _broadcasts_today() -> int:
     """Count how many broadcasts have been sent today."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT COUNT(*) AS cnt FROM assessment_events
         WHERE broadcast = TRUE
         AND created_at > CURRENT_DATE
@@ -39,11 +39,11 @@ def _broadcasts_today() -> int:
     return row["cnt"] if row else 0
 
 
-def _process_assessment(wallet_address: str, trigger_type: str,
+async def _process_assessment(wallet_address: str, trigger_type: str,
                         trigger_detail: dict, sii_scores: dict,
                         config: dict) -> dict | None:
     """Generate, classify, and store a single assessment."""
-    previous = _get_previous_assessment(wallet_address)
+    previous = await _get_previous_assessment(wallet_address)
 
     assessment = generate_assessment(
         wallet_address=wallet_address,
@@ -60,23 +60,23 @@ def _process_assessment(wallet_address: str, trigger_type: str,
     assessment["broadcast"] = broadcast
 
     # Enforce daily broadcast cap
-    if broadcast and _broadcasts_today() >= config["max_broadcasts_per_day"]:
+    if broadcast and await _broadcasts_today() >= config["max_broadcasts_per_day"]:
         logger.warning("Daily broadcast cap reached — downgrading to non-broadcast")
         assessment["broadcast"] = False
 
-    event_id = store_assessment(assessment)
+    event_id = await store_assessment(assessment)
     if event_id:
         assessment["id"] = event_id
     return assessment
 
 
-def detect_score_changes(config: dict, sii_scores: dict) -> list[dict]:
+async def detect_score_changes(config: dict, sii_scores: dict) -> list[dict]:
     """
     Detect SII score changes > threshold in the last 24h.
     Returns list of trigger dicts with affected stablecoin info.
     """
     threshold = config["score_change_threshold_pts"]
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT s.stablecoin_id, s.overall_score,
                h.overall_score AS prev_score
         FROM scores s
@@ -102,7 +102,7 @@ def detect_score_changes(config: dict, sii_scores: dict) -> list[dict]:
     return triggers
 
 
-def detect_large_movements(config: dict) -> list[dict]:
+async def detect_large_movements(config: dict) -> list[dict]:
     """
     Detect wallets with value changes > $1M since last assessment.
     Compares current wallet_holdings totals against previous assessment snapshots.
@@ -110,7 +110,7 @@ def detect_large_movements(config: dict) -> list[dict]:
     threshold = config["movement_threshold_usd"]
 
     # Get wallets with current holdings
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         WITH current_totals AS (
             SELECT wallet_address, SUM(value_usd) AS current_value
             FROM wallet_graph.wallet_holdings
@@ -150,7 +150,7 @@ def detect_large_movements(config: dict) -> list[dict]:
     return triggers
 
 
-def detect_concentration_shifts(config: dict) -> list[dict]:
+async def detect_concentration_shifts(config: dict) -> list[dict]:
     """
     Detect wallets where a single asset jumped from <20% to >40% of the wallet.
     Only for wallets with total value > $500K.
@@ -159,7 +159,7 @@ def detect_concentration_shifts(config: dict) -> list[dict]:
     to_pct = config["concentration_shift_to_pct"]
     min_value = config["concentration_min_wallet_value"]
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         WITH current_holdings AS (
             SELECT wh.wallet_address, wh.symbol, wh.pct_of_wallet, wh.value_usd
             FROM wallet_graph.wallet_holdings wh
@@ -177,7 +177,7 @@ def detect_concentration_shifts(config: dict) -> list[dict]:
     triggers = []
     for r in rows:
         # Check if this was previously below from_pct via the previous assessment
-        prev = _get_previous_assessment(r["wallet_address"])
+        prev = await _get_previous_assessment(r["wallet_address"])
         if prev and prev.get("holdings_snapshot"):
             prev_holdings = prev["holdings_snapshot"]
             if isinstance(prev_holdings, list):
@@ -196,14 +196,14 @@ def detect_concentration_shifts(config: dict) -> list[dict]:
     return triggers
 
 
-def detect_depeg_events(config: dict, sii_scores: dict) -> list[dict]:
+async def detect_depeg_events(config: dict, sii_scores: dict) -> list[dict]:
     """
     Check current prices for deviation > 1% from $1 peg.
     Uses the most recent price data from historical_prices table.
     """
     threshold_pct = config["depeg_threshold_pct"]
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT DISTINCT ON (coingecko_id)
             coingecko_id, price, timestamp
         FROM historical_prices
@@ -230,9 +230,9 @@ def detect_depeg_events(config: dict, sii_scores: dict) -> list[dict]:
     return triggers
 
 
-def _get_top_wallets(limit: int = 100) -> list[str]:
+async def _get_top_wallets(limit: int = 100) -> list[str]:
     """Get top wallets by total stablecoin value."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT address FROM wallet_graph.wallets
         WHERE total_stablecoin_value > 0
         ORDER BY total_stablecoin_value DESC
@@ -241,9 +241,9 @@ def _get_top_wallets(limit: int = 100) -> list[str]:
     return [r["address"] for r in rows]
 
 
-def _get_wallets_holding(stablecoin_id: str) -> list[str]:
+async def _get_wallets_holding(stablecoin_id: str) -> list[str]:
     """Get wallets with material exposure to a specific stablecoin."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT DISTINCT wallet_address
         FROM wallet_graph.wallet_holdings
         WHERE LOWER(symbol) = LOWER(%s)
@@ -255,7 +255,7 @@ def _get_wallets_holding(stablecoin_id: str) -> list[str]:
     return [r["wallet_address"] for r in rows]
 
 
-def run_agent_cycle():
+async def run_agent_cycle():
     """
     Main agent entry point. Called after each SII scoring cycle.
 
@@ -265,7 +265,7 @@ def run_agent_cycle():
     logger.info("=== Verification agent cycle starting ===")
 
     try:
-        sii_scores = _get_sii_scores()
+        sii_scores = await _get_sii_scores()
     except Exception as e:
         logger.error(f"Failed to fetch SII scores: {e}")
         return
@@ -275,16 +275,16 @@ def run_agent_cycle():
 
     # 1. Detect SII score changes
     try:
-        score_triggers = detect_score_changes(config, sii_scores)
+        score_triggers = await detect_score_changes(config, sii_scores)
         for trigger in score_triggers:
             if total_processed >= config["max_assessments_per_cycle"]:
                 break
             # Re-assess all wallets holding the affected asset
-            wallets = _get_wallets_holding(trigger["stablecoin_id"])
+            wallets = await _get_wallets_holding(trigger["stablecoin_id"])
             for addr in wallets[:50]:  # cap per-trigger
                 if total_processed >= config["max_assessments_per_cycle"]:
                     break
-                result = _process_assessment(
+                result = await _process_assessment(
                     addr, "score_change", trigger, sii_scores, config
                 )
                 if result:
@@ -295,11 +295,11 @@ def run_agent_cycle():
 
     # 2. Detect large movements
     try:
-        movement_triggers = detect_large_movements(config)
+        movement_triggers = await detect_large_movements(config)
         for trigger in movement_triggers:
             if total_processed >= config["max_assessments_per_cycle"]:
                 break
-            result = _process_assessment(
+            result = await _process_assessment(
                 trigger["wallet_address"], "large_movement",
                 trigger, sii_scores, config
             )
@@ -311,11 +311,11 @@ def run_agent_cycle():
 
     # 3. Detect concentration shifts
     try:
-        conc_triggers = detect_concentration_shifts(config)
+        conc_triggers = await detect_concentration_shifts(config)
         for trigger in conc_triggers:
             if total_processed >= config["max_assessments_per_cycle"]:
                 break
-            result = _process_assessment(
+            result = await _process_assessment(
                 trigger["wallet_address"], "concentration_shift",
                 trigger, sii_scores, config
             )
@@ -327,17 +327,17 @@ def run_agent_cycle():
 
     # 4. Detect depeg events
     try:
-        depeg_triggers = detect_depeg_events(config, sii_scores)
+        depeg_triggers = await detect_depeg_events(config, sii_scores)
         for trigger in depeg_triggers:
             if total_processed >= config["max_assessments_per_cycle"]:
                 break
             # Re-assess all wallets holding the affected stablecoin
-            wallets = _get_wallets_holding(trigger["stablecoin_id"])
+            wallets = await _get_wallets_holding(trigger["stablecoin_id"])
             for addr in wallets[:100]:  # higher cap for depeg (critical)
                 if total_processed >= config["max_assessments_per_cycle"]:
                     break
                 detail = {**trigger, "trigger_source": "depeg"}
-                result = _process_assessment(
+                result = await _process_assessment(
                     addr, "depeg", detail, sii_scores, config
                 )
                 if result:
@@ -351,7 +351,7 @@ def run_agent_cycle():
     try:
         now_utc = datetime.now(timezone.utc)
         # Check if daily cycle has already run today
-        daily_ran = fetch_one("""
+        daily_ran = await fetch_one_async("""
             SELECT 1 FROM assessment_events
             WHERE trigger_type = 'daily_cycle'
             AND created_at > CURRENT_DATE
@@ -359,11 +359,11 @@ def run_agent_cycle():
         """)
         if not daily_ran:
             logger.info("Running daily cycle assessment...")
-            top_wallets = _get_top_wallets(100)
+            top_wallets = await _get_top_wallets(100)
             for addr in top_wallets:
                 if total_processed >= config["max_assessments_per_cycle"]:
                     break
-                result = _process_assessment(
+                result = await _process_assessment(
                     addr, "daily_cycle",
                     {"cycle_date": now_utc.strftime("%Y-%m-%d")},
                     sii_scores, config,
@@ -395,7 +395,7 @@ def run_agent_cycle():
                 "broadcast": False,
                 "trigger_detail": {"cycle_assessments": 0},
             }
-            store_assessment(heartbeat)
+            await store_assessment(heartbeat)
         except Exception as e:
             logger.debug(f"Heartbeat store failed: {e}")
 

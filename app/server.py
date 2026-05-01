@@ -558,12 +558,12 @@ async def startup():
         if hasattr(mcp_server, "streamable_http_app"):
             mcp_asgi = mcp_server.streamable_http_app()
             app.state.mcp_task = asyncio.get_event_loop().create_task(
-                _run_mcp_session_manager(mcp_server.session_manager)
+                await _run_mcp_session_manager(mcp_server.session_manager)
             )
         elif hasattr(mcp_server, "asgi_app"):
             mcp_asgi = mcp_server.asgi_app()
             app.state.mcp_task = asyncio.get_event_loop().create_task(
-                _run_mcp_session_manager(mcp_server.session_manager)
+                await _run_mcp_session_manager(mcp_server.session_manager)
             )
         else:
             mcp_asgi = None
@@ -681,7 +681,7 @@ async def _delegate_to_asgi(asgi_app, request: Request):
                     break
 
     return StreamingResponse(
-        body_generator(),
+        await body_generator(),
         status_code=status_code,
         headers=headers,
     )
@@ -1382,7 +1382,7 @@ async def get_health():
 
     try:
         from app.integrity import check_all
-        result = check_all()
+        result = await check_all()
     except Exception:
         return {
             "status": "unhealthy",
@@ -1413,7 +1413,7 @@ async def get_integrity():
     if cached:
         return cached
     from app.integrity import check_all_and_store
-    result = check_all_and_store()
+    result = await check_all_and_store()
     _cache.set("integrity", result)
     return result
 
@@ -1422,7 +1422,7 @@ async def get_integrity():
 async def get_integrity_history_endpoint(domain: str = None, days: int = 7):
     """Integrity check history for trending analysis."""
     from app.integrity import get_integrity_history
-    results = get_integrity_history(domain=domain, days=days)
+    results = await get_integrity_history(domain=domain, days=days)
     return {"results": results, "count": len(results), "domain": domain, "days": days}
 
 
@@ -1430,7 +1430,7 @@ async def get_integrity_history_endpoint(domain: str = None, days: int = 7):
 async def get_integrity_domain(domain: str):
     """Data integrity status for a specific domain."""
     from app.integrity import check_domain
-    result = check_domain(domain)
+    result = await check_domain(domain)
     if result.get("warnings") and any(w.get("rule") == "unknown_domain" for w in result["warnings"]):
         raise HTTPException(status_code=404, detail=f"Unknown domain: {domain}")
     return result
@@ -2158,7 +2158,7 @@ async def public_get_methodology_hash(methodology_id: str):
     """Get a single methodology including full content."""
     try:
         from app.methodology_hashes import get_methodology
-        m = get_methodology(methodology_id)
+        m = await get_methodology(methodology_id)
         if not m:
             return JSONResponse(status_code=404, content={"error": "methodology not found"})
         return m
@@ -3537,7 +3537,7 @@ async def admin_reindex_status(request: Request):
     _check_admin_key(request)
     try:
         from app.indexer.pipeline import get_reindex_status
-        return get_reindex_status()
+        return await get_reindex_status()
     except HTTPException:
         raise
     except Exception as e:
@@ -4633,7 +4633,7 @@ async def admin_create_assessment_event(request: Request):
         }
 
         from app.agent.store import store_assessment
-        event_id = store_assessment(assessment)
+        event_id = await store_assessment(assessment)
 
         if not event_id:
             return {"status": "skipped", "reason": "Duplicate event (same content_hash within 1 hour)"}
@@ -5681,7 +5681,7 @@ async def treasury_profile(address: str):
 async def treasury_registry():
     """All registered treasury wallets."""
     from app.collectors.treasury_flows import get_registered_treasuries
-    treasuries = get_registered_treasuries()
+    treasuries = await get_registered_treasuries()
     return {
         "treasuries": [dict(t) for t in treasuries],
         "count": len(treasuries),
@@ -6526,13 +6526,13 @@ async def divergence_all(force: bool = False, hours: int = 24):
     """Combined divergence signals — reads from stored signals, with live fallback."""
     if force:
         from app.divergence import detect_all_divergences
-        return detect_all_divergences(store=True)
+        return await detect_all_divergences(store=True)
     from app.divergence import get_stored_divergences
-    result = get_stored_divergences(hours)
+    result = await get_stored_divergences(hours)
     if result["summary"]["total_signals"] == 0:
         # No stored signals — compute live and store
         from app.divergence import detect_all_divergences
-        return detect_all_divergences(store=True)
+        return await detect_all_divergences(store=True)
     return result
 
 
@@ -6540,14 +6540,14 @@ async def divergence_all(force: bool = False, hours: int = 24):
 async def divergence_assets():
     """Asset quality divergence: score declining while capital flows in."""
     from app.divergence import detect_asset_divergence
-    return {"signals": detect_asset_divergence(), "type": "asset_quality"}
+    return {"signals": await detect_asset_divergence(), "type": "asset_quality"}
 
 
 @app.get("/api/divergence/wallets")
 async def divergence_wallets():
     """Wallet concentration divergence: HHI rising while value grows."""
     from app.divergence import detect_wallet_concentration_divergence
-    return {"signals": detect_wallet_concentration_divergence(), "type": "wallet_concentration"}
+    return {"signals": await detect_wallet_concentration_divergence(), "type": "wallet_concentration"}
 
 
 @app.get("/api/specs/divergence")
@@ -6851,7 +6851,7 @@ async def admin_blockscout_comparison(request: Request):
     _check_admin_key(request)
     try:
         from app.utils.data_source_comparator import get_comparison_summary
-        return get_comparison_summary()
+        return await get_comparison_summary()
     except HTTPException:
         raise
     except Exception as e:
@@ -8811,19 +8811,19 @@ async def provenance_source_health_update(request: Request):
     )
 
     if status == "success":
-        record_success(source_id)
+        await record_success(source_id)
     elif status == "failure":
         error = data.get("error", "unknown error")
-        was_disabled = record_failure(source_id, error)
+        was_disabled = await record_failure(source_id, error)
         return {"status": "recorded", "auto_disabled": was_disabled}
     elif status == "auto_heal":
         old_url = data.get("old_url", "")
         new_url = data.get("new_url", "")
         if not new_url:
             raise HTTPException(status_code=400, detail="new_url required for auto_heal")
-        record_auto_heal(source_id, old_url, new_url)
+        await record_auto_heal(source_id, old_url, new_url)
     elif status == "re_enable":
-        record_re_enable(source_id)
+        await record_re_enable(source_id)
     else:
         raise HTTPException(status_code=400,
                             detail=f"Invalid status: {status}. "
@@ -8836,8 +8836,8 @@ async def provenance_source_health_update(request: Request):
 async def provenance_sources_for_cycle():
     """Return sources the prover should notarize this cycle (schedule-aware)."""
     from app.data_layer.prover_source_registry import get_cycle_sources, get_source_counts
-    sources = get_cycle_sources()
-    counts = get_source_counts()
+    sources = await get_cycle_sources()
+    counts = await get_source_counts()
     return {
         "sources": sources,
         "count": len(sources),

@@ -68,7 +68,7 @@ class EnrichmentPipeline:
         # Check gate
         if task.gate_check:
             try:
-                gate_open = task.gate_check()
+                gate_open = await asyncio.to_thread(task.gate_check)
                 if not gate_open:
                     logger.error(f"[enrichment] [{task.name}] GATED (skipped)")
                     return TaskResult(
@@ -241,7 +241,7 @@ async def run_enrichment_pipeline() -> dict:
     Called from worker.py slow cycle.
     Returns summary of all task results.
     """
-    logger.error("[enrichment] run_enrichment_pipeline() ENTERED — building task list")
+    logger.error("[enrichment] await run_enrichment_pipeline() ENTERED — building task list")
     pipeline = EnrichmentPipeline(max_concurrent=15)
 
     # ---- Circle 7 indices (all run concurrently) ----
@@ -256,7 +256,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_vsri():
         from app.collectors.vault_collector import run_vsri_scoring
-        return run_vsri_scoring()
+        return await run_vsri_scoring()
 
     async def _run_cxri():
         from app.collectors.cex_collector import run_cxri_scoring
@@ -504,7 +504,7 @@ async def run_enrichment_pipeline() -> dict:
                 from app.indexer.edges import run_edge_builder
                 logger.error(f"=== [edge_building] starting chain={chain} ===")
                 result = await asyncio.wait_for(
-                    run_edge_builder(max_wallets=500, priority="value", chain=chain),
+                    await run_edge_builder(max_wallets=500, priority="value", chain=chain),
                     timeout=900,
                 )
                 results[chain] = result
@@ -539,7 +539,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_divergence():
         from app.divergence import detect_all_divergences
-        result = detect_all_divergences(store=True)
+        result = await detect_all_divergences(store=True)
         logger.info(f"[enrichment] divergence result: {result.get('summary', {}).get('total_signals', 0) if isinstance(result, dict) else result}")
         return result
 
@@ -871,7 +871,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_materialized():
         from app.data_layer.materialized_compositions import run_materialized_compositions
-        return run_materialized_compositions()
+        return await run_materialized_compositions()
 
     pipeline.add(EnrichmentTask(
         name="materialized_compositions", func=_run_materialized,
@@ -882,8 +882,8 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_provenance_update():
         from app.data_layer.provenance_scaling import update_catalog_provenance, run_provenance_linking
-        run_provenance_linking()
-        return update_catalog_provenance()
+        await run_provenance_linking()
+        return await update_catalog_provenance()
 
     pipeline.add(EnrichmentTask(
         name="provenance_update", func=_run_provenance_update,
@@ -894,7 +894,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_catalog_update():
         from app.data_layer.catalog import update_catalog
-        return update_catalog()
+        return await update_catalog()
 
     pipeline.add(EnrichmentTask(
         name="data_catalog_update", func=_run_catalog_update,

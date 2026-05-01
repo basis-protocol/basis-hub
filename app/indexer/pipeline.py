@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async, fetch_all_async, execute_async
 from app.indexer.config import BLOCK_EXPLORER_PROVIDER, EXPLORER_RATE_LIMIT_DELAY
 from app.indexer.scanner import batch_scan_all_holdings, fetch_top_holders, fetch_token_list
 from app.indexer.scorer import compute_wallet_risk
@@ -44,9 +44,9 @@ _STABLECOIN_PATTERN = re.compile(
 logger = logging.getLogger(__name__)
 
 
-def _get_current_sii_scores() -> dict:
+async def _get_current_sii_scores() -> dict:
     """Load current SII scores and prices from the scores table."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         "SELECT stablecoin_id, overall_score, current_price FROM scores"
     )
     return {
@@ -58,16 +58,16 @@ def _get_current_sii_scores() -> dict:
     }
 
 
-def _get_existing_wallets(chain: str = "ethereum") -> set:
+async def _get_existing_wallets(chain: str = "ethereum") -> set:
     """Get all wallet addresses already in the graph for a given chain."""
-    rows = fetch_all("SELECT address FROM wallet_graph.wallets WHERE chain = %s", (chain,))
+    rows = await fetch_all_async("SELECT address FROM wallet_graph.wallets WHERE chain = %s", (chain,))
     return {row["address"].lower() for row in rows}
 
 
-def _store_wallet(address: str, source: str, label: str = None, chain: str = "ethereum") -> None:
+async def _store_wallet(address: str, source: str, label: str = None, chain: str = "ethereum") -> None:
     """Upsert a wallet into the wallets table."""
     address = address.lower()
-    execute(
+    await execute_async(
         """
         INSERT INTO wallet_graph.wallets (address, chain, source, label, created_at, updated_at)
         VALUES (%s, %s, %s, %s, NOW(), NOW())
@@ -78,12 +78,12 @@ def _store_wallet(address: str, source: str, label: str = None, chain: str = "et
     )
 
 
-def _store_holdings(wallet_address: str, holdings: list[dict]) -> None:
+async def _store_holdings(wallet_address: str, holdings: list[dict]) -> None:
     """Insert wallet holdings snapshot (one per wallet/token/day)."""
     wallet_address = wallet_address.lower()
     for h in holdings:
         # Delete existing row for today, then insert fresh
-        execute(
+        await execute_async(
             """
             DELETE FROM wallet_graph.wallet_holdings
             WHERE wallet_address = %s
@@ -92,7 +92,7 @@ def _store_holdings(wallet_address: str, holdings: list[dict]) -> None:
             """,
             (wallet_address, h["token_address"]),
         )
-        execute(
+        await execute_async(
             """
             INSERT INTO wallet_graph.wallet_holdings
                 (wallet_address, token_address, symbol, balance, value_usd,
@@ -113,11 +113,11 @@ def _store_holdings(wallet_address: str, holdings: list[dict]) -> None:
         )
 
 
-def _store_risk_score(wallet_address: str, risk: dict) -> None:
+async def _store_risk_score(wallet_address: str, risk: dict) -> None:
     """Insert wallet risk score snapshot (one per wallet/day)."""
     wallet_address = wallet_address.lower()
     # Delete existing row for today, then insert fresh
-    execute(
+    await execute_async(
         """
         DELETE FROM wallet_graph.wallet_risk_scores
         WHERE wallet_address = %s
@@ -125,7 +125,7 @@ def _store_risk_score(wallet_address: str, risk: dict) -> None:
         """,
         (wallet_address,),
     )
-    execute(
+    await execute_async(
         """
         INSERT INTO wallet_graph.wallet_risk_scores
             (wallet_address, risk_score, risk_grade,
@@ -156,7 +156,7 @@ def _store_risk_score(wallet_address: str, risk: dict) -> None:
     )
 
 
-def _update_wallet_summary(wallet_address: str, total_value: float, size_tier: str, chain: str = "ethereum") -> None:
+async def _update_wallet_summary(wallet_address: str, total_value: float, size_tier: str, chain: str = "ethereum") -> None:
     """Update wallet summary fields after scoring.
 
     NOTE: This only runs when the scoring pipeline processes this wallet.
@@ -165,7 +165,7 @@ def _update_wallet_summary(wallet_address: str, total_value: float, size_tier: s
     not from this cached field.
     """
     wallet_address = wallet_address.lower()
-    execute(
+    await execute_async(
         """
         UPDATE wallet_graph.wallets SET
             last_indexed_at = NOW(),
@@ -178,13 +178,13 @@ def _update_wallet_summary(wallet_address: str, total_value: float, size_tier: s
     )
 
 
-def get_coverage_diagnostic() -> dict:
+async def get_coverage_diagnostic() -> dict:
     """
     Query coverage breakdown: how many wallets have holdings vs scores vs silent failures.
     Returns a dict safe to log or include in API responses.
     """
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             """
             SELECT
                 COUNT(DISTINCT LOWER(address)) AS total_wallets,
@@ -193,14 +193,14 @@ def get_coverage_diagnostic() -> dict:
             FROM wallet_graph.wallets
             """
         )
-        holdings_row = fetch_one(
+        holdings_row = await fetch_one_async(
             """
             SELECT
                 COUNT(DISTINCT wallet_address) AS wallets_with_holdings
             FROM wallet_graph.wallet_holdings
             """
         )
-        no_holdings_row = fetch_one(
+        no_holdings_row = await fetch_one_async(
             """
             SELECT COUNT(DISTINCT w.address) AS wallets_no_holdings
             FROM wallet_graph.wallets w
@@ -210,7 +210,7 @@ def get_coverage_diagnostic() -> dict:
             )
             """
         )
-        holdings_no_score_row = fetch_one(
+        holdings_no_score_row = await fetch_one_async(
             """
             SELECT COUNT(DISTINCT wh.wallet_address) AS holdings_no_score
             FROM wallet_graph.wallet_holdings wh
@@ -220,7 +220,7 @@ def get_coverage_diagnostic() -> dict:
             )
             """
         )
-        zero_value_with_holdings_row = fetch_one(
+        zero_value_with_holdings_row = await fetch_one_async(
             """
             SELECT COUNT(DISTINCT wh.wallet_address) AS zero_value_with_holdings
             FROM wallet_graph.wallet_holdings wh
@@ -228,7 +228,7 @@ def get_coverage_diagnostic() -> dict:
             WHERE COALESCE(w.total_stablecoin_value, 0) = 0
             """
         )
-        scored_row = fetch_one(
+        scored_row = await fetch_one_async(
             """
             SELECT COUNT(DISTINCT wrs.wallet_address) AS wallets_scored
             FROM wallet_graph.wallet_risk_scores wrs
@@ -296,9 +296,9 @@ def _seed_from_known_holders() -> set:
 
 
 
-def _get_scored_stablecoins_from_db() -> list[dict]:
+async def _get_scored_stablecoins_from_db() -> list[dict]:
     """Load all scored stablecoins with contract addresses from the database."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """
         SELECT id, symbol, name, contract, decimals
         FROM stablecoins
@@ -324,7 +324,7 @@ def _classify_token(symbol: str) -> str:
     return "non_stablecoin"
 
 
-def _get_known_contract_addresses() -> set:
+async def _get_known_contract_addresses() -> set:
     """
     Return the full set of already-known contract addresses (lowercased)
     from both the stablecoins table and wallet_graph.unscored_assets.
@@ -332,7 +332,7 @@ def _get_known_contract_addresses() -> set:
     """
     known = set()
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             "SELECT LOWER(contract) AS addr FROM stablecoins WHERE contract IS NOT NULL AND contract != ''"
         )
         for r in rows:
@@ -342,7 +342,7 @@ def _get_known_contract_addresses() -> set:
         logger.warning(f"Could not fetch known stablecoin contracts: {e}")
 
     try:
-        rows = fetch_all("SELECT token_address FROM wallet_graph.unscored_assets")
+        rows = await fetch_all_async("SELECT token_address FROM wallet_graph.unscored_assets")
         for r in rows:
             if r["token_address"]:
                 known.add(r["token_address"].lower())
@@ -359,11 +359,11 @@ async def discover_new_tokens(
 ) -> tuple[dict, list]:
     """
     Phase 1 of the discovery loop: sample top whale wallets and call
-    fetch_token_list() for each to find ERC-20 contracts not yet tracked.
+    await fetch_token_list() for each to find ERC-20 contracts not yet tracked.
 
     Steps:
       1. Query top `sample_size` wallets by total_stablecoin_value.
-      2. Call fetch_token_list() for each (rate-limited).
+      2. Call await fetch_token_list() for each (rate-limited).
       3. Extract unique contract addresses from the tokentx responses.
          Metadata (symbol, name, decimals) comes directly from the response —
          no extra API calls needed.
@@ -377,7 +377,7 @@ async def discover_new_tokens(
           sampled_wallets: list of wallet addresses that were queried (reused in Phase 2)
     """
     # Step 1: Sample top whale wallets
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """
         SELECT address FROM wallet_graph.wallets
         WHERE total_stablecoin_value IS NOT NULL
@@ -397,7 +397,7 @@ async def discover_new_tokens(
     )
 
     # Step 2 + 3: Fetch token lists and collect unique contracts
-    known = _get_known_contract_addresses()
+    known = await _get_known_contract_addresses()
     seen_this_run: dict[str, dict] = {}
 
     for wallet in sampled_wallets:
@@ -475,7 +475,7 @@ async def seed_wallets(
     all_addresses = set()
 
     # Load stablecoins from the database (not hardcoded SCORED_CONTRACTS)
-    db_coins = _get_scored_stablecoins_from_db()
+    db_coins = await _get_scored_stablecoins_from_db()
     logger.info(f"Loaded {len(db_coins)} stablecoins with contracts from database")
 
     # Primary: tokenholderlist API (Standard tier, paginated 100 per page)
@@ -531,26 +531,26 @@ async def index_wallet(
     from app.indexer.scanner import scan_wallet_holdings
 
     # Ensure wallet exists in table
-    _store_wallet(wallet_address, source=source)
+    await _store_wallet(wallet_address, source=source)
 
     # Scan holdings
     holdings = await scan_wallet_holdings(client, wallet_address, api_key, sii_scores)
 
     if not holdings:
-        _update_wallet_summary(wallet_address, 0, "retail")
+        await _update_wallet_summary(wallet_address, 0, "retail")
         return {"address": wallet_address, "holdings": 0, "scored": False, "reason": "no_holdings"}
 
     # Score
     risk = compute_wallet_risk(holdings)
     if not risk:
         logger.warning(f"Risk compute returned None for {wallet_address} ({len(holdings)} holdings)")
-        _update_wallet_summary(wallet_address, 0, "retail")
+        await _update_wallet_summary(wallet_address, 0, "retail")
         return {"address": wallet_address, "holdings": len(holdings), "scored": False, "reason": "risk_compute_failed"}
 
     # Store
-    _store_holdings(wallet_address, holdings)
-    _store_risk_score(wallet_address, risk)
-    _update_wallet_summary(
+    await _store_holdings(wallet_address, holdings)
+    await _store_risk_score(wallet_address, risk)
+    await _update_wallet_summary(
         wallet_address,
         risk["total_stablecoin_value"],
         risk["size_tier"],
@@ -584,14 +584,14 @@ _reindex_status = {
 reindex_logger = logging.getLogger("basis.reindex")
 
 
-def get_reindex_status() -> dict:
+async def get_reindex_status() -> dict:
     """Return current reindex run metadata plus DB freshness."""
     status = dict(_reindex_status)
     status["provider"] = BLOCK_EXPLORER_PROVIDER
 
     # Latest wallet_holdings row timestamp
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT MAX(indexed_at) AS latest
             FROM wallet_graph.wallet_holdings
         """)
@@ -603,7 +603,7 @@ def get_reindex_status() -> dict:
 
     # Active wallet count
     try:
-        row = fetch_one("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
+        row = await fetch_one_async("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
         status["active_wallet_count"] = row["cnt"] if row else 0
     except Exception:
         status["active_wallet_count"] = 0
@@ -615,7 +615,7 @@ async def run_pipeline_batch(batch_size: int = 500) -> dict:
     """
     Incremental batch re-indexing: scan + score the oldest `batch_size` wallets.
 
-    Unlike run_pipeline(), this does NOT seed new wallets or run discovery.
+    Unlike await run_pipeline(), this does NOT seed new wallets or run discovery.
     It processes wallets already in the graph that haven't been re-indexed recently.
     Designed to be called externally via cron (every 30 min) so container restarts
     don't lose progress.
@@ -657,7 +657,7 @@ async def run_pipeline_batch(batch_size: int = 500) -> dict:
     # Find the oldest EVM wallets (not indexed in last 24h)
     # Solana addresses (base58, no 0x prefix) are skipped — they use a separate scanner
     try:
-        stale_rows = fetch_all("""
+        stale_rows = await fetch_all_async("""
             SELECT DISTINCT ON (address) address FROM wallet_graph.wallets
             WHERE address LIKE '0x%%'
               AND (last_indexed_at IS NULL
@@ -681,7 +681,7 @@ async def run_pipeline_batch(batch_size: int = 500) -> dict:
         return {"processed": 0, "remaining": 0, "message": "All wallets fresh"}
 
     # Count total remaining for reporting (EVM only)
-    remaining_row = fetch_one("""
+    remaining_row = await fetch_one_async("""
         SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets
         WHERE address LIKE '0x%%'
           AND (last_indexed_at IS NULL
@@ -691,7 +691,7 @@ async def run_pipeline_batch(batch_size: int = 500) -> dict:
 
     reindex_logger.info(f"Batch: {len(wallet_list)} wallets queued, {total_remaining} total stale")
 
-    sii_scores = _get_current_sii_scores()
+    sii_scores = await _get_current_sii_scores()
     indexed = 0
     scored = 0
     errors = 0
@@ -732,20 +732,20 @@ async def run_pipeline_batch(batch_size: int = 500) -> dict:
                     holdings = all_holdings.get(addr_lower, [])
 
                     if not holdings:
-                        _update_wallet_summary(addr, 0, "retail")
+                        await _update_wallet_summary(addr, 0, "retail")
                         indexed += 1
                         continue
 
                     risk = compute_wallet_risk(holdings)
                     if not risk:
-                        _update_wallet_summary(addr, 0, "retail")
+                        await _update_wallet_summary(addr, 0, "retail")
                         indexed += 1
                         continue
 
-                    _store_holdings(addr, holdings)
+                    await _store_holdings(addr, holdings)
                     balances_updated += len(holdings)
-                    _store_risk_score(addr, risk)
-                    _update_wallet_summary(addr, risk["total_stablecoin_value"], risk["size_tier"])
+                    await _store_risk_score(addr, risk)
+                    await _update_wallet_summary(addr, risk["total_stablecoin_value"], risk["size_tier"])
                     _track_unscored_holdings(holdings)
                     indexed += 1
                     scored += 1
@@ -835,14 +835,14 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
     # Verify DB connection before doing any work — catches stale pool connections
     # that would otherwise surface as a cryptic error mid-pipeline.
     try:
-        test = fetch_one("SELECT 1 AS alive")
+        test = await fetch_one_async("SELECT 1 AS alive")
         logger.info(f"Pipeline DB connection verified: {test}")
     except Exception as e:
         logger.error(f"Pipeline DB connection DEAD at startup: {e}")
         return {"error": "DB connection failed at pipeline startup", "wallets_indexed": 0}
 
     # Load current SII scores
-    sii_scores = _get_current_sii_scores()
+    sii_scores = await _get_current_sii_scores()
     logger.info(f"Loaded SII scores for {len(sii_scores)} stablecoins")
 
     # Seed known unscored assets
@@ -855,7 +855,7 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
     tiered_scan_api_calls = 0
 
     # Resume logic: determine whether to seed or use existing wallets only
-    existing = _get_existing_wallets()
+    existing = await _get_existing_wallets()
     do_seed = force_reseed or len(existing) < 1000
 
     async with httpx.AsyncClient() as client:
@@ -877,7 +877,7 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
             wallet_list = list(wallet_addresses)
         else:
             try:
-                indexed_today_rows = fetch_all("""
+                indexed_today_rows = await fetch_all_async("""
                     SELECT address FROM wallet_graph.wallets
                     WHERE last_indexed_at IS NOT NULL
                       AND last_indexed_at >= CURRENT_DATE
@@ -944,7 +944,7 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
             for addr_lower, h_list in tiered_holdings.items():
                 if h_list:
                     original_addr = lower_to_original.get(addr_lower, addr_lower)
-                    _store_holdings(original_addr, h_list)
+                    await _store_holdings(original_addr, h_list)
                     tiered_stored += len(h_list)
 
             logger.info(
@@ -969,7 +969,7 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
             try:
                 addr_lower = addr.lower()
                 source = "known_holder" if addr in known_addrs else "top_holder"
-                _store_wallet(addr, source=source)
+                await _store_wallet(addr, source=source)
 
                 # Skip wallets where the API call failed —
                 # don't update last_indexed_at so they're retried next cycle
@@ -982,7 +982,7 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
                 holdings = all_holdings.get(addr_lower, [])
 
                 if not holdings:
-                    _update_wallet_summary(addr, 0, "retail")
+                    await _update_wallet_summary(addr, 0, "retail")
                     results.append({"address": addr, "holdings": 0, "scored": False, "reason": "no_holdings"})
                     indexed += 1
                     if indexed % 500 == 0:
@@ -995,7 +995,7 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
                 risk = compute_wallet_risk(holdings)
                 if not risk:
                     logger.warning(f"Risk compute returned None for {addr} ({len(holdings)} holdings)")
-                    _update_wallet_summary(addr, 0, "retail")
+                    await _update_wallet_summary(addr, 0, "retail")
                     results.append({"address": addr, "holdings": len(holdings), "scored": False, "reason": "risk_compute_failed"})
                     indexed += 1
                     if indexed % 500 == 0:
@@ -1005,9 +1005,9 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
                         )
                     continue
 
-                _store_holdings(addr, holdings)
-                _store_risk_score(addr, risk)
-                _update_wallet_summary(addr, risk["total_stablecoin_value"], risk["size_tier"])
+                await _store_holdings(addr, holdings)
+                await _store_risk_score(addr, risk)
+                await _update_wallet_summary(addr, risk["total_stablecoin_value"], risk["size_tier"])
                 _track_unscored_holdings(holdings)
 
                 results.append({
@@ -1041,7 +1041,7 @@ async def run_pipeline(holders_per_coin: int = None, force_reseed: bool = False)
     scoring_failed_count = sum(1 for r in results if r.get("reason") == "risk_compute_failed")
 
     # Step 7: Run coverage diagnostic to surface any silent failure paths
-    coverage = get_coverage_diagnostic()
+    coverage = await get_coverage_diagnostic()
 
     summary = {
         "wallets_discovered": len(wallet_addresses),

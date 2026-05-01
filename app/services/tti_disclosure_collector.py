@@ -23,7 +23,7 @@ import re
 import time
 from datetime import date, datetime, timezone
 
-from app.database import execute, fetch_one
+from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -99,9 +99,9 @@ JURISDICTION_SOVEREIGN = {
 # Daily gate (follows cda_collector._already_collected_today pattern)
 # =============================================================================
 
-def _already_collected_today(entity_slug: str) -> bool:
+async def _already_collected_today(entity_slug: str) -> bool:
     """Check if we already have an extraction for this entity today."""
-    row = fetch_one(
+    row = await fetch_one_async(
         """SELECT id FROM tti_disclosure_extractions
            WHERE entity_slug = %s AND extracted_at::date = %s
            LIMIT 1""",
@@ -110,20 +110,20 @@ def _already_collected_today(entity_slug: str) -> bool:
     return row is not None
 
 
-def _store_extraction(entity_slug: str, entity_name: str, source_url: str,
+async def _store_extraction(entity_slug: str, entity_name: str, source_url: str,
                       source_type: str, structured_data: dict,
                       extraction_method: str, confidence: float):
     """Store an extraction in the tti_disclosure_extractions table."""
     # Ensure simple unique index exists (expression index doesn't work with ON CONFLICT)
     try:
-        execute("""
+        await execute_async("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tti_disc_entity_source
             ON tti_disclosure_extractions(entity_slug, source_url)
         """)
     except Exception:
         pass
 
-    execute("""
+    await execute_async("""
         INSERT INTO tti_disclosure_extractions
             (entity_slug, entity_name, source_url, source_type,
              structured_data, extraction_method, confidence, extracted_at)
@@ -518,15 +518,15 @@ def _unwrap_citations(obj):
 # Collection orchestrator
 # =============================================================================
 
-def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict | None:
+async def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict | None:
     """Collect disclosure data for a single TTI entity.
 
     Returns structured_data dict, or None if collection fails/skipped.
     """
-    if _already_collected_today(entity_slug):
+    if await _already_collected_today(entity_slug):
         logger.info(f"TTI disclosure already collected today for {entity_slug}")
         # Return latest extraction
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT structured_data FROM tti_disclosure_extractions
             WHERE entity_slug = %s ORDER BY extracted_at DESC LIMIT 1
         """, (entity_slug,))
@@ -576,7 +576,7 @@ def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict | Non
                     # PDF data is higher quality — merge over page data
                     page_data.update({k: v for k, v in unwrapped.items() if v is not None})
 
-                    _store_extraction(
+                    await _store_extraction(
                         entity_slug, entity_name, best_pdf,
                         "attestation_pdf", unwrapped,
                         "reducto_pdf", 0.8,
@@ -584,7 +584,7 @@ def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict | Non
 
         # Store page extraction
         if page_data:
-            _store_extraction(
+            await _store_extraction(
                 entity_slug, entity_name, url,
                 source_type, page_data,
                 "parallel_extract", 0.7,  # Parallel Extract is primary scraper
@@ -619,7 +619,7 @@ def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict | Non
                 if k not in combined_data:
                     combined_data[k] = v
 
-            _store_extraction(
+            await _store_extraction(
                 entity_slug, entity_name,
                 f"parallel_task://{entity_slug}",
                 "deep_research", task_data,
@@ -791,7 +791,7 @@ def map_disclosure_to_components(data: dict, static: dict) -> dict:
 # Entrypoint — called from worker slow cycle
 # =============================================================================
 
-def run_tti_disclosure_collection() -> dict:
+async def run_tti_disclosure_collection() -> dict:
     """Run TTI disclosure collection for all entities with configured URLs.
 
     Returns {entity_slug: extracted_component_count}.
@@ -800,7 +800,7 @@ def run_tti_disclosure_collection() -> dict:
     results = {}
     for slug in TTI_DISCLOSURE_URLS:
         try:
-            data = collect_entity_disclosures(slug, slug)
+            data = await collect_entity_disclosures(slug, slug)
             if data:
                 results[slug] = len(data)
             else:

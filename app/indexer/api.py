@@ -220,7 +220,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         Coverage diagnostic: breakdown of wallets by holdings vs scoring status.
         Identifies silent failure paths (wallets with holdings but no risk score).
         """
-        return get_coverage_diagnostic()
+        return await get_coverage_diagnostic()
 
     @app.get("/api/wallets/{address}")
     async def wallet_profile(address: str, methodology_version: Optional[str] = Query(default=None)):

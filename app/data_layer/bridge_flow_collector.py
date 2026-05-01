@@ -233,7 +233,7 @@ async def run_bridge_flow_collection() -> dict:
         from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
         if total_flows > 0:
             attest_data_batch("bridge_flows", [{"flows": total_flows, "bridges": bridges_processed}])
-            link_batch_to_proof("bridge_flows", "bridge_flows")
+            await link_batch_to_proof("bridge_flows", "bridge_flows")
     except Exception as e:
         logger.debug(f"Bridge flow provenance failed: {e}")
 

@@ -309,7 +309,7 @@ async def run_mint_burn_collection() -> dict:
         from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
         if total_mints + total_burns > 0:
             attest_data_batch("mint_burn_events", [{"mints": total_mints, "burns": total_burns}])
-            link_batch_to_proof("mint_burn_events", "mint_burn_events")
+            await link_batch_to_proof("mint_burn_events", "mint_burn_events")
     except Exception as e:
         logger.debug(f"Mint/burn provenance failed: {e}")
 

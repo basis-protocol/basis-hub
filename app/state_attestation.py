@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.database import execute, fetch_one
+from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.scoring import FORMULA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def compute_batch_hash(records: list[dict]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def store_attestation(
+async def store_attestation(
     domain: str,
     batch_hash: str,
     record_count: int,
@@ -47,7 +47,7 @@ def store_attestation(
     methodology_version: str = None,
 ) -> None:
     """Store a state attestation record."""
-    execute(
+    await execute_async(
         """
         INSERT INTO state_attestations
             (domain, entity_id, batch_hash, record_count, methodology_version, cycle_timestamp)
@@ -67,10 +67,10 @@ def attest_state(domain: str, records: list[dict], entity_id: str = None) -> str
     return batch_hash
 
 
-def get_latest_attestation(domain: str, entity_id: str = None) -> dict | None:
+async def get_latest_attestation(domain: str, entity_id: str = None) -> dict | None:
     """Get the most recent attestation for a domain/entity."""
     if entity_id:
-        return fetch_one(
+        return await fetch_one_async(
             """
             SELECT domain, entity_id, batch_hash, record_count, methodology_version, cycle_timestamp
             FROM state_attestations
@@ -79,7 +79,7 @@ def get_latest_attestation(domain: str, entity_id: str = None) -> dict | None:
             """,
             (domain, entity_id),
         )
-    return fetch_one(
+    return await fetch_one_async(
         """
         SELECT domain, entity_id, batch_hash, record_count, methodology_version, cycle_timestamp
         FROM state_attestations

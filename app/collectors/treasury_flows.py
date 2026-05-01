@@ -30,7 +30,7 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 
-from app.database import fetch_all, fetch_one, get_conn
+from app.database import fetch_all, fetch_one, get_conn, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -61,9 +61,9 @@ SEVERITY_ESCALATION = {
 # Registry helpers
 # ---------------------------------------------------------------------------
 
-def get_registered_treasuries() -> list[dict]:
+async def get_registered_treasuries() -> list[dict]:
     """Fetch all monitoring-enabled treasury wallets."""
-    return fetch_all("""
+    return await fetch_all_async("""
         SELECT address, chain, entity_name, entity_type, label_source,
                wallet_purpose, related_addresses, notes
         FROM wallet_graph.treasury_registry
@@ -72,7 +72,7 @@ def get_registered_treasuries() -> list[dict]:
     """) or []
 
 
-def _get_known_labels() -> dict:
+async def _get_known_labels() -> dict:
     """Build address→label lookup from etherscan KNOWN_HOLDERS + treasury registry."""
     labels = {}
     try:
@@ -83,7 +83,7 @@ def _get_known_labels() -> dict:
         pass
     # Overlay treasury registry
     try:
-        treasuries = get_registered_treasuries()
+        treasuries = await get_registered_treasuries()
         for t in treasuries:
             labels[t["address"].lower()] = {"label": t["entity_name"], "type": t["entity_type"]}
     except Exception:
@@ -95,10 +95,10 @@ def _get_known_labels() -> dict:
 # Token price helper
 # ---------------------------------------------------------------------------
 
-def _get_token_price_usd(contract_address: str, decimals: int = 18) -> float:
+async def _get_token_price_usd(contract_address: str, decimals: int = 18) -> float:
     """Get approximate USD price for a token from SII scores or default to 1.0 for stables."""
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT s.current_price FROM scores s
             JOIN stablecoins st ON st.id = s.stablecoin_id
             WHERE LOWER(st.contract) = LOWER(%s)
@@ -109,7 +109,7 @@ def _get_token_price_usd(contract_address: str, decimals: int = 18) -> float:
         pass
     # Check if known stablecoin by contract
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             "SELECT symbol FROM stablecoins WHERE LOWER(contract) = LOWER(%s)",
             (contract_address,)
         )
@@ -120,14 +120,14 @@ def _get_token_price_usd(contract_address: str, decimals: int = 18) -> float:
     return 0  # Unknown token, can't price
 
 
-def _transfer_value_usd(tx: dict) -> float:
+async def _transfer_value_usd(tx: dict) -> float:
     """Estimate USD value of a token transfer."""
     try:
         decimals = int(tx.get("tokenDecimal", 18))
         raw_value = int(tx.get("value", 0))
         amount = raw_value / (10 ** decimals)
         contract = (tx.get("contractAddress") or "").lower()
-        price = _get_token_price_usd(contract, decimals)
+        price = await _get_token_price_usd(contract, decimals)
         return amount * price
     except Exception:
         return 0
@@ -320,12 +320,12 @@ def detect_twap_pattern(
 # Event Detector 3: Concentration Drift
 # ---------------------------------------------------------------------------
 
-def detect_concentration_drift(wallet_address: str) -> list[dict]:
+async def detect_concentration_drift(wallet_address: str) -> list[dict]:
     """Detect significant HHI changes over 7d and 30d windows."""
     events = []
     wallet_lower = wallet_address.lower()
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT concentration_hhi, computed_at::date as score_date
         FROM wallet_graph.wallet_risk_scores
         WHERE wallet_address = %s AND chain = 'ethereum'
@@ -361,7 +361,7 @@ def detect_concentration_drift(wallet_address: str) -> list[dict]:
             severity = "critical"
 
         # Get dominant asset
-        holdings = fetch_all("""
+        holdings = await fetch_all_async("""
             SELECT symbol, pct_of_wallet FROM wallet_graph.wallet_holdings
             WHERE wallet_address = %s AND chain = 'ethereum'
             ORDER BY indexed_at DESC, value_usd DESC LIMIT 5
@@ -390,12 +390,12 @@ def detect_concentration_drift(wallet_address: str) -> list[dict]:
 # Event Detector 4: Quality Shift
 # ---------------------------------------------------------------------------
 
-def detect_quality_shift(wallet_address: str) -> list[dict]:
+async def detect_quality_shift(wallet_address: str) -> list[dict]:
     """Detect significant changes in quality-weighted SII exposure."""
     events = []
     wallet_lower = wallet_address.lower()
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT risk_score, computed_at::date as score_date
         FROM wallet_graph.wallet_risk_scores
         WHERE wallet_address = %s AND chain = 'ethereum' AND risk_score IS NOT NULL
@@ -428,7 +428,7 @@ def detect_quality_shift(wallet_address: str) -> list[dict]:
         severity = "critical"
 
     # Determine cause — check if holdings changed
-    holdings_now = fetch_all("""
+    holdings_now = await fetch_all_async("""
         SELECT symbol, pct_of_wallet, sii_score
         FROM wallet_graph.wallet_holdings
         WHERE wallet_address = %s AND chain = 'ethereum'
@@ -546,14 +546,14 @@ async def collect_treasury_events(
         logger.error("[treasury_events] no ETHERSCAN_API_KEY set — skipping")
         return []
 
-    treasuries = get_registered_treasuries()
+    treasuries = await get_registered_treasuries()
     if not treasuries:
         logger.error("[treasury_events] no registered treasuries — nothing to scan")
         return []
 
     logger.error(f"[treasury_events] starting: {len(treasuries)} wallets to scan")
 
-    labels = _get_known_labels()
+    labels = await _get_known_labels()
     all_events = []
     own_client = client is None
 
@@ -581,10 +581,10 @@ async def collect_treasury_events(
                 wallet_events.extend(detect_twap_pattern(transfers, addr))
 
                 # 3. Concentration drift (reads existing DB data, no API call)
-                wallet_events.extend(detect_concentration_drift(addr))
+                wallet_events.extend(await detect_concentration_drift(addr))
 
                 # 4. Quality shift (reads existing DB data, no API call)
-                wallet_events.extend(detect_quality_shift(addr))
+                wallet_events.extend(await detect_quality_shift(addr))
 
                 # 5. Rebalance (uses transfers already fetched)
                 wallet_events.extend(detect_rebalance(transfers, addr, labels))

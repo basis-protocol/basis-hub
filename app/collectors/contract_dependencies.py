@@ -458,7 +458,7 @@ async def collect_contract_dependencies() -> dict:
         try:
             current_deps = _detect_dependencies(entity)
             _reconcile_dependencies(entity, current_deps, results)
-            _store_daily_snapshot(entity, current_deps, results)
+            await _store_daily_snapshot(entity, current_deps, results)
             results["entities_analyzed"] += 1
         except Exception as e:
             error_msg = f"{entity['entity_slug']}: {e}"

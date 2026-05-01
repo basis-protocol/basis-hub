@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_one
+from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -318,7 +318,7 @@ def _estimate_us_licensing(exchange_slug: str, sec_data: dict) -> float:
 # Main regulatory check orchestrator
 # =============================================================================
 
-def check_exchange_regulatory(entity_slug: str, exchange_names: list[str] = None) -> dict:
+async def check_exchange_regulatory(entity_slug: str, exchange_names: list[str] = None) -> dict:
     """Run all regulatory checks for an exchange.
 
     Returns dict of component scores:
@@ -378,14 +378,14 @@ def check_exchange_regulatory(entity_slug: str, exchange_names: list[str] = None
     try:
         # Ensure unique constraint exists (expression index doesn't work with ON CONFLICT)
         try:
-            execute("""
+            await execute_async("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_check_entity_registry_simple
                 ON regulatory_registry_checks(entity_slug, registry_name)
             """)
         except Exception:
             pass
 
-        execute("""
+        await execute_async("""
             INSERT INTO regulatory_registry_checks
                 (entity_slug, entity_type, registry_name, registry_url,
                  is_listed, license_type, enforcement_actions, raw_content, checked_at)

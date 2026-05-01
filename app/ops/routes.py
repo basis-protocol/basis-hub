@@ -43,7 +43,7 @@ async def run_migration(request: Request):
         migration_path = os.path.join(
             os.path.dirname(__file__), "..", "..", "migrations", "031_ops_hub.sql"
         )
-        run_migration(migration_path)
+        await run_migration(migration_path)
         return {"status": "ok", "migration": "031_ops_hub"}
     except HTTPException:
         raise
@@ -1003,7 +1003,7 @@ async def get_alerts(request: Request, limit: int = Query(default=50, le=200)):
     _check_admin_key(request)
     try:
         from app.ops.tools.alerter import get_alert_log
-        return {"alerts": get_alert_log(limit)}
+        return {"alerts": await get_alert_log(limit)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1099,7 +1099,7 @@ async def get_incidents(request: Request, days: int = Query(default=7)):
     _check_admin_key(request)
     try:
         from app.ops.tools.news_monitor import get_incidents
-        return {"incidents": get_incidents(days)}
+        return {"incidents": await get_incidents(days)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1381,7 +1381,7 @@ async def run_migration_033(request: Request):
         migration_path = os.path.join(
             os.path.dirname(__file__), "..", "..", "migrations", "033_ops_session6_expansion.sql"
         )
-        run_migration(migration_path)
+        await run_migration(migration_path)
         return {"status": "ok", "migration": "033_ops_session6_expansion"}
     except HTTPException:
         raise
@@ -2695,7 +2695,7 @@ async def run_migration_049(request: Request):
         migration_path = os.path.join(
             os.path.dirname(__file__), "..", "..", "migrations", "049_abm_campaigns.sql"
         )
-        run_migration(migration_path)
+        await run_migration(migration_path)
         return {"status": "ok", "migration": "049_abm_campaigns"}
     except HTTPException:
         raise
@@ -2885,7 +2885,7 @@ async def state_growth_live(request: Request):
     _check_admin_key(request)
     try:
         from app.data_layer.state_growth import get_state_growth
-        return get_state_growth()
+        return await get_state_growth()
     except Exception as e:
         logger.warning(f"State growth live dashboard failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -2909,7 +2909,7 @@ async def provenance_registry(request: Request):
     _check_admin_key(request)
     try:
         from app.data_layer.provenance_scaling import get_provenance_registry
-        return {"sources": get_provenance_registry()}
+        return {"sources": await get_provenance_registry()}
     except Exception as e:
         logger.warning(f"Provenance registry failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -2921,7 +2921,7 @@ async def provenance_coverage(request: Request):
     _check_admin_key(request)
     try:
         from app.data_layer.provenance_scaling import get_coverage_report
-        return get_coverage_report()
+        return await get_coverage_report()
     except Exception as e:
         logger.warning(f"Provenance coverage failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -3514,7 +3514,7 @@ async def ops_get_methodology(methodology_id: str, request: Request):
     _check_admin_key(request)
     try:
         from app.methodology_hashes import get_methodology
-        m = get_methodology(methodology_id)
+        m = await get_methodology(methodology_id)
         if not m:
             return JSONResponse({"error": "not found"}, status_code=404)
         return m

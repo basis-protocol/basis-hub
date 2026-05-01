@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def _serialize(obj):
     return str(obj)
 
 
-def _run_contagion_traversal(
+async def _run_contagion_traversal(
     source_entity_type: str,
     source_entity_id: str,
 ) -> dict:
@@ -43,7 +43,7 @@ def _run_contagion_traversal(
     # Determine seed wallet addresses based on entity type
     seed_addrs = []
     if source_entity_type == "stablecoin":
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT wallet_address FROM (
                    SELECT DISTINCT ON (wallet_address) wallet_address, value_usd
                    FROM wallet_graph.wallet_holdings
@@ -54,7 +54,7 @@ def _run_contagion_traversal(
         )
         seed_addrs = [r["wallet_address"] for r in (rows or [])]
     elif source_entity_type == "protocol":
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT wallet_address FROM protocol_pool_wallets
                WHERE protocol_slug = %s
                ORDER BY balance DESC NULLS LAST LIMIT 50""",
@@ -76,7 +76,7 @@ def _run_contagion_traversal(
 
     # Depth-2 recursive CTE traversal
     try:
-        contagion_rows = fetch_all("""
+        contagion_rows = await fetch_all_async("""
             WITH RECURSIVE contagion_path AS (
                 SELECT
                     CASE WHEN e.from_address = ANY(%s) THEN e.to_address ELSE e.from_address END AS node,
@@ -156,7 +156,7 @@ def _run_contagion_traversal(
     risk_map = {}
     try:
         if connected_addrs:
-            risk_rows = fetch_all("""
+            risk_rows = await fetch_all_async("""
                 SELECT DISTINCT ON (wallet_address)
                     wallet_address, risk_score, risk_grade
                 FROM wallet_graph.wallet_risk_scores
@@ -189,7 +189,7 @@ def _run_contagion_traversal(
     }
 
 
-def archive_contagion_event(
+async def archive_contagion_event(
     event_type: str,
     source_entity_type: str,
     source_entity_id: int | None,
@@ -209,7 +209,7 @@ def archive_contagion_event(
 
         # Run contagion traversal
         entity_key = source_entity_symbol or str(source_entity_id or "")
-        traversal = _run_contagion_traversal(source_entity_type, entity_key)
+        traversal = await _run_contagion_traversal(source_entity_type, entity_key)
 
         # Build propagation summary
         depth_dist = traversal.get("depth_distribution", {})
@@ -238,7 +238,7 @@ def archive_contagion_event(
         content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
 
         # Store event
-        execute(
+        await execute_async(
             """INSERT INTO contagion_events
                 (event_type, source_entity_type, source_entity_id, source_entity_symbol,
                  trigger_metric, trigger_value_before, trigger_value_after,
@@ -286,11 +286,11 @@ def archive_contagion_event(
         logger.warning(f"Contagion event archive failed: {e}")
 
 
-def archive_divergence_signals(signals: list):
+async def archive_divergence_signals(signals: list):
     """
     Process a batch of divergence signals and archive contagion events
     for any that are alert or critical severity.
-    Called from detect_all_divergences() after signals are stored.
+    Called from await detect_all_divergences() after signals are stored.
     """
     ARCHIVABLE_SEVERITIES = {"alert", "critical"}
 
@@ -338,7 +338,7 @@ def archive_divergence_signals(signals: list):
                 or 0
             )
 
-            archive_contagion_event(
+            await archive_contagion_event(
                 event_type=event_type,
                 source_entity_type=entity_type,
                 source_entity_id=None,

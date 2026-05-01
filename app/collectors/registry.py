@@ -19,7 +19,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from app.database import execute, get_cursor
+from app.database import execute, get_cursor, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _infer_source_type(url: str) -> str:
         return "protocol_api"
 
 
-def register_provenance_source(
+async def register_provenance_source(
     source_id: str,
     entity: str,
     component: str,
@@ -62,7 +62,7 @@ def register_provenance_source(
     if source_type is None:
         source_type = _infer_source_type(url)
     try:
-        execute(
+        await execute_async(
             """INSERT INTO provenance_sources (id, entity, component, source_type, url, schedule)
                VALUES (%s, %s, %s, %s, %s, %s)
                ON CONFLICT (id) DO UPDATE SET
@@ -75,7 +75,7 @@ def register_provenance_source(
         logger.warning(f"Failed to register provenance source {source_id}: {e}")
 
 
-def sync_provenance_sources():
+async def sync_provenance_sources():
     """
     Sync all known provenance sources from PROVENANCE_SOURCES dict into the DB.
     Called at the start of each scoring cycle so new collectors automatically
@@ -97,7 +97,7 @@ def sync_provenance_sources():
         source_type = _infer_source_type(url)
 
         try:
-            execute(
+            await execute_async(
                 """INSERT INTO provenance_sources (id, entity, component, source_type, url, schedule)
                    VALUES (%s, %s, %s, %s, %s, %s)
                    ON CONFLICT (id) DO UPDATE SET
@@ -277,12 +277,12 @@ def _make_async_collectors():
 
     async def _solana(client, _cg_id, sid):
         return await _with_inner_timeout(
-            "solana", collect_solana_components(client, sid),
+            "solana", await collect_solana_components(client, sid),
         )
 
     async def _actor(client, _cg_id, sid):
         return await _with_inner_timeout(
-            "actor_metrics", collect_actor_metrics(client, sid),
+            "actor_metrics", await collect_actor_metrics(client, sid),
         )
 
     _all = [
@@ -417,7 +417,7 @@ async def run_all_collectors(
                 pass
 
     tasks = [
-        _instrumented(name, fn(client, cg_id, stablecoin_id))
+        await _instrumented(name, fn(client, cg_id, stablecoin_id))
         for name, fn in async_collectors
     ]
     results = await asyncio.gather(*tasks)

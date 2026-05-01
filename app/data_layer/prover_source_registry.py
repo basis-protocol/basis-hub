@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from app.database import fetch_one, fetch_all, execute
+from app.database import fetch_one, fetch_all, execute, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ RECHECK_INTERVAL_HOURS = 24
 # Read sources from DB
 # =============================================================================
 
-def get_active_sources(schedule_filter: str = None) -> list[dict]:
+async def get_active_sources(schedule_filter: str = None) -> list[dict]:
     """
     Read enabled provenance sources from the DB.
 
@@ -51,7 +51,7 @@ def get_active_sources(schedule_filter: str = None) -> list[dict]:
     """
     try:
         if schedule_filter == "hourly":
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT id, entity, component, source_type, url, schedule,
                           consecutive_failures, last_success, last_failure,
                           last_error, disabled_reason
@@ -60,7 +60,7 @@ def get_active_sources(schedule_filter: str = None) -> list[dict]:
                    ORDER BY entity, component"""
             )
         elif schedule_filter == "weekly":
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT id, entity, component, source_type, url, schedule,
                           consecutive_failures, last_success, last_failure,
                           last_error, disabled_reason
@@ -72,7 +72,7 @@ def get_active_sources(schedule_filter: str = None) -> list[dict]:
             )
         else:
             # All enabled sources, with weekly schedule filtering
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT id, entity, component, source_type, url, schedule,
                           consecutive_failures, last_success, last_failure,
                           last_error, disabled_reason
@@ -89,10 +89,10 @@ def get_active_sources(schedule_filter: str = None) -> list[dict]:
         return []
 
 
-def get_all_sources() -> list[dict]:
+async def get_all_sources() -> list[dict]:
     """Read all provenance sources (enabled and disabled) from the DB."""
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT id, entity, component, source_type, url, schedule,
                       enabled, consecutive_failures, last_success, last_failure,
                       last_error, disabled_reason
@@ -105,7 +105,7 @@ def get_all_sources() -> list[dict]:
         return []
 
 
-def get_cycle_sources() -> list[dict]:
+async def get_cycle_sources() -> list[dict]:
     """
     Get sources for the current cycle, with DB fallback to local config.
 
@@ -113,7 +113,7 @@ def get_cycle_sources() -> list[dict]:
     Returns active sources from DB, falling back to PROVENANCE_SOURCES
     if the DB is unreachable.
     """
-    sources = get_active_sources()
+    sources = await get_active_sources()
     if sources:
         logger.info(f"Loaded {len(sources)} active provenance sources from DB")
         return sources
@@ -128,10 +128,10 @@ def get_cycle_sources() -> list[dict]:
 # Health state write-back
 # =============================================================================
 
-def record_success(source_id: str):
+async def record_success(source_id: str):
     """Record a successful notarization for a source."""
     try:
-        execute(
+        await execute_async(
             """UPDATE provenance_sources SET
                    consecutive_failures = 0,
                    last_success = NOW(),
@@ -145,7 +145,7 @@ def record_success(source_id: str):
         logger.warning(f"Failed to record success for {source_id}: {e}")
 
 
-def record_failure(source_id: str, error: str) -> bool:
+async def record_failure(source_id: str, error: str) -> bool:
     """
     Record a failed notarization attempt.
 
@@ -153,7 +153,7 @@ def record_failure(source_id: str, error: str) -> bool:
     """
     try:
         # Increment failures and get the new count
-        row = fetch_one(
+        row = await fetch_one_async(
             """UPDATE provenance_sources SET
                    consecutive_failures = consecutive_failures + 1,
                    last_failure = NOW(),
@@ -164,7 +164,7 @@ def record_failure(source_id: str, error: str) -> bool:
             (error, source_id),
         )
         if row and row["consecutive_failures"] >= AUTO_DISABLE_THRESHOLD:
-            _auto_disable(source_id, error)
+            await _auto_disable(source_id, error)
             return True
         return False
     except Exception as e:
@@ -172,10 +172,10 @@ def record_failure(source_id: str, error: str) -> bool:
         return False
 
 
-def _auto_disable(source_id: str, reason: str):
+async def _auto_disable(source_id: str, reason: str):
     """Disable a source after too many consecutive failures."""
     try:
-        execute(
+        await execute_async(
             """UPDATE provenance_sources SET
                    enabled = false,
                    disabled_reason = %s,
@@ -187,7 +187,7 @@ def _auto_disable(source_id: str, reason: str):
         logger.warning(f"Auto-disabled provenance source {source_id}: {reason}")
 
         # Report alert to provenance_health_alerts
-        _report_alert(source_id, "auto_disabled", details={
+        await _report_alert(source_id, "auto_disabled", details={
             "reason": reason,
             "threshold": AUTO_DISABLE_THRESHOLD,
         })
@@ -195,13 +195,13 @@ def _auto_disable(source_id: str, reason: str):
         logger.warning(f"Failed to auto-disable {source_id}: {e}")
 
 
-def record_auto_heal(source_id: str, old_url: str, new_url: str):
+async def record_auto_heal(source_id: str, old_url: str, new_url: str):
     """
     Record an auto-heal: source URL changed (same-domain redirect).
     Updates the URL and re-enables the source.
     """
     try:
-        execute(
+        await execute_async(
             """UPDATE provenance_sources SET
                    url = %s,
                    enabled = true,
@@ -215,15 +215,15 @@ def record_auto_heal(source_id: str, old_url: str, new_url: str):
         )
         logger.info(f"Auto-healed provenance source {source_id}: {old_url} -> {new_url}")
 
-        _report_alert(source_id, "auto_healed", old_url=old_url, redirect_url=new_url)
+        await _report_alert(source_id, "auto_healed", old_url=old_url, redirect_url=new_url)
     except Exception as e:
         logger.warning(f"Failed to record auto-heal for {source_id}: {e}")
 
 
-def record_re_enable(source_id: str):
+async def record_re_enable(source_id: str):
     """Re-enable a previously disabled source after successful re-check."""
     try:
-        execute(
+        await execute_async(
             """UPDATE provenance_sources SET
                    enabled = true,
                    consecutive_failures = 0,
@@ -235,16 +235,16 @@ def record_re_enable(source_id: str):
         )
         logger.info(f"Re-enabled provenance source {source_id}")
 
-        _report_alert(source_id, "re_enabled")
+        await _report_alert(source_id, "re_enabled")
     except Exception as e:
         logger.warning(f"Failed to re-enable {source_id}: {e}")
 
 
-def _report_alert(source_id: str, event: str, old_url: str = None,
+async def _report_alert(source_id: str, event: str, old_url: str = None,
                   redirect_url: str = None, details: dict = None):
     """Write a health alert to provenance_health_alerts."""
     try:
-        execute(
+        await execute_async(
             """INSERT INTO provenance_health_alerts
                (source_id, event, old_url, redirect_url, details)
                VALUES (%s, %s, %s, %s, %s)""",
@@ -259,13 +259,13 @@ def _report_alert(source_id: str, event: str, old_url: str = None,
 # Daily re-check of disabled sources
 # =============================================================================
 
-def get_sources_for_recheck() -> list[dict]:
+async def get_sources_for_recheck() -> list[dict]:
     """
     Get disabled sources that haven't been checked in RECHECK_INTERVAL_HOURS.
     These should be probed (HEAD request) to see if they've recovered.
     """
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT id, entity, component, source_type, url, last_failure
                FROM provenance_sources
                WHERE enabled = false
@@ -280,13 +280,13 @@ def get_sources_for_recheck() -> list[dict]:
         return []
 
 
-def bump_recheck_timestamp(source_id: str):
+async def bump_recheck_timestamp(source_id: str):
     """
     Update last_failure to now() so the source isn't re-checked for another
     RECHECK_INTERVAL_HOURS. Called when re-check fails.
     """
     try:
-        execute(
+        await execute_async(
             "UPDATE provenance_sources SET last_failure = NOW() WHERE id = %s",
             (source_id,),
         )
@@ -308,7 +308,7 @@ async def run_provenance_health_recheck():
     """
     import httpx
 
-    sources = get_sources_for_recheck()
+    sources = await get_sources_for_recheck()
     if not sources:
         logger.debug("No disabled provenance sources due for re-check")
         return {"checked": 0, "re_enabled": 0, "healed": 0, "still_down": 0}
@@ -326,7 +326,7 @@ async def run_provenance_health_recheck():
 
             # Skip dynamic URLs (e.g. CDA issuer PDFs)
             if url.startswith("dynamic:") or not url.startswith("http"):
-                bump_recheck_timestamp(source_id)
+                await bump_recheck_timestamp(source_id)
                 still_down += 1
                 continue
 
@@ -347,26 +347,26 @@ async def run_provenance_health_recheck():
                         pass
 
                 if resp.status_code == 200:
-                    record_re_enable(source_id)
+                    await record_re_enable(source_id)
                     re_enabled += 1
                 elif resp.status_code in (301, 302, 307, 308):
                     redirect_url = str(resp.headers.get("location", ""))
                     if redirect_url and _is_same_domain(url, redirect_url):
-                        record_auto_heal(source_id, url, redirect_url)
+                        await record_auto_heal(source_id, url, redirect_url)
                         healed += 1
                     else:
                         # Cross-domain redirect — report but don't auto-heal
-                        _report_alert(source_id, "domain_change_detected",
+                        await _report_alert(source_id, "domain_change_detected",
                                       old_url=url, redirect_url=redirect_url)
-                        bump_recheck_timestamp(source_id)
+                        await bump_recheck_timestamp(source_id)
                         still_down += 1
                 else:
-                    bump_recheck_timestamp(source_id)
+                    await bump_recheck_timestamp(source_id)
                     still_down += 1
 
             except Exception as e:
                 logger.debug(f"Re-check probe failed for {source_id}: {e}")
-                bump_recheck_timestamp(source_id)
+                await bump_recheck_timestamp(source_id)
                 still_down += 1
 
     result = {
@@ -392,7 +392,7 @@ def _is_same_domain(url1: str, url2: str) -> bool:
 # Seed from local config
 # =============================================================================
 
-def seed_from_local_config() -> int:
+async def seed_from_local_config() -> int:
     """
     Seed provenance_sources from the local PROVENANCE_SOURCES dict.
     Uses ON CONFLICT DO NOTHING so existing DB rows are preserved.
@@ -406,7 +406,7 @@ def seed_from_local_config() -> int:
     seeded = 0
     for src in local_sources:
         try:
-            row = fetch_one(
+            row = await fetch_one_async(
                 """INSERT INTO provenance_sources
                    (id, entity, component, source_type, url, schedule)
                    VALUES (%s, %s, %s, %s, %s, %s)
@@ -466,13 +466,13 @@ def _get_local_sources() -> list[dict]:
 # Cycle summary
 # =============================================================================
 
-def get_source_counts() -> dict:
+async def get_source_counts() -> dict:
     """
     Get aggregate source counts for cycle summary logging.
     Returns {active, disabled, total}.
     """
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             """SELECT
                    COUNT(*) FILTER (WHERE enabled = true) AS active,
                    COUNT(*) FILTER (WHERE enabled = false) AS disabled,

@@ -10,7 +10,7 @@ If no CDA data exists, returns empty list — scoring continues with existing da
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_one
+from app.database import fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.scoring import normalize_inverse_linear, normalize_linear, normalize_direct
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def _unwrap_citations(obj):
     return obj
 
 
-def get_cda_components(stablecoin_id: str) -> list[dict]:
+async def get_cda_components(stablecoin_id: str) -> list[dict]:
     """
     Get off-chain component scores from CDA vendor extractions.
 
@@ -58,7 +58,7 @@ def get_cda_components(stablecoin_id: str) -> list[dict]:
     """
     # Get latest high-confidence PDF extraction for this asset
     # Map stablecoin_id (lowercase, e.g. "usdc") to symbol (uppercase, e.g. "USDC")
-    latest = fetch_one(
+    latest = await fetch_one_async(
         """
         SELECT structured_data, confidence_score, extracted_at, extraction_method, source_type
         FROM cda_vendor_extractions
@@ -169,17 +169,17 @@ def get_cda_components(stablecoin_id: str) -> list[dict]:
     return components
 
 
-def get_cda_components_typed(stablecoin_id: str, disclosure_type: str = None) -> list[dict]:
+async def get_cda_components_typed(stablecoin_id: str, disclosure_type: str = None) -> list[dict]:
     """Type-aware CDA component extraction.
     Routes to the appropriate extraction logic based on disclosure type.
     Falls back to the original fiat-reserve extraction if type is unknown."""
     if not disclosure_type or disclosure_type == "fiat-reserve":
-        return get_cda_components(stablecoin_id)
+        return await get_cda_components(stablecoin_id)
 
     if disclosure_type in ("overcollateralized", "algorithmic"):
         return []
 
-    latest = fetch_one(
+    latest = await fetch_one_async(
         """
         SELECT structured_data, confidence_score, extracted_at, extraction_method, source_type
         FROM cda_vendor_extractions

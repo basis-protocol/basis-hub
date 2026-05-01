@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.index_definitions.vsri_v01 import VSRI_V01_DEFINITION, VAULT_ENTITIES
 from app.scoring_engine import score_entity
 from app.api_usage_tracker import track_api_call
@@ -149,7 +149,7 @@ def _score_vault_criterion(docs_url: str, criterion: dict) -> tuple[float, str |
     return 0.0, None, None
 
 
-def score_vault_docs(entity_slug: str) -> dict:
+async def score_vault_docs(entity_slug: str) -> dict:
     """Score vault documentation quality against a 4-criterion rubric.
 
     Returns dict of {component_id: score_0_to_100} for:
@@ -187,7 +187,7 @@ def score_vault_docs(entity_slug: str) -> dict:
 
         # Store evidence in rpi_doc_scores (reuse same table)
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO rpi_doc_scores
                     (protocol_slug, criterion, score, evidence_url, evidence_snippet, scored_at)
                 VALUES (%s, %s, %s, %s, %s, NOW())
@@ -500,7 +500,7 @@ def _automate_vault_withdrawal_delay(entity: dict, static: dict, matched_pools: 
     return automated
 
 
-def extract_vault_raw_values(entity: dict, all_pools: list[dict]) -> dict:
+async def extract_vault_raw_values(entity: dict, all_pools: list[dict]) -> dict:
     """Extract raw component values from DeFiLlama yield data + static config."""
     raw = {}
 
@@ -521,18 +521,18 @@ def extract_vault_raw_values(entity: dict, all_pools: list[dict]) -> dict:
     try:
         # Look up SII score for the underlying stablecoin
         if "usdc" in entity["slug"]:
-            sii_row = fetch_one("SELECT overall_score FROM scores WHERE stablecoin_id = 'usdc'")
+            sii_row = await fetch_one_async("SELECT overall_score FROM scores WHERE stablecoin_id = 'usdc'")
             if sii_row:
                 raw["underlying_sii_score"] = float(sii_row["overall_score"])
         elif "dai" in entity["slug"]:
-            sii_row = fetch_one("SELECT overall_score FROM scores WHERE stablecoin_id = 'dai'")
+            sii_row = await fetch_one_async("SELECT overall_score FROM scores WHERE stablecoin_id = 'dai'")
             if sii_row:
                 raw["underlying_sii_score"] = float(sii_row["overall_score"])
 
         # Look up PSI score for the underlying protocol
         protocol_slug = entity.get("protocol")
         if protocol_slug:
-            psi_row = fetch_one(
+            psi_row = await fetch_one_async(
                 "SELECT overall_score FROM psi_scores WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1",
                 (protocol_slug,),
             )
@@ -552,12 +552,12 @@ def extract_vault_raw_values(entity: dict, all_pools: list[dict]) -> dict:
 # Score and store
 # =============================================================================
 
-def score_vault(entity: dict, all_pools: list[dict], hacks_cache: list = None) -> dict | None:
+async def score_vault(entity: dict, all_pools: list[dict], hacks_cache: list = None) -> dict | None:
     """Score a single vault entity."""
     slug = entity["slug"]
     logger.info(f"Scoring vault: {slug}")
 
-    raw_values = extract_vault_raw_values(entity, all_pools)
+    raw_values = await extract_vault_raw_values(entity, all_pools)
     if not raw_values:
         logger.warning(f"No data collected for vault {slug}")
         return None
@@ -588,7 +588,7 @@ def score_vault(entity: dict, all_pools: list[dict], hacks_cache: list = None) -
 
     # --- Phase 3C: Documentation quality scoring ---
     try:
-        docs_scores = score_vault_docs(slug)
+        docs_scores = await score_vault_docs(slug)
         if docs_scores:
             for comp_id, live_score in docs_scores.items():
                 static_score = static.get(comp_id, 0)
@@ -604,14 +604,14 @@ def score_vault(entity: dict, all_pools: list[dict], hacks_cache: list = None) -
     return result
 
 
-def store_vault_score(result: dict) -> None:
+async def store_vault_score(result: dict) -> None:
     """Store a vault score in the generic_index_scores table."""
     slug = result["entity_slug"]
     raw_for_storage = {k: v for k, v in result["raw_values"].items() if not k.startswith("_")}
     raw_canonical = json.dumps(raw_for_storage, sort_keys=True, default=str)
     inputs_hash = "0x" + hashlib.sha256(raw_canonical.encode()).hexdigest()
 
-    execute("""
+    await execute_async("""
         INSERT INTO generic_index_scores
             (index_id, entity_slug, entity_name, overall_score,
              category_scores, component_scores, raw_values,
@@ -648,7 +648,7 @@ def store_vault_score(result: dict) -> None:
     ))
 
 
-def run_vsri_scoring() -> list[dict]:
+async def run_vsri_scoring() -> list[dict]:
     """Score all vault entities. Called from worker."""
     all_pools = fetch_yield_pools()
     time.sleep(1)
@@ -664,9 +664,9 @@ def run_vsri_scoring() -> list[dict]:
     results = []
     for entity in VAULT_ENTITIES:
         try:
-            result = score_vault(entity, all_pools, hacks_cache=hacks_cache)
+            result = await score_vault(entity, all_pools, hacks_cache=hacks_cache)
             if result:
-                store_vault_score(result)
+                await store_vault_score(result)
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

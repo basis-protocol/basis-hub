@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one
+from app.database import fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.indexer.scorer import compute_wallet_risk
 
 logger = logging.getLogger(__name__)
@@ -24,9 +24,9 @@ def _keccak256_hex(data: bytes) -> str:
         return "0x" + hashlib.sha256(data).hexdigest()
 
 
-def _get_sii_scores() -> dict:
+async def _get_sii_scores() -> dict:
     """Fetch current SII scores for all stablecoins, keyed by symbol."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         "SELECT stablecoin_id, overall_score FROM scores"
     )
     result = {}
@@ -37,9 +37,9 @@ def _get_sii_scores() -> dict:
     return result
 
 
-def _get_sii_7d_deltas() -> dict:
+async def _get_sii_7d_deltas() -> dict:
     """Fetch 7-day score deltas from score_history, keyed by stablecoin_id."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT s.stablecoin_id,
                s.overall_score - COALESCE(h.overall_score, s.overall_score) AS delta_7d
         FROM scores s
@@ -50,9 +50,9 @@ def _get_sii_7d_deltas() -> dict:
     return {r["stablecoin_id"]: round(r["delta_7d"] or 0, 2) for r in rows}
 
 
-def _get_wallet_holdings(wallet_address: str) -> list[dict]:
+async def _get_wallet_holdings(wallet_address: str) -> list[dict]:
     """Fetch current holdings for a wallet from wallet_graph."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT symbol, value_usd, is_scored, sii_score, pct_of_wallet
         FROM wallet_graph.wallet_holdings
         WHERE wallet_address = %s
@@ -64,9 +64,9 @@ def _get_wallet_holdings(wallet_address: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _get_previous_assessment(wallet_address: str) -> dict | None:
+async def _get_previous_assessment(wallet_address: str) -> dict | None:
     """Get the most recent assessment for a wallet."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT wallet_risk_score, concentration_hhi,
                coverage_ratio, total_stablecoin_value, holdings_snapshot
         FROM assessment_events

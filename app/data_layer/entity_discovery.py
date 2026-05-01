@@ -66,13 +66,13 @@ async def _fetch_protocols(client: httpx.AsyncClient) -> list[dict]:
         return []
 
 
-def _get_existing_entities() -> set:
+async def _get_existing_entities() -> set:
     """Get all entity slugs already tracked in Circle 7 indices."""
-    from app.database import fetch_all
+    from app.database import fetch_all, fetch_one_async, fetch_all_async, execute_async
 
     existing = set()
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT DISTINCT entity_id FROM generic_index_scores
                WHERE index_id IN ('lsti', 'bri', 'vsri', 'cxri', 'tti', 'dohi')"""
         )
@@ -83,7 +83,7 @@ def _get_existing_entities() -> set:
 
     # Also check manually configured entities
     try:
-        rows = fetch_all("SELECT DISTINCT protocol_slug FROM rpi_protocol_config WHERE enabled = TRUE")
+        rows = await fetch_all_async("SELECT DISTINCT protocol_slug FROM rpi_protocol_config WHERE enabled = TRUE")
         if rows:
             existing.update(r["protocol_slug"] for r in rows)
     except Exception:
@@ -158,7 +158,7 @@ async def run_entity_discovery() -> dict:
 
     Returns summary.
     """
-    existing = _get_existing_entities()
+    existing = await _get_existing_entities()
     logger.error(f"[discovery] starting: {len(existing)} existing entities tracked")
 
     async with httpx.AsyncClient(timeout=30) as client:

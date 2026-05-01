@@ -7,7 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_one, execute
+from app.database import fetch_one, execute, fetch_one_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -176,14 +176,14 @@ DATA_TYPES = [
 ]
 
 
-def update_catalog():
+async def update_catalog():
     """Update the data_catalog table with current stats for all data types."""
     for dt in DATA_TYPES:
         table = dt["source_table"]
 
         try:
             # Get row count
-            count_row = fetch_one(f"SELECT COUNT(*) as cnt FROM {table}")
+            count_row = await fetch_one_async(f"SELECT COUNT(*) as cnt FROM {table}")
             row_count = count_row["cnt"] if count_row else 0
 
             # Get earliest and latest records
@@ -209,7 +209,7 @@ def update_catalog():
             time_col = time_cols.get(table)
 
             if time_col:
-                range_row = fetch_one(
+                range_row = await fetch_one_async(
                     f"SELECT MIN({time_col}) as earliest, MAX({time_col}) as latest FROM {table}"
                 )
                 earliest = range_row["earliest"] if range_row else None
@@ -222,7 +222,7 @@ def update_catalog():
                 earliest = None
                 latest = None
 
-            execute(
+            await execute_async(
                 """INSERT INTO data_catalog
                    (data_type, description, source_table, update_frequency,
                     providers, provenance_status, earliest_record, latest_record,

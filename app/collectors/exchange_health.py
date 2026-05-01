@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -99,10 +99,10 @@ def check_all_exchanges() -> list[dict]:
 # Storage
 # =============================================================================
 
-def _ensure_health_table():
+async def _ensure_health_table():
     """Create exchange_health_checks table if it doesn't exist."""
     try:
-        execute("""
+        await execute_async("""
             CREATE TABLE IF NOT EXISTS exchange_health_checks (
                 id SERIAL PRIMARY KEY,
                 exchange_slug TEXT NOT NULL,
@@ -114,7 +114,7 @@ def _ensure_health_table():
             )
         """)
         # Index for efficient rolling queries
-        execute("""
+        await execute_async("""
             CREATE INDEX IF NOT EXISTS idx_exchange_health_slug_time
             ON exchange_health_checks (exchange_slug, checked_at DESC)
         """)
@@ -122,12 +122,12 @@ def _ensure_health_table():
         logger.debug(f"Table creation skipped (may already exist): {e}")
 
 
-def store_health_checks(results: list[dict]):
+async def store_health_checks(results: list[dict]):
     """Store health check results in the database."""
-    _ensure_health_table()
+    await _ensure_health_table()
     for r in results:
         try:
-            execute(
+            await execute_async(
                 """
                 INSERT INTO exchange_health_checks
                     (exchange_slug, status_code, response_time_ms, is_healthy, error, checked_at)
@@ -146,13 +146,13 @@ def store_health_checks(results: list[dict]):
             logger.warning(f"Failed to store health check for {r['exchange']}: {e}")
 
 
-def compute_rolling_uptime(exchange_slug: str, hours: int = 24) -> dict:
+async def compute_rolling_uptime(exchange_slug: str, hours: int = 24) -> dict:
     """
     Compute rolling uptime statistics for an exchange over the given hours.
     Returns {"uptime_pct": float, "avg_response_ms": float, "check_count": int}.
     """
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             """
             SELECT
                 COUNT(*) as total,
@@ -216,7 +216,7 @@ def normalize_api_availability(uptime_pct: float, avg_response_ms: float) -> flo
 # Main runner
 # =============================================================================
 
-def run_exchange_health_monitoring() -> list[dict]:
+async def run_exchange_health_monitoring() -> list[dict]:
     """
     Run exchange health checks for all CXRI exchanges.
     Called from worker fast cycle (hourly).
@@ -226,14 +226,14 @@ def run_exchange_health_monitoring() -> list[dict]:
     check_results = check_all_exchanges()
 
     # 2. Store results
-    store_health_checks(check_results)
+    await store_health_checks(check_results)
 
     # 3. Compute rolling uptime and normalize
     results = []
     for r in check_results:
         slug = r["exchange"]
         try:
-            uptime_data = compute_rolling_uptime(slug, hours=24)
+            uptime_data = await compute_rolling_uptime(slug, hours=24)
             score = normalize_api_availability(
                 uptime_data["uptime_pct"],
                 uptime_data["avg_response_ms"],
@@ -245,7 +245,7 @@ def run_exchange_health_monitoring() -> list[dict]:
 
         # Store normalized score in generic_index_scores
         try:
-            execute(
+            await execute_async(
                 """
                 INSERT INTO generic_index_scores (index_id, entity_slug, entity_name,
                     overall_score, category_scores, component_scores, raw_values,

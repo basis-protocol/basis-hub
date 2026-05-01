@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.database import execute, fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 from app.utils.blockscout_client import (
     get_contract_abi as bs_get_abi,
@@ -40,13 +40,13 @@ COMPARISON_ENABLED_ENV = os.environ.get("BLOCKSCOUT_COMPARISON_ENABLED", "true")
 COMPARISON_DURATION_DAYS = 7
 
 
-def is_comparison_active() -> bool:
+async def is_comparison_active() -> bool:
     """Check if the comparison window is still active."""
     if COMPARISON_ENABLED_ENV.lower() != "true":
         return False
 
     try:
-        row = fetch_one("SELECT MIN(compared_at) AS first FROM data_source_comparisons")
+        row = await fetch_one_async("SELECT MIN(compared_at) AS first FROM data_source_comparisons")
         if not row or not row.get("first"):
             return True  # No comparisons yet — start now
         first = row["first"]
@@ -100,7 +100,7 @@ def _close_match(etherscan_data: dict, blockscout_data: dict) -> bool:
     return False
 
 
-def _store_comparison(
+async def _store_comparison(
     endpoint: str,
     params: dict,
     etherscan_hash: str,
@@ -111,7 +111,7 @@ def _store_comparison(
 ):
     """Store a comparison result in the database."""
     try:
-        execute(
+        await execute_async(
             """
             INSERT INTO data_source_comparisons
                 (endpoint, params, etherscan_hash, blockscout_hash,
@@ -142,7 +142,7 @@ async def compare_contract_abi(
     chain_id: int = 1,
 ):
     """Shadow-compare contract ABI fetch."""
-    if not is_comparison_active():
+    if not await is_comparison_active():
         return
 
     api_key = os.environ.get("ETHERSCAN_API_KEY", "")
@@ -162,7 +162,7 @@ async def compare_contract_abi(
         es_ms = int((time.monotonic() - es_start) * 1000)
     except Exception as e:
         _es_status = 0
-        _store_comparison("contract/getabi", {"address": address}, "", "",
+        await _store_comparison("contract/getabi", {"address": address}, "", "",
                           "etherscan_error", 0, 0)
         return
     finally:
@@ -177,7 +177,7 @@ async def compare_contract_abi(
         bs_ms = bs_data.pop("_blockscout_response_time_ms", 0)
         bs_data.pop("_blockscout_error", None)
     except Exception:
-        _store_comparison("contract/getabi", {"address": address},
+        await _store_comparison("contract/getabi", {"address": address},
                           _hash_result(es_data), "", "blockscout_error", es_ms, 0)
         return
 
@@ -192,7 +192,7 @@ async def compare_contract_abi(
     else:
         status = "mismatch"
 
-    _store_comparison("contract/getabi", {"address": address},
+    await _store_comparison("contract/getabi", {"address": address},
                       es_hash, bs_hash, status, es_ms, bs_ms)
 
 
@@ -203,7 +203,7 @@ async def compare_token_transfers(
     chain_id: int = 1,
 ):
     """Shadow-compare token transfer fetch."""
-    if not is_comparison_active():
+    if not await is_comparison_active():
         return
 
     api_key = os.environ.get("ETHERSCAN_API_KEY", "")
@@ -227,7 +227,7 @@ async def compare_token_transfers(
         es_ms = int((time.monotonic() - es_start) * 1000)
     except Exception:
         _es_status = 0
-        _store_comparison("account/tokentx", {"address": address}, "", "",
+        await _store_comparison("account/tokentx", {"address": address}, "", "",
                           "etherscan_error", 0, 0)
         return
     finally:
@@ -241,7 +241,7 @@ async def compare_token_transfers(
         bs_ms = bs_data.pop("_blockscout_response_time_ms", 0)
         bs_data.pop("_blockscout_error", None)
     except Exception:
-        _store_comparison("account/tokentx", {"address": address},
+        await _store_comparison("account/tokentx", {"address": address},
                           _hash_result(es_data), "", "blockscout_error", es_ms, 0)
         return
 
@@ -254,7 +254,7 @@ async def compare_token_transfers(
     else:
         status = "mismatch"
 
-    _store_comparison("account/tokentx", {"address": address},
+    await _store_comparison("account/tokentx", {"address": address},
                       es_hash, bs_hash, status, es_ms, bs_ms)
 
 
@@ -264,7 +264,7 @@ async def compare_token_holder_count(
     chain_id: int = 1,
 ):
     """Shadow-compare token holder count."""
-    if not is_comparison_active():
+    if not await is_comparison_active():
         return
 
     api_key = os.environ.get("ETHERSCAN_API_KEY", "")
@@ -283,7 +283,7 @@ async def compare_token_holder_count(
         es_ms = int((time.monotonic() - es_start) * 1000)
     except Exception:
         _es_status = 0
-        _store_comparison("token/tokenholdercount", {"contract": contract_address},
+        await _store_comparison("token/tokenholdercount", {"contract": contract_address},
                           "", "", "etherscan_error", 0, 0)
         return
     finally:
@@ -297,7 +297,7 @@ async def compare_token_holder_count(
         bs_ms = bs_data.pop("_blockscout_response_time_ms", 0)
         bs_data.pop("_blockscout_error", None)
     except Exception:
-        _store_comparison("token/tokenholdercount", {"contract": contract_address},
+        await _store_comparison("token/tokenholdercount", {"contract": contract_address},
                           _hash_result(es_data), "", "blockscout_error", es_ms, 0)
         return
 
@@ -310,7 +310,7 @@ async def compare_token_holder_count(
     else:
         status = "mismatch"
 
-    _store_comparison("token/tokenholdercount", {"contract": contract_address},
+    await _store_comparison("token/tokenholdercount", {"contract": contract_address},
                       es_hash, bs_hash, status, es_ms, bs_ms)
 
 
@@ -318,13 +318,13 @@ async def compare_token_holder_count(
 # Summary endpoint helper
 # =============================================================================
 
-def get_comparison_summary() -> dict:
+async def get_comparison_summary() -> dict:
     """
     Generate a summary of all comparison runs.
     Used by GET /api/admin/blockscout-comparison.
     """
     try:
-        total = fetch_one("SELECT COUNT(*) as cnt FROM data_source_comparisons")
+        total = await fetch_one_async("SELECT COUNT(*) as cnt FROM data_source_comparisons")
         total_count = total["cnt"] if total else 0
 
         if total_count == 0:
@@ -335,7 +335,7 @@ def get_comparison_summary() -> dict:
             }
 
         # Match breakdown
-        breakdown = fetch_all(
+        breakdown = await fetch_all_async(
             "SELECT match_status, COUNT(*) as cnt FROM data_source_comparisons GROUP BY match_status"
         )
         status_counts = {r["match_status"]: r["cnt"] for r in breakdown}
@@ -347,7 +347,7 @@ def get_comparison_summary() -> dict:
         bs_error = status_counts.get("blockscout_error", 0)
 
         # Average response times
-        avg_times = fetch_one(
+        avg_times = await fetch_one_async(
             """
             SELECT
                 AVG(etherscan_ms) as avg_es_ms,
@@ -360,7 +360,7 @@ def get_comparison_summary() -> dict:
         # Endpoint breakdown for mismatches
         mismatch_endpoints = []
         if mismatch > 0:
-            mismatch_rows = fetch_all(
+            mismatch_rows = await fetch_all_async(
                 """
                 SELECT endpoint, COUNT(*) as cnt
                 FROM data_source_comparisons
@@ -372,7 +372,7 @@ def get_comparison_summary() -> dict:
             mismatch_endpoints = [{"endpoint": r["endpoint"], "count": r["cnt"]} for r in mismatch_rows]
 
         # Time range
-        time_range = fetch_one(
+        time_range = await fetch_one_async(
             "SELECT MIN(compared_at) as first, MAX(compared_at) as last FROM data_source_comparisons"
         )
 

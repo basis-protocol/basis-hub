@@ -13,7 +13,7 @@ import json
 import logging
 import httpx
 from datetime import datetime, timezone, timedelta
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +35,17 @@ def _should_send(alert_type: str, message: str) -> bool:
     return True
 
 
-def _get_daily_count() -> int:
+async def _get_daily_count() -> int:
     try:
-        row = fetch_one("SELECT count FROM alert_rate_limit WHERE day = CURRENT_DATE")
+        row = await fetch_one_async("SELECT count FROM alert_rate_limit WHERE day = CURRENT_DATE")
         return int(row["count"]) if row else 0
     except Exception:
         return 0
 
 
-def _increment_daily_count():
+async def _increment_daily_count():
     try:
-        execute("""
+        await execute_async("""
             INSERT INTO alert_rate_limit (day, count, last_sent_at)
             VALUES (CURRENT_DATE, 1, NOW())
             ON CONFLICT (day) DO UPDATE SET
@@ -56,10 +56,10 @@ def _increment_daily_count():
         pass
 
 
-def _get_active_channels():
+async def _get_active_channels():
     """Load enabled alert channels from ops_alert_config."""
     try:
-        return fetch_all("SELECT * FROM ops_alert_config WHERE enabled = TRUE")
+        return await fetch_all_async("SELECT * FROM ops_alert_config WHERE enabled = TRUE")
     except Exception:
         return []
 
@@ -75,13 +75,13 @@ async def send_alert(alert_type: str, message: str, context: dict = None, severi
         return False
 
     # Daily cap
-    daily_count = _get_daily_count()
+    daily_count = await _get_daily_count()
     cap = DAILY_CAP_CRITICAL if severity == "critical" else DAILY_CAP_NORMAL
     if daily_count >= cap:
         logger.warning(f"[alerter] daily cap reached ({daily_count}/{cap}), dropping {severity}: {alert_type}")
         return False
 
-    channels = _get_active_channels()
+    channels = await _get_active_channels()
     sent_any = False
 
     for ch in channels:
@@ -100,11 +100,11 @@ async def send_alert(alert_type: str, message: str, context: dict = None, severi
 
     # Track daily count
     if sent_any:
-        _increment_daily_count()
+        await _increment_daily_count()
 
     # Always log the alert
     try:
-        execute(
+        await execute_async(
             "INSERT INTO ops_alert_log (alert_type, channel, message, context) VALUES (%s, %s, %s, %s)",
             (alert_type, "telegram" if sent_any else "log_only", message, json.dumps(context or {})),
         )
@@ -186,7 +186,7 @@ async def check_and_alert_health(health_results: list):
 
     # Check previous state to avoid alert fatigue
     for f in failures:
-        prev = fetch_one(
+        prev = await fetch_one_async(
             """SELECT status FROM ops_health_checks
                WHERE system = %s AND checked_at < NOW() - INTERVAL '5 minutes'
                ORDER BY checked_at DESC LIMIT 1""",
@@ -211,7 +211,7 @@ async def check_and_alert_engagement():
     Checks for engagement_log entries with responses that haven't been alerted yet.
     """
     # Find engagement entries with responses that are recent and not yet alerted
-    recent = fetch_all(
+    recent = await fetch_all_async(
         """SELECT el.*, t.name as target_name
            FROM ops_target_engagement_log el
            JOIN ops_targets t ON el.target_id = t.id
@@ -240,10 +240,10 @@ async def check_and_alert_engagement():
         )
 
 
-def get_alert_log(limit: int = 50) -> list:
+async def get_alert_log(limit: int = 50) -> list:
     """Get recent alert log."""
     try:
-        return fetch_all(
+        return await fetch_all_async(
             "SELECT * FROM ops_alert_log ORDER BY sent_at DESC LIMIT %s",
             (limit,),
         )

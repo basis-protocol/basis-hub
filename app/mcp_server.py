@@ -173,9 +173,9 @@ async def check_transaction_risk(from_address: str, to_address: str, asset_symbo
     _start = time.time()
     _success = True
     try:
-        asset_task = _api_get(f"/api/scores/{asset_symbol.lower()}")
-        sender_task = _api_get(f"/api/wallets/{from_address.lower()}")
-        receiver_task = _api_get(f"/api/wallets/{to_address.lower()}")
+        asset_task = await _api_get(f"/api/scores/{asset_symbol.lower()}")
+        sender_task = await _api_get(f"/api/wallets/{from_address.lower()}")
+        receiver_task = await _api_get(f"/api/wallets/{to_address.lower()}")
         asset, sender, receiver = await asyncio.gather(asset_task, sender_task, receiver_task)
         result = {
             "asset": asset,

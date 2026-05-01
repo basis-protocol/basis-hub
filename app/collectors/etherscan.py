@@ -23,6 +23,7 @@ import httpx
 
 from app.config import STABLECOIN_REGISTRY
 from app.api_usage_tracker import track_api_call
+from app.database import fetch_one, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +276,7 @@ async def collect_holder_distribution(
 
     # Get total supply from CoinGecko market data (already fetched by coingecko collector)
     # Use market_cap as proxy: market_cap ≈ total_supply * price ≈ total_supply for stablecoins
-    total_supply = _estimate_total_supply(stablecoin_id, holder_balances)
+    total_supply = await _estimate_total_supply(stablecoin_id, holder_balances)
 
     # --- Component 1: Top 10 Concentration ---
     top_10 = holder_balances[:10]
@@ -379,15 +380,14 @@ async def collect_holder_distribution(
     return components
 
 
-def _estimate_total_supply(stablecoin_id: str, holder_balances: list[dict]) -> float:
+async def _estimate_total_supply(stablecoin_id: str, holder_balances: list[dict]) -> float:
     """
     Estimate total circulating supply for a stablecoin.
     Uses database market_cap if available (≈ supply for stablecoins pegged to $1),
     otherwise falls back to known supply estimates.
     """
     try:
-        from app.database import fetch_one
-        row = fetch_one(
+        row = await fetch_one_async(
             "SELECT market_cap FROM scores WHERE stablecoin_id = %s",
             (stablecoin_id,)
         )

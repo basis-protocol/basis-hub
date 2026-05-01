@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.index_definitions.lsti_v01 import LSTI_V01_DEFINITION, LST_ENTITIES
 from app.scoring_engine import score_entity
 from app.api_usage_tracker import track_api_call
@@ -522,14 +522,14 @@ def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
     return result
 
 
-def store_lst_score(result: dict) -> None:
+async def store_lst_score(result: dict) -> None:
     """Store an LST score in the generic_index_scores table."""
     slug = result["entity_slug"]
     raw_for_storage = {k: v for k, v in result["raw_values"].items() if not k.startswith("_")}
     raw_canonical = json.dumps(raw_for_storage, sort_keys=True, default=str)
     inputs_hash = "0x" + hashlib.sha256(raw_canonical.encode()).hexdigest()
 
-    execute("""
+    await execute_async("""
         INSERT INTO generic_index_scores
             (index_id, entity_slug, entity_name, overall_score,
              category_scores, component_scores, raw_values,

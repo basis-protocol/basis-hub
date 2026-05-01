@@ -12,7 +12,7 @@ import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.scoring import FORMULA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -26,25 +26,25 @@ def _default_serializer(obj):
     return str(obj)
 
 
-def _safe_count(sql: str) -> int:
+async def _safe_count(sql: str) -> int:
     """Run a COUNT query, return 0 on any error."""
     try:
-        row = fetch_one(sql)
+        row = await fetch_one_async(sql)
         return row["count"] if row else 0
     except Exception:
         return 0
 
 
-def _safe_edge_coverage() -> float:
+async def _safe_edge_coverage() -> float:
     """Compute edge coverage percentage. Returns 0 on error."""
     try:
-        wallets_with = fetch_one("""
+        wallets_with = await fetch_one_async("""
             SELECT COUNT(DISTINCT addr) AS count FROM (
                 SELECT from_address AS addr FROM wallet_graph.wallet_edges
                 UNION SELECT to_address FROM wallet_graph.wallet_edges
             ) sub
         """)
-        wallets_total = fetch_one("SELECT COUNT(*) AS count FROM wallet_graph.wallets")
+        wallets_total = await fetch_one_async("SELECT COUNT(*) AS count FROM wallet_graph.wallets")
         w_with = wallets_with["count"] if wallets_with else 0
         w_total = wallets_total["count"] if wallets_total else 0
         return round(w_with / w_total * 100, 2) if w_total > 0 else 0
@@ -52,14 +52,14 @@ def _safe_edge_coverage() -> float:
         return 0
 
 
-def run_daily_pulse():
+async def run_daily_pulse():
     """Generate today's daily pulse. Idempotent — safe to call multiple times."""
 
     today = date.today().isoformat()
     logger.info(f"Generating daily pulse for {today}")
 
     # 1. All current stablecoin scores (from scores table, not stablecoins)
-    stablecoins = fetch_all("""
+    stablecoins = await fetch_all_async("""
         SELECT st.symbol, s.overall_score, s.grade, s.formula_version
         FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
@@ -67,7 +67,7 @@ def run_daily_pulse():
     """)
 
     # 2. Yesterday's pulse for delta calculation
-    yesterday_pulse = fetch_one(
+    yesterday_pulse = await fetch_one_async(
         "SELECT summary FROM daily_pulses WHERE pulse_date < %s ORDER BY pulse_date DESC LIMIT 1",
         (today,),
     )
@@ -93,7 +93,7 @@ def run_daily_pulse():
         })
 
     # 4. Aggregate wallet stats
-    wallet_stats = fetch_one("""
+    wallet_stats = await fetch_one_async("""
         SELECT
             COUNT(*) as wallets_scored,
             AVG(risk_score) as avg_risk_score
@@ -105,15 +105,15 @@ def run_daily_pulse():
         ) latest
     """)
 
-    wallets_total = fetch_one("SELECT COUNT(*) as count FROM wallet_graph.wallets")
+    wallets_total = await fetch_one_async("SELECT COUNT(*) as count FROM wallet_graph.wallets")
 
-    wallets_active = fetch_one("""
+    wallets_active = await fetch_one_async("""
         SELECT COUNT(DISTINCT wallet_address) as count
         FROM wallet_graph.wallet_risk_scores
         WHERE risk_score IS NOT NULL AND computed_at > NOW() - INTERVAL '7 days'
     """)
 
-    wallet_value = fetch_one("""
+    wallet_value = await fetch_one_async("""
         SELECT COALESCE(SUM(total_stablecoin_value), 0) as total_tracked
         FROM wallet_graph.wallets
         WHERE total_stablecoin_value > 0
@@ -122,7 +122,7 @@ def run_daily_pulse():
     # 5. Event counts (assessment_events may be empty)
     event_counts = {"silent": 0, "notable": 0, "alert": 0, "critical": 0, "total": 0}
     try:
-        events = fetch_all("""
+        events = await fetch_all_async("""
             SELECT severity, COUNT(*) as count
             FROM assessment_events
             WHERE created_at > NOW() - INTERVAL '24 hours'
@@ -139,7 +139,7 @@ def run_daily_pulse():
     # 6. Notable events (top 5)
     notable_events = []
     try:
-        notables = fetch_all("""
+        notables = await fetch_all_async("""
             SELECT id, wallet_address, trigger_type, severity, wallet_risk_score, created_at
             FROM assessment_events
             WHERE severity IN ('notable', 'alert', 'critical')
@@ -163,7 +163,7 @@ def run_daily_pulse():
     # 7. PSI scores summary (if available)
     psi_summary = []
     try:
-        psi_rows = fetch_all("""
+        psi_rows = await fetch_all_async("""
             SELECT DISTINCT ON (protocol_slug)
                 protocol_slug, protocol_name, overall_score, grade
             FROM psi_scores
@@ -192,8 +192,8 @@ def run_daily_pulse():
             "avg_risk_score": round(float(wallet_stats.get("avg_risk_score", 0)), 2) if wallet_stats and wallet_stats.get("avg_risk_score") else 0,
             "stablecoins_scored": len(scores_list),
             "protocols_scored": len(psi_summary),
-            "edge_count": _safe_count("SELECT COUNT(*) AS count FROM wallet_graph.wallet_edges"),
-            "edge_coverage_pct": _safe_edge_coverage(),
+            "edge_count": await _safe_count("SELECT COUNT(*) AS count FROM wallet_graph.wallet_edges"),
+            "edge_coverage_pct": await _safe_edge_coverage(),
         },
         "events_24h": event_counts,
         "notable_events": notable_events,
@@ -203,7 +203,7 @@ def run_daily_pulse():
     # 8b. State accumulation — row counts from pg_stat (instant, no table scans)
     try:
         from app.data_layer.state_growth import _bulk_row_counts, _resolve_count
-        _pg = _bulk_row_counts()
+        _pg = await _bulk_row_counts()
         state_counts = {
             "score_history": _resolve_count(_pg, "score_history"),
             "component_readings": _resolve_count(_pg, "component_readings"),
@@ -219,17 +219,17 @@ def run_daily_pulse():
         }
     except Exception:
         state_counts = {
-            "score_history": _safe_count("SELECT COUNT(*) AS count FROM score_history"),
-            "component_readings": _safe_count("SELECT COUNT(*) AS count FROM component_readings"),
-            "assessment_events": _safe_count("SELECT COUNT(*) AS count FROM assessment_events"),
-            "cda_extractions": _safe_count("SELECT COUNT(*) AS count FROM cda_vendor_extractions"),
-            "discovery_signals": _safe_count("SELECT COUNT(*) AS count FROM discovery_signals"),
-            "historical_prices": _safe_count("SELECT COUNT(*) AS count FROM historical_prices"),
-            "collateral_exposure": _safe_count("SELECT COUNT(*) AS count FROM protocol_collateral_exposure"),
-            "treasury_holdings": _safe_count("SELECT COUNT(*) AS count FROM protocol_treasury_holdings"),
-            "protocol_backlog": _safe_count("SELECT COUNT(*) AS count FROM protocol_backlog"),
-            "wallet_profiles": _safe_count("SELECT COUNT(*) AS count FROM wallet_graph.wallet_profiles"),
-            "daily_pulses": _safe_count("SELECT COUNT(*) AS count FROM daily_pulses"),
+            "score_history": await _safe_count("SELECT COUNT(*) AS count FROM score_history"),
+            "component_readings": await _safe_count("SELECT COUNT(*) AS count FROM component_readings"),
+            "assessment_events": await _safe_count("SELECT COUNT(*) AS count FROM assessment_events"),
+            "cda_extractions": await _safe_count("SELECT COUNT(*) AS count FROM cda_vendor_extractions"),
+            "discovery_signals": await _safe_count("SELECT COUNT(*) AS count FROM discovery_signals"),
+            "historical_prices": await _safe_count("SELECT COUNT(*) AS count FROM historical_prices"),
+            "collateral_exposure": await _safe_count("SELECT COUNT(*) AS count FROM protocol_collateral_exposure"),
+            "treasury_holdings": await _safe_count("SELECT COUNT(*) AS count FROM protocol_treasury_holdings"),
+            "protocol_backlog": await _safe_count("SELECT COUNT(*) AS count FROM protocol_backlog"),
+            "wallet_profiles": await _safe_count("SELECT COUNT(*) AS count FROM wallet_graph.wallet_profiles"),
+            "daily_pulses": await _safe_count("SELECT COUNT(*) AS count FROM daily_pulses"),
         }
     network = summary["network_state"]
     state_counts["total_records"] = (
@@ -256,7 +256,7 @@ def run_daily_pulse():
 
         state_root_inputs = {}
         for domain in ATTESTATION_DOMAINS:
-            att = get_latest_attestation(domain)
+            att = await get_latest_attestation(domain)
             if att:
                 state_root_inputs[domain] = {
                     "batch_hash": att["batch_hash"],
@@ -265,7 +265,7 @@ def run_daily_pulse():
                 }
 
         # Collect report attestation hashes from today
-        today_reports = fetch_all("""
+        today_reports = await fetch_all_async("""
             SELECT report_hash, entity_type, entity_id, template, lens
             FROM report_attestations
             WHERE generated_at::date = CURRENT_DATE
@@ -290,7 +290,7 @@ def run_daily_pulse():
     # 9. Embed integrity status
     try:
         from app.integrity import check_domain
-        pulse_integrity = check_domain("pulse")
+        pulse_integrity = await check_domain("pulse")
         summary["integrity"] = {
             "status": pulse_integrity["status"],
             "warnings": pulse_integrity["warnings"],
@@ -304,7 +304,7 @@ def run_daily_pulse():
     content_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
 
     # 10. Upsert into daily_pulses
-    execute("""
+    await execute_async("""
         INSERT INTO daily_pulses (pulse_date, summary, page_url)
         VALUES (%s, %s, %s)
         ON CONFLICT (pulse_date) DO UPDATE SET

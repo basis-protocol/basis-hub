@@ -18,7 +18,7 @@ from datetime import date, datetime, timezone, timedelta
 
 import httpx
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -228,7 +228,7 @@ def _read_parameter_value(param_spec: dict) -> tuple[str | None, int | None]:
 # Score context
 # ---------------------------------------------------------------------------
 
-def _get_concurrent_scores(protocol_slug: str, asset_symbol: str | None) -> dict:
+async def _get_concurrent_scores(protocol_slug: str, asset_symbol: str | None) -> dict:
     """Fetch concurrent SII/PSI scores and compute change context."""
     context = {
         "concurrent_sii_score": None,
@@ -240,7 +240,7 @@ def _get_concurrent_scores(protocol_slug: str, asset_symbol: str | None) -> dict
 
     # PSI score
     try:
-        psi_row = fetch_one(
+        psi_row = await fetch_one_async(
             """SELECT overall_score FROM psi_scores
                WHERE protocol_slug = %s
                ORDER BY computed_at DESC LIMIT 1""",
@@ -256,7 +256,7 @@ def _get_concurrent_scores(protocol_slug: str, asset_symbol: str | None) -> dict
 
     # SII score
     try:
-        sii_row = fetch_one(
+        sii_row = await fetch_one_async(
             """SELECT overall_score FROM scores
                WHERE stablecoin_id = LOWER(%s)
                ORDER BY scored_at DESC LIMIT 1""",
@@ -269,7 +269,7 @@ def _get_concurrent_scores(protocol_slug: str, asset_symbol: str | None) -> dict
 
     # 7-day SII trend
     try:
-        trend_rows = fetch_all(
+        trend_rows = await fetch_all_async(
             """SELECT overall_score, score_date FROM score_history
                WHERE stablecoin = LOWER(%s)
                  AND score_date > CURRENT_DATE - INTERVAL '7 days'
@@ -285,7 +285,7 @@ def _get_concurrent_scores(protocol_slug: str, asset_symbol: str | None) -> dict
 
     # Hours since last SII change (>1 point move)
     try:
-        last_move = fetch_one(
+        last_move = await fetch_one_async(
             """SELECT score_date FROM score_history
                WHERE stablecoin = LOWER(%s)
                  AND ABS(daily_change) > 1
@@ -317,7 +317,7 @@ def _get_concurrent_scores(protocol_slug: str, asset_symbol: str | None) -> dict
 # Change handling
 # ---------------------------------------------------------------------------
 
-def _handle_parameter_change(
+async def _handle_parameter_change(
     protocol_slug: str,
     protocol_id: int,
     param_spec: dict,
@@ -334,7 +334,7 @@ def _handle_parameter_change(
 
     # Get concurrent score state
     asset_symbol = param_spec.get("asset_symbol")
-    score_ctx = _get_concurrent_scores(protocol_slug, asset_symbol)
+    score_ctx = await _get_concurrent_scores(protocol_slug, asset_symbol)
 
     content_data = (
         f"{protocol_slug}{param_spec['parameter_key']}"
@@ -342,7 +342,7 @@ def _handle_parameter_change(
     )
     content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
 
-    execute(
+    await execute_async(
         """INSERT INTO protocol_parameter_changes
             (protocol_slug, protocol_id, parameter_name, parameter_key,
              asset_address, asset_symbol, contract_address, chain,
@@ -392,11 +392,11 @@ def _handle_parameter_change(
 # Snapshot storage
 # ---------------------------------------------------------------------------
 
-def _store_daily_snapshot(protocol_slug: str, protocol_id: int, results: dict):
+async def _store_daily_snapshot(protocol_slug: str, protocol_id: int, results: dict):
     """Store a daily point-in-time snapshot of all parameter values."""
     today = date.today()
 
-    existing = fetch_one(
+    existing = await fetch_one_async(
         """SELECT id FROM protocol_parameter_snapshots
            WHERE protocol_slug = %s AND snapshot_date = %s""",
         (protocol_slug, today),
@@ -404,7 +404,7 @@ def _store_daily_snapshot(protocol_slug: str, protocol_id: int, results: dict):
     if existing:
         return
 
-    params = fetch_all(
+    params = await fetch_all_async(
         """SELECT parameter_key, current_value, value_unit, asset_symbol
            FROM protocol_parameters WHERE protocol_slug = %s""",
         (protocol_slug,),
@@ -423,7 +423,7 @@ def _store_daily_snapshot(protocol_slug: str, protocol_id: int, results: dict):
     content_data = f"{protocol_slug}{today.isoformat()}{json.dumps(param_dict, sort_keys=True)}"
     content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
 
-    execute(
+    await execute_async(
         """INSERT INTO protocol_parameter_snapshots
             (protocol_slug, protocol_id, snapshot_date, parameters,
              parameter_count, content_hash, attested_at)
@@ -452,7 +452,7 @@ def _store_daily_snapshot(protocol_slug: str, protocol_id: int, results: dict):
 # Core check (used by both fast and slow cycle)
 # ---------------------------------------------------------------------------
 
-def check_parameter_changes() -> dict:
+async def check_parameter_changes() -> dict:
     """
     Check all watched parameters for changes. Used in fast cycle.
     Does NOT store daily snapshots — that's done in the slow cycle.
@@ -480,7 +480,7 @@ def check_parameter_changes() -> dict:
                     results["parameters_checked"] += 1
 
                     # Look up stored value
-                    stored = fetch_one(
+                    stored = await fetch_one_async(
                         """SELECT current_value, current_value_raw
                            FROM protocol_parameters
                            WHERE protocol_slug = %s AND parameter_key = %s
@@ -492,7 +492,7 @@ def check_parameter_changes() -> dict:
 
                     if not stored:
                         # First capture
-                        execute(
+                        await execute_async(
                             """INSERT INTO protocol_parameters
                                 (protocol_slug, protocol_id, parameter_name, parameter_key,
                                  asset_address, asset_symbol, contract_address, chain,
@@ -513,14 +513,14 @@ def check_parameter_changes() -> dict:
                     stored_value = float(stored["current_value"]) if stored.get("current_value") is not None else None
                     if stored_value is not None and abs(normalized - stored_value) > 1e-8:
                         # Change detected
-                        _handle_parameter_change(
+                        await _handle_parameter_change(
                             protocol_slug, protocol_id, spec,
                             stored_value, stored.get("current_value_raw", ""),
                             normalized, raw_str,
                             results,
                         )
                         # Update current value
-                        execute(
+                        await execute_async(
                             """UPDATE protocol_parameters
                                SET current_value = %s, current_value_raw = %s,
                                    last_updated_at = NOW()
@@ -557,13 +557,13 @@ async def collect_parameter_history() -> dict:
     Full parameter history collection: check for changes + store daily snapshots.
     Returns summary dict.
     """
-    results = check_parameter_changes()
+    results = await check_parameter_changes()
     results["snapshots_stored"] = 0
 
     # Store daily snapshots for each protocol
     for protocol_slug in PROTOCOL_PARAMETER_REGISTRY:
         try:
-            _store_daily_snapshot(protocol_slug, 0, results)
+            await _store_daily_snapshot(protocol_slug, 0, results)
         except Exception as e:
             logger.debug(f"Parameter snapshot failed for {protocol_slug}: {e}")
 

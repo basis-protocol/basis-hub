@@ -475,12 +475,12 @@ async def collect_governance_proposals() -> dict:
                 source_type = source_cfg["type"]
 
                 if source_type == "snapshot":
-                    proposals = _fetch_snapshot_proposals(
+                    proposals = await _fetch_snapshot_proposals(
                         source_cfg["space"], protocol_slug
                     )
                     time.sleep(0.5)
                 elif source_type == "tally":
-                    proposals = _fetch_tally_proposals(
+                    proposals = await _fetch_tally_proposals(
                         source_cfg["governor_id"], protocol_slug
                     )
                     time.sleep(1)

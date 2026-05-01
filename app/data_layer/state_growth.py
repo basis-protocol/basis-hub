@@ -12,7 +12,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one
+from app.database import fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -111,26 +111,26 @@ TRACKED_TABLES = {
 }
 
 
-def _safe_count(query: str, params: tuple = ()) -> int:
+async def _safe_count(query: str, params: tuple = ()) -> int:
     try:
-        row = fetch_one(query, params)
+        row = await fetch_one_async(query, params)
         return int(row["cnt"]) if row and row.get("cnt") else 0
     except Exception:
         return 0
 
 
-def _safe_fetch(query: str, params: tuple = ()):
+async def _safe_fetch(query: str, params: tuple = ()):
     try:
-        return fetch_one(query, params)
+        return await fetch_one_async(query, params)
     except Exception:
         return None
 
 
-def _bulk_row_counts() -> dict[str, int]:
+async def _bulk_row_counts() -> dict[str, int]:
     """Fetch approximate row counts for all tables via pg_stat — instant, no scan."""
     counts = {}
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             "SELECT schemaname || '.' || relname AS full_name, relname, n_live_tup "
             "FROM pg_stat_user_tables"
         )
@@ -156,7 +156,7 @@ def _bulk_row_counts() -> dict[str, int]:
     }
     for table_name, query in TABLE_COUNT_OVERRIDES.items():
         try:
-            row = fetch_one(query)
+            row = await fetch_one_async(query)
             if row and row.get("cnt") is not None:
                 real_count = int(row["cnt"])
                 counts[table_name] = real_count
@@ -176,7 +176,7 @@ def _resolve_count(pg_counts: dict, table_name: str) -> int:
     return c
 
 
-def snapshot_row_counts():
+async def snapshot_row_counts():
     """
     Store today's pg_stat row counts in state_growth_snapshots.
     Called once per cycle from worker.py. Provides delta computation
@@ -193,7 +193,7 @@ def snapshot_row_counts():
                 UNIQUE (table_name, snapshot_date)
             )
         """)
-        pg = _bulk_row_counts()
+        pg = await _bulk_row_counts()
         with _gc() as cur:
             for tbl in TRACKED_TABLES:
                 count = _resolve_count(pg, tbl)
@@ -208,7 +208,7 @@ def snapshot_row_counts():
         logger.debug(f"Row count snapshot failed: {e}")
 
 
-def _load_snapshots() -> dict:
+async def _load_snapshots() -> dict:
     """
     Load snapshots for delta computation.
     Returns {table_name: {today, yesterday, week_ago}}.
@@ -216,7 +216,7 @@ def _load_snapshots() -> dict:
     """
     result = {}
     try:
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT table_name, snapshot_date, row_count
             FROM state_growth_snapshots
             WHERE snapshot_date >= CURRENT_DATE - 7
@@ -243,7 +243,7 @@ def _load_snapshots() -> dict:
     has_yesterday = any("yesterday" in v for v in result.values())
     if not has_yesterday:
         try:
-            pulse = fetch_one(
+            pulse = await fetch_one_async(
                 "SELECT summary FROM daily_pulses WHERE pulse_date = CURRENT_DATE - 1 ORDER BY pulse_date DESC LIMIT 1"
             )
             if pulse and pulse.get("summary"):
@@ -283,15 +283,15 @@ def _load_snapshots() -> dict:
     return result
 
 
-def get_state_growth() -> dict:
+async def get_state_growth() -> dict:
     """Comprehensive state growth dashboard — ALL pg_stat, zero COUNT(*)."""
     now = datetime.now(timezone.utc)
 
     # =========================================================================
     # 1. Per-table row counts and growth — entirely from pg_stat + snapshots
     # =========================================================================
-    pg_counts = _bulk_row_counts()
-    snapshots = _load_snapshots()
+    pg_counts = await _bulk_row_counts()
+    snapshots = await _load_snapshots()
 
     tables = {}
     by_category = {}
@@ -376,18 +376,18 @@ def get_state_growth() -> dict:
     # =========================================================================
     # 3. Entity coverage
     # =========================================================================
-    sii_scored = _safe_count("SELECT COUNT(DISTINCT stablecoin_id) as cnt FROM scores")
-    sii_total = _safe_count("SELECT COUNT(*) as cnt FROM stablecoins WHERE scoring_enabled = TRUE")
-    psi_scored = _safe_count("SELECT COUNT(DISTINCT protocol_slug) as cnt FROM psi_scores")
-    psi_discovered = _safe_count(
+    sii_scored = await _safe_count("SELECT COUNT(DISTINCT stablecoin_id) as cnt FROM scores")
+    sii_total = await _safe_count("SELECT COUNT(*) as cnt FROM stablecoins WHERE scoring_enabled = TRUE")
+    psi_scored = await _safe_count("SELECT COUNT(DISTINCT protocol_slug) as cnt FROM psi_scores")
+    psi_discovered = await _safe_count(
         "SELECT COUNT(*) as cnt FROM protocol_backlog WHERE enrichment_status != 'insufficient'"
     )
-    rpi_scored = _safe_count("SELECT COUNT(DISTINCT protocol_slug) as cnt FROM rpi_scores")
+    rpi_scored = await _safe_count("SELECT COUNT(DISTINCT protocol_slug) as cnt FROM rpi_scores")
 
     # Circle 7 per-index
     circle7 = {}
     for index_id in ["lsti", "bri", "dohi", "vsri", "cxri", "tti"]:
-        count = _safe_count(
+        count = await _safe_count(
             "SELECT COUNT(DISTINCT entity_slug) as cnt FROM generic_index_scores WHERE index_id = %s",
             (index_id,),
         )
@@ -436,17 +436,17 @@ def get_state_growth() -> dict:
     provenance = {}
     try:
         from app.data_layer.provenance_scaling import get_coverage_report
-        provenance = get_coverage_report()
+        provenance = await get_coverage_report()
 
         # Also compute live proof coverage from provenance_proofs table
         # (the registry-based report may show 0% if proof linking hasn't run)
-        total_registered = _safe_count("SELECT COUNT(*) as cnt FROM provenance_sources WHERE enabled = true")
-        proved_24h = _safe_count(
+        total_registered = await _safe_count("SELECT COUNT(*) as cnt FROM provenance_sources WHERE enabled = true")
+        proved_24h = await _safe_count(
             "SELECT COUNT(DISTINCT source_domain) as cnt FROM provenance_proofs "
             "WHERE proved_at > NOW() - INTERVAL '24 hours'"
         )
-        total_proofs = _safe_count("SELECT COUNT(*) as cnt FROM provenance_proofs")
-        proofs_24h = _safe_count(
+        total_proofs = await _safe_count("SELECT COUNT(*) as cnt FROM provenance_proofs")
+        proofs_24h = await _safe_count(
             "SELECT COUNT(*) as cnt FROM provenance_proofs "
             "WHERE proved_at > NOW() - INTERVAL '24 hours'"
         )
@@ -469,10 +469,10 @@ def get_state_growth() -> dict:
     # =========================================================================
     # 7. Data quality
     # =========================================================================
-    coherence_flags_24h = _safe_count(
+    coherence_flags_24h = await _safe_count(
         "SELECT COUNT(*) as cnt FROM coherence_violations WHERE created_at >= NOW() - INTERVAL '24 hours'"
     )
-    unreviewed_flags = _safe_count(
+    unreviewed_flags = await _safe_count(
         "SELECT COUNT(*) as cnt FROM coherence_violations WHERE reviewed = FALSE"
     )
 
@@ -486,7 +486,7 @@ def get_state_growth() -> dict:
     }
     for table_name, max_hours in staleness_thresholds.items():
         tc = TRACKED_TABLES.get(table_name, {}).get("time_col", "created_at")
-        latest = _safe_fetch(f"SELECT MAX({tc}) as latest FROM {table_name}")
+        latest = await _safe_fetch(f"SELECT MAX({tc}) as latest FROM {table_name}")
         if latest and latest.get("latest"):
             lt = latest["latest"]
             if hasattr(lt, 'tzinfo') and lt.tzinfo is None:
@@ -516,7 +516,7 @@ def get_state_growth() -> dict:
     # Try to get actual DB size
     db_size_mb = None
     try:
-        row = _safe_fetch(
+        row = await _safe_fetch(
             "SELECT pg_database_size(current_database()) / 1000000 as size_mb"
         )
         if row:
@@ -539,7 +539,7 @@ def get_state_growth() -> dict:
     # =========================================================================
     collector_health = []
     try:
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT DISTINCT ON (collector_name)
                 collector_name, created_at, coins_ok, coins_timeout, coins_error,
                 avg_latency_ms, total_components
@@ -565,16 +565,16 @@ def get_state_growth() -> dict:
     # 10. Active alerts — things needing human attention
     # =========================================================================
     active_alerts = {}
-    active_alerts["oracle_stress_open"] = _safe_count(
+    active_alerts["oracle_stress_open"] = await _safe_count(
         "SELECT COUNT(*) as cnt FROM oracle_stress_events WHERE event_end IS NULL"
     )
-    active_alerts["contract_upgrades_7d"] = _safe_count(
+    active_alerts["contract_upgrades_7d"] = await _safe_count(
         "SELECT COUNT(*) as cnt FROM contract_upgrade_history WHERE upgrade_detected_at >= NOW() - INTERVAL '7 days'"
     )
-    active_alerts["parameter_changes_7d"] = _safe_count(
+    active_alerts["parameter_changes_7d"] = await _safe_count(
         "SELECT COUNT(*) as cnt FROM protocol_parameter_changes WHERE detected_at >= NOW() - INTERVAL '7 days'"
     )
-    active_alerts["discovery_signals_24h"] = _safe_count(
+    active_alerts["discovery_signals_24h"] = await _safe_count(
         "SELECT COUNT(*) as cnt FROM discovery_signals WHERE detected_at >= NOW() - INTERVAL '24 hours'"
     )
 
@@ -583,7 +583,7 @@ def get_state_growth() -> dict:
     # =========================================================================
     keeper_status = {}
     try:
-        last_cycle = _safe_fetch("""
+        last_cycle = await _safe_fetch("""
             SELECT started_at, completed_at, duration_ms,
                    sii_updates_base, sii_updates_arb, psi_updates,
                    state_root_published, trigger_reason
@@ -600,8 +600,8 @@ def get_state_growth() -> dict:
                 "psi_updates": last_cycle.get("psi_updates", 0),
                 "state_root_published": last_cycle.get("state_root_published", False),
             }
-        keeper_status["total_cycles"] = _safe_count("SELECT COUNT(*) as cnt FROM ops.keeper_cycles")
-        keeper_status["cycles_24h"] = _safe_count(
+        keeper_status["total_cycles"] = await _safe_count("SELECT COUNT(*) as cnt FROM ops.keeper_cycles")
+        keeper_status["cycles_24h"] = await _safe_count(
             "SELECT COUNT(*) as cnt FROM ops.keeper_cycles WHERE started_at >= NOW() - INTERVAL '24 hours'"
         )
     except Exception:
@@ -613,7 +613,7 @@ def get_state_growth() -> dict:
     scoring_performance = {}
     try:
         # SII cycle duration trend (last 7 days from collector_cycle_stats)
-        sii_trend = fetch_all("""
+        sii_trend = await fetch_all_async("""
             SELECT DATE(created_at) as day,
                    AVG(avg_latency_ms) as avg_ms,
                    SUM(total_components) as total_comps,
@@ -637,7 +637,7 @@ def get_state_growth() -> dict:
         scoring_performance["psi_protocols_scored"] = psi_scored
 
         # Average components per stablecoin
-        avg_comps = _safe_fetch(
+        avg_comps = await _safe_fetch(
             "SELECT AVG(cnt) as avg_cnt FROM ("
             "  SELECT stablecoin_id, COUNT(*) as cnt FROM component_readings"
             "  WHERE collected_at >= NOW() - INTERVAL '24 hours'"
@@ -655,7 +655,7 @@ def get_state_growth() -> dict:
     # =========================================================================
     cda_freshness = []
     try:
-        issuers = fetch_all("""
+        issuers = await fetch_all_async("""
             SELECT r.asset_symbol, r.issuer_name, r.is_active,
                    r.collection_method,
                    MAX(e.extracted_at) as last_extraction
@@ -691,7 +691,7 @@ def get_state_growth() -> dict:
     component_coverage = {}
     try:
         # SII components per stablecoin
-        sii_comp = fetch_all("""
+        sii_comp = await fetch_all_async("""
             SELECT stablecoin_id, COUNT(*) as total,
                    COUNT(*) FILTER (WHERE value IS NOT NULL) as populated,
                    COUNT(*) FILTER (WHERE value IS NULL) as empty
@@ -707,10 +707,10 @@ def get_state_growth() -> dict:
         }
 
         # PSI components
-        psi_comp_count = _safe_count(
+        psi_comp_count = await _safe_count(
             "SELECT COUNT(DISTINCT component_name) as cnt FROM psi_components WHERE collected_at >= NOW() - INTERVAL '48 hours'"
         )
-        psi_protocols_with = _safe_count(
+        psi_protocols_with = await _safe_count(
             "SELECT COUNT(DISTINCT protocol_slug) as cnt FROM psi_components WHERE collected_at >= NOW() - INTERVAL '48 hours'"
         )
         component_coverage["psi"] = {
@@ -719,7 +719,7 @@ def get_state_growth() -> dict:
         }
 
         # RPI components
-        rpi_comp_count = _safe_count(
+        rpi_comp_count = await _safe_count(
             "SELECT COUNT(DISTINCT component_name) as cnt FROM rpi_components WHERE collected_at >= NOW() - INTERVAL '48 hours'"
         )
         component_coverage["rpi"] = {
@@ -733,15 +733,15 @@ def get_state_growth() -> dict:
     # =========================================================================
     cqi_contagion = {}
     try:
-        pairs_with_pools = _safe_count(
+        pairs_with_pools = await _safe_count(
             "SELECT COUNT(DISTINCT protocol_slug) as cnt FROM protocol_pool_wallets"
         )
-        pairs_total = _safe_count("SELECT COUNT(DISTINCT protocol_slug) as cnt FROM psi_scores")
+        pairs_total = await _safe_count("SELECT COUNT(DISTINCT protocol_slug) as cnt FROM psi_scores")
         cqi_contagion = {
             "protocols_with_pool_data": pairs_with_pools,
             "protocols_total": pairs_total,
             "coverage_pct": round(pairs_with_pools / max(pairs_total, 1) * 100, 1),
-            "pool_wallets_discovered": _safe_count("SELECT COUNT(*) as cnt FROM protocol_pool_wallets"),
+            "pool_wallets_discovered": await _safe_count("SELECT COUNT(*) as cnt FROM protocol_pool_wallets"),
         }
     except Exception:
         pass
@@ -751,27 +751,27 @@ def get_state_growth() -> dict:
     # =========================================================================
     x402_revenue = {}
     try:
-        x402_revenue["total_payments"] = _safe_count("SELECT COUNT(*) as cnt FROM payment_log")
-        x402_revenue["payments_24h"] = _safe_count(
+        x402_revenue["total_payments"] = await _safe_count("SELECT COUNT(*) as cnt FROM payment_log")
+        x402_revenue["payments_24h"] = await _safe_count(
             "SELECT COUNT(*) as cnt FROM payment_log WHERE timestamp >= NOW() - INTERVAL '24 hours'"
         )
-        x402_revenue["payments_7d"] = _safe_count(
+        x402_revenue["payments_7d"] = await _safe_count(
             "SELECT COUNT(*) as cnt FROM payment_log WHERE timestamp >= NOW() - INTERVAL '7 days'"
         )
-        x402_revenue["unique_payers"] = _safe_count(
+        x402_revenue["unique_payers"] = await _safe_count(
             "SELECT COUNT(DISTINCT payer_address) as cnt FROM payment_log WHERE payer_address IS NOT NULL"
         )
 
-        rev_total = _safe_fetch("SELECT COALESCE(SUM(price_usd), 0) as total FROM payment_log")
+        rev_total = await _safe_fetch("SELECT COALESCE(SUM(price_usd), 0) as total FROM payment_log")
         x402_revenue["total_revenue_usd"] = float(rev_total["total"]) if rev_total and rev_total.get("total") else 0
 
-        rev_7d = _safe_fetch(
+        rev_7d = await _safe_fetch(
             "SELECT COALESCE(SUM(price_usd), 0) as total FROM payment_log WHERE timestamp >= NOW() - INTERVAL '7 days'"
         )
         x402_revenue["revenue_7d_usd"] = float(rev_7d["total"]) if rev_7d and rev_7d.get("total") else 0
 
         # Top endpoints by call count
-        top_endpoints = fetch_all("""
+        top_endpoints = await fetch_all_async("""
             SELECT endpoint, COUNT(*) as calls, SUM(price_usd) as revenue
             FROM payment_log
             GROUP BY endpoint
@@ -792,7 +792,7 @@ def get_state_growth() -> dict:
     security_scanning = {}
     try:
         # Contracts monitored by entity type
-        monitored = fetch_all("""
+        monitored = await fetch_all_async("""
             SELECT entity_id, chain, contract_address, has_admin_keys,
                    is_upgradeable, has_pause_function, timelock_hours,
                    multisig_threshold, source_code_hash, scanned_at
@@ -826,9 +826,9 @@ def get_state_growth() -> dict:
         # Scan coverage vs scored entities
         scored_entities = set()
         try:
-            sii_entities = fetch_all("SELECT id FROM stablecoins WHERE scoring_enabled = TRUE") or []
+            sii_entities = await fetch_all_async("SELECT id FROM stablecoins WHERE scoring_enabled = TRUE") or []
             scored_entities.update(str(r["id"]) for r in sii_entities)
-            psi_entities = fetch_all("SELECT DISTINCT protocol_slug FROM psi_scores") or []
+            psi_entities = await fetch_all_async("SELECT DISTINCT protocol_slug FROM psi_scores") or []
             scored_entities.update(r["protocol_slug"] for r in psi_entities)
         except Exception:
             pass
@@ -844,20 +844,20 @@ def get_state_growth() -> dict:
         }
 
         # Upgrade alerts in last 7 and 30 days
-        security_scanning["upgrade_alerts_7d"] = _safe_count(
+        security_scanning["upgrade_alerts_7d"] = await _safe_count(
             "SELECT COUNT(*) as cnt FROM contract_upgrade_history WHERE upgrade_detected_at >= NOW() - INTERVAL '7 days'"
         )
-        security_scanning["upgrade_alerts_30d"] = _safe_count(
+        security_scanning["upgrade_alerts_30d"] = await _safe_count(
             "SELECT COUNT(*) as cnt FROM contract_upgrade_history WHERE upgrade_detected_at >= NOW() - INTERVAL '30 days'"
         )
 
         # Historical diff count — total source code changes since monitoring began
-        security_scanning["total_diffs_detected"] = _safe_count(
+        security_scanning["total_diffs_detected"] = await _safe_count(
             "SELECT COUNT(*) as cnt FROM contract_upgrade_history"
         )
 
         # Last scan per contract (most recent only)
-        security_scanning["last_scan"] = _safe_fetch(
+        security_scanning["last_scan"] = await _safe_fetch(
             "SELECT MAX(scanned_at) as latest FROM contract_surveillance"
         )
         if security_scanning["last_scan"] and security_scanning["last_scan"].get("latest"):

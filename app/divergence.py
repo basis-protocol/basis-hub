@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +22,12 @@ logger = logging.getLogger(__name__)
 # Signal A: Asset Quality Divergence
 # ---------------------------------------------------------------------------
 
-def detect_asset_divergence():
+async def detect_asset_divergence():
     """Detect stablecoins where score is declining but capital is flowing in."""
     results = []
 
     # Use the latest daily pulse for 24h deltas (most reliable source)
-    latest_pulse = fetch_one(
+    latest_pulse = await fetch_one_async(
         "SELECT summary FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1"
     )
 
@@ -48,7 +48,7 @@ def detect_asset_divergence():
             continue
 
         # Get aggregate wallet holdings for this symbol
-        holdings_agg = fetch_one("""
+        holdings_agg = await fetch_one_async("""
             SELECT COUNT(DISTINCT wallet_address) AS wallet_count,
                    COALESCE(SUM(value_usd), 0) AS total_held
             FROM wallet_graph.wallet_holdings
@@ -85,9 +85,9 @@ def detect_asset_divergence():
 # Signal B: Wallet Concentration Divergence
 # ---------------------------------------------------------------------------
 
-def detect_wallet_concentration_divergence(limit=20):
+async def detect_wallet_concentration_divergence(limit=20):
     """Detect wallets getting more concentrated while growing in value."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         WITH latest AS (
             SELECT DISTINCT ON (wallet_address)
                 wallet_address, risk_score, concentration_hhi,
@@ -155,11 +155,11 @@ def detect_wallet_concentration_divergence(limit=20):
 # Signal C: Quality-Flow Divergence
 # ---------------------------------------------------------------------------
 
-def detect_quality_flow_divergence():
+async def detect_quality_flow_divergence():
     """Detect stablecoins with declining scores but net inflows from the wallet graph."""
     results = []
 
-    latest_pulse = fetch_one(
+    latest_pulse = await fetch_one_async(
         "SELECT summary FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1"
     )
     if not latest_pulse or not latest_pulse.get("summary"):
@@ -179,7 +179,7 @@ def detect_quality_flow_divergence():
 
         # Compare current aggregate holdings to older holdings
         # "current" = last 48h, "previous" = 48-96h window
-        current = fetch_one("""
+        current = await fetch_one_async("""
             SELECT COALESCE(SUM(value_usd), 0) AS total,
                    COUNT(DISTINCT wallet_address) AS wallets
             FROM wallet_graph.wallet_holdings
@@ -187,7 +187,7 @@ def detect_quality_flow_divergence():
               AND indexed_at > NOW() - INTERVAL '48 hours'
         """, (symbol,))
 
-        previous = fetch_one("""
+        previous = await fetch_one_async("""
             SELECT COALESCE(SUM(value_usd), 0) AS total,
                    COUNT(DISTINCT wallet_address) AS wallets
             FROM wallet_graph.wallet_holdings
@@ -237,11 +237,11 @@ _SEVERITY_ORDER = {"critical": 3, "alert": 2, "notable": 1, "silent": 0}
 # Signal D: Protocol Solvency Divergence (PSI declining)
 # ---------------------------------------------------------------------------
 
-def detect_protocol_divergence():
+async def detect_protocol_divergence():
     """Detect protocols where PSI score is declining day-over-day."""
     results = []
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         WITH latest AS (
             SELECT DISTINCT ON (protocol_slug)
                 protocol_slug, protocol_name, overall_score, computed_at
@@ -290,7 +290,7 @@ def detect_protocol_divergence():
 # Signal E: Cross-Index Divergence (SII stable + PSI declining = CQI gap)
 # ---------------------------------------------------------------------------
 
-def detect_cross_index_divergence():
+async def detect_cross_index_divergence():
     """
     Detect when SII and PSI move in opposite directions for related pairs.
     A stablecoin SII stable/improving while a protocol holding it has declining PSI
@@ -299,7 +299,7 @@ def detect_cross_index_divergence():
     results = []
 
     # SII deltas from daily pulse
-    latest_pulse = fetch_one(
+    latest_pulse = await fetch_one_async(
         "SELECT summary FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1"
     )
     if not latest_pulse or not latest_pulse.get("summary"):
@@ -316,7 +316,7 @@ def detect_cross_index_divergence():
     }
 
     # PSI deltas
-    psi_rows = fetch_all("""
+    psi_rows = await fetch_all_async("""
         WITH latest AS (
             SELECT DISTINCT ON (protocol_slug)
                 protocol_slug, overall_score, computed_at
@@ -338,7 +338,7 @@ def detect_cross_index_divergence():
 
     # Protocol → stablecoins exposure map
     try:
-        exposure_rows = fetch_all("""
+        exposure_rows = await fetch_all_async("""
             SELECT DISTINCT protocol_slug, token_symbol
             FROM protocol_collateral_exposure
             WHERE is_stablecoin = TRUE AND tvl_usd > 100000
@@ -392,7 +392,7 @@ def detect_cross_index_divergence():
 # Primitive #21: Actor-flow divergence
 # ---------------------------------------------------------------------------
 
-def detect_actor_flow_divergence():
+async def detect_actor_flow_divergence():
     """Detect when agents and humans flow in opposite directions for a stablecoin.
 
     Agents exiting while humans entering = information asymmetry signal.
@@ -402,7 +402,7 @@ def detect_actor_flow_divergence():
     results = []
 
     # Get all scored stablecoins with contract addresses
-    coins = fetch_all(
+    coins = await fetch_all_async(
         """
         SELECT s.stablecoin_id, st.symbol, st.contract
         FROM scores s
@@ -417,7 +417,7 @@ def detect_actor_flow_divergence():
 
         # Compute net flow by actor type over last 7 days
         # Positive = net inflow (more received than sent), Negative = net outflow
-        flow_rows = fetch_all(
+        flow_rows = await fetch_all_async(
             """
             SELECT
                 COALESCE(ac.actor_type, 'unknown') AS actor_type,
@@ -481,13 +481,13 @@ def detect_actor_flow_divergence():
     return results
 
 
-def _store_divergence_signals(signals: list) -> int:
+async def _store_divergence_signals(signals: list) -> int:
     """Store divergence signals in the divergence_signals table."""
     now = datetime.now(timezone.utc)
     stored = 0
     for s in signals:
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO divergence_signals
                     (detector_name, entity_type, entity_id, signal_direction,
                      magnitude, severity, detail, cycle_timestamp)
@@ -521,7 +521,7 @@ def _infer_entity_type(signal: dict) -> str:
     return "unknown"
 
 
-def detect_all_divergences(store: bool = False):
+async def detect_all_divergences(store: bool = False):
     """Run all divergence detectors and return combined results.
 
     Args:
@@ -534,33 +534,33 @@ def detect_all_divergences(store: bool = False):
     cross_divs = []
 
     try:
-        asset_divs = detect_asset_divergence()
+        asset_divs = await detect_asset_divergence()
     except Exception as e:
         logger.warning(f"Asset divergence detection failed: {e}")
 
     try:
-        wallet_divs = detect_wallet_concentration_divergence()
+        wallet_divs = await detect_wallet_concentration_divergence()
     except Exception as e:
         logger.warning(f"Wallet concentration divergence detection failed: {e}")
 
     try:
-        flow_divs = detect_quality_flow_divergence()
+        flow_divs = await detect_quality_flow_divergence()
     except Exception as e:
         logger.warning(f"Quality-flow divergence detection failed: {e}")
 
     try:
-        protocol_divs = detect_protocol_divergence()
+        protocol_divs = await detect_protocol_divergence()
     except Exception as e:
         logger.warning(f"Protocol solvency divergence detection failed: {e}")
 
     try:
-        cross_divs = detect_cross_index_divergence()
+        cross_divs = await detect_cross_index_divergence()
     except Exception as e:
         logger.warning(f"Cross-index divergence detection failed: {e}")
 
     actor_divs = []
     try:
-        actor_divs = detect_actor_flow_divergence()
+        actor_divs = await detect_actor_flow_divergence()
     except Exception as e:
         logger.warning(f"Actor-flow divergence detection failed: {e}")
 
@@ -588,21 +588,21 @@ def detect_all_divergences(store: bool = False):
     }
 
     if store:
-        _store_divergence_signals(all_signals)
+        await _store_divergence_signals(all_signals)
 
         # Pipeline 16: Archive contagion events for alert/critical signals
         try:
             from app.services.contagion_archive import archive_divergence_signals
-            archive_divergence_signals(all_signals)
+            await archive_divergence_signals(all_signals)
         except Exception as e:
             logger.warning(f"Contagion event archiving failed: {e}")
 
     return result
 
 
-def get_stored_divergences(hours: int = 24) -> dict:
+async def get_stored_divergences(hours: int = 24) -> dict:
     """Read stored divergence signals from the last N hours."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT detector_name, entity_type, entity_id, signal_direction,
                magnitude, severity, detail, cycle_timestamp
         FROM divergence_signals

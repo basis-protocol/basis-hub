@@ -31,7 +31,7 @@ from typing import Any
 import httpx
 
 from app.collectors.psi_collector import _is_stablecoin_token
-from app.database import execute, get_cursor
+from app.database import execute, get_cursor, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -269,7 +269,7 @@ def _batch_upsert_markets(rows: list[dict[str, Any]]) -> int:
         return 0
 
 
-def _write_exposure_row(
+async def _write_exposure_row(
     chain: str, token_symbol: str, tvl_usd: float, is_stable: bool
 ) -> bool:
     """Write one aggregated exposure row per (chain, token).
@@ -282,7 +282,7 @@ def _write_exposure_row(
     """
     pool_id = f"{PROTOCOL_SLUG}:{chain}:{token_symbol.upper()}:agg"
     try:
-        execute(
+        await execute_async(
             """
             INSERT INTO protocol_collateral_exposure
                 (protocol_slug, pool_id, token_symbol, chain, tvl_usd,

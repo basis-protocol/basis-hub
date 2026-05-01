@@ -9,12 +9,12 @@ import json
 import logging
 
 from app.computation_attestation import compute_inputs_hash
-from app.database import execute, fetch_one
+from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
 
-def store_assessment(assessment: dict) -> str | None:
+async def store_assessment(assessment: dict) -> str | None:
     """
     Insert assessment event into canonical database.
     Returns the UUID of the created event, or None if skipped.
@@ -26,7 +26,7 @@ def store_assessment(assessment: dict) -> str | None:
 
     # Idempotency: skip if same content_hash exists in the last hour
     if content_hash:
-        existing = fetch_one("""
+        existing = await fetch_one_async("""
             SELECT id FROM assessment_events
             WHERE content_hash = %s
             AND created_at > NOW() - INTERVAL '1 hour'
@@ -62,7 +62,7 @@ def store_assessment(assessment: dict) -> str | None:
         logger.debug("Could not compute inputs_hash, storing without it")
         inputs_summary_json = None
 
-    row = fetch_one("""
+    row = await fetch_one_async("""
         INSERT INTO assessment_events (
             wallet_address, chain, trigger_type, trigger_detail,
             wallet_risk_score, wallet_risk_grade,
@@ -116,7 +116,7 @@ def store_assessment(assessment: dict) -> str | None:
             for h in holdings_snapshot:
                 symbol = h.get("symbol", "")
                 if symbol:
-                    score_row = fetch_one(
+                    score_row = await fetch_one_async(
                         "SELECT overall_score, grade FROM scores s JOIN stablecoins st ON st.id = s.stablecoin_id WHERE UPPER(st.symbol) = UPPER(%s)",
                         (symbol,)
                     )
@@ -125,7 +125,7 @@ def store_assessment(assessment: dict) -> str | None:
                             "score": float(score_row["overall_score"]) if score_row.get("overall_score") else None,
                         }
 
-            execute("""
+            await execute_async("""
                 INSERT INTO assessment_input_vectors
                     (assessment_id, wallet_address, holdings, stablecoin_scores, formula_version, inputs_hash)
                 VALUES (%s, %s, %s, %s, %s, %s)

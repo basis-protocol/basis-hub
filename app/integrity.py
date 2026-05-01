@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_one, fetch_all, execute
+from app.database import fetch_one, fetch_all, execute, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 # Coherence rule helpers
 # ---------------------------------------------------------------------------
 
-def _count_check(sql, params=None, *, threshold=0, level="error", rule="", field="", message=""):
+async def _count_check(sql, params=None, *, threshold=0, level="error", rule="", field="", message=""):
     """Return a warning if the count query returns > threshold."""
     try:
-        row = fetch_one(sql, params)
+        row = await fetch_one_async(sql, params)
         cnt = row["cnt"] if row else 0
         if cnt > threshold:
             return {"rule": rule, "field": field, "value": cnt, "level": level, "message": message}
@@ -30,10 +30,10 @@ def _count_check(sql, params=None, *, threshold=0, level="error", rule="", field
     return None
 
 
-def _min_count_check(sql, params=None, *, minimum=1, level="warning", rule="", field="", message=""):
+async def _min_count_check(sql, params=None, *, minimum=1, level="warning", rule="", field="", message=""):
     """Return a warning if the count query returns < minimum."""
     try:
-        row = fetch_one(sql, params)
+        row = await fetch_one_async(sql, params)
         cnt = row["cnt"] if row else 0
         if cnt < minimum:
             return {"rule": rule, "field": field, "value": cnt, "level": level, "message": message}
@@ -46,16 +46,16 @@ def _min_count_check(sql, params=None, *, minimum=1, level="warning", rule="", f
 # Coherence rules per domain
 # ---------------------------------------------------------------------------
 
-def _sii_score_range():
-    return _count_check(
+async def _sii_score_range():
+    return await _count_check(
         "SELECT COUNT(*) AS cnt FROM scores WHERE overall_score < 0 OR overall_score > 100",
         rule="score_out_of_range", field="overall_score", level="error",
         message="One or more SII scores outside 0-100 range",
     )
 
 
-def _sii_null_scores():
-    return _count_check(
+async def _sii_null_scores():
+    return await _count_check(
         """SELECT COUNT(*) AS cnt FROM scores s
            JOIN stablecoins st ON st.id = s.stablecoin_id
            WHERE st.scoring_enabled = TRUE AND s.overall_score IS NULL""",
@@ -64,52 +64,52 @@ def _sii_null_scores():
     )
 
 
-def _sii_min_scored():
-    return _min_count_check(
+async def _sii_min_scored():
+    return await _min_count_check(
         "SELECT COUNT(*) AS cnt FROM scores",
         minimum=10, rule="insufficient_scores", field="row_count", level="warning",
         message="Fewer than 10 stablecoins scored",
     )
 
 
-def _psi_score_range():
-    return _count_check(
+async def _psi_score_range():
+    return await _count_check(
         "SELECT COUNT(*) AS cnt FROM psi_scores WHERE overall_score < 0 OR overall_score > 100",
         rule="score_out_of_range", field="overall_score", level="error",
         message="One or more PSI scores outside 0-100 range",
     )
 
 
-def _psi_min_scored():
-    return _min_count_check(
+async def _psi_min_scored():
+    return await _min_count_check(
         "SELECT COUNT(DISTINCT protocol_slug) AS cnt FROM psi_scores",
         minimum=5, rule="insufficient_protocols", field="row_count", level="warning",
         message="Fewer than 5 protocols scored",
     )
 
 
-def _wallets_scored_nonzero():
-    return _min_count_check(
+async def _wallets_scored_nonzero():
+    return await _min_count_check(
         "SELECT COUNT(DISTINCT wallet_address) AS cnt FROM wallet_graph.wallet_risk_scores WHERE risk_score IS NOT NULL",
         minimum=1, rule="no_scored_wallets", field="row_count", level="warning",
         message="No scored wallets found",
     )
 
 
-def _wallets_score_range():
-    return _count_check(
+async def _wallets_score_range():
+    return await _count_check(
         "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_risk_scores WHERE risk_score < 0 OR risk_score > 100",
         rule="score_out_of_range", field="risk_score", level="error",
         message="One or more wallet risk scores outside 0-100 range",
     )
 
 
-def _wallets_scored_ratio():
+async def _wallets_scored_ratio():
     try:
-        scored = fetch_one(
+        scored = await fetch_one_async(
             "SELECT COUNT(DISTINCT wallet_address) AS cnt FROM wallet_graph.wallet_risk_scores WHERE risk_score IS NOT NULL"
         )
-        total = fetch_one("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
+        total = await fetch_one_async("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
         scored_cnt = scored["cnt"] if scored else 0
         total_cnt = total["cnt"] if total else 0
         if total_cnt > 0 and scored_cnt / total_cnt < 0.01:
@@ -123,9 +123,9 @@ def _wallets_scored_ratio():
     return None
 
 
-def _cda_active_without_extractions():
+async def _cda_active_without_extractions():
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT COUNT(*) AS cnt FROM cda_issuer_registry
             WHERE is_active = TRUE
               AND asset_symbol NOT IN (
@@ -145,12 +145,12 @@ def _cda_active_without_extractions():
     return None
 
 
-def _events_severity_consistency():
+async def _events_severity_consistency():
     try:
-        total_row = fetch_one(
+        total_row = await fetch_one_async(
             "SELECT COUNT(*) AS cnt FROM assessment_events WHERE created_at > NOW() - INTERVAL '24 hours'"
         )
-        sum_row = fetch_one("""
+        sum_row = await fetch_one_async("""
             SELECT COALESCE(SUM(cnt), 0) AS total FROM (
                 SELECT COUNT(*) AS cnt FROM assessment_events
                 WHERE created_at > NOW() - INTERVAL '24 hours'
@@ -170,10 +170,10 @@ def _events_severity_consistency():
     return None
 
 
-def _edges_exist_if_wallets():
+async def _edges_exist_if_wallets():
     try:
-        wallets = fetch_one("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
-        edges = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges")
+        wallets = await fetch_one_async("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
+        edges = await fetch_one_async("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges")
         w_cnt = wallets["cnt"] if wallets else 0
         e_cnt = edges["cnt"] if edges else 0
         if w_cnt > 100 and e_cnt == 0:
@@ -187,20 +187,20 @@ def _edges_exist_if_wallets():
     return None
 
 
-def _edges_coverage():
+async def _edges_coverage():
     """Check that at least 5% of wallets have edges (once edges exist)."""
     try:
-        edges = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges")
+        edges = await fetch_one_async("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges")
         if not edges or edges["cnt"] == 0:
             return None  # no edges yet — covered by _edges_exist_if_wallets
 
-        wallets_with = fetch_one("""
+        wallets_with = await fetch_one_async("""
             SELECT COUNT(DISTINCT addr) AS cnt FROM (
                 SELECT from_address AS addr FROM wallet_graph.wallet_edges
                 UNION SELECT to_address FROM wallet_graph.wallet_edges
             ) sub
         """)
-        wallets_total = fetch_one("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
+        wallets_total = await fetch_one_async("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
         w_with = wallets_with["cnt"] if wallets_with else 0
         w_total = wallets_total["cnt"] if wallets_total else 0
 
@@ -217,10 +217,10 @@ def _edges_coverage():
     return None
 
 
-def _edges_stuck_builds():
+async def _edges_stuck_builds():
     """Check for wallets stuck in 'building' status for > 1 hour."""
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT COUNT(*) AS cnt FROM wallet_graph.edge_build_status
             WHERE status NOT IN ('complete', 'pending')
               AND last_built_at < NOW() - INTERVAL '1 hour'
@@ -237,10 +237,10 @@ def _edges_stuck_builds():
     return None
 
 
-def _pulse_summary_coherence():
+async def _pulse_summary_coherence():
     """Validate the latest pulse summary JSON."""
     try:
-        row = fetch_one("SELECT summary FROM daily_pulses ORDER BY created_at DESC LIMIT 1")
+        row = await fetch_one_async("SELECT summary FROM daily_pulses ORDER BY created_at DESC LIMIT 1")
         if not row or not row.get("summary"):
             return None
         summary = row["summary"]
@@ -282,9 +282,9 @@ def _pulse_summary_coherence():
 
 # -- Actor classification coherence rules (Primitive #21) --
 
-def _actor_probability_range():
+async def _actor_probability_range():
     """All agent_probability values must be between 0 and 1."""
-    return _count_check(
+    return await _count_check(
         "SELECT COUNT(*) AS cnt FROM wallet_graph.actor_classifications WHERE agent_probability < 0 OR agent_probability > 1",
         threshold=0, level="error",
         rule="actor_probability_out_of_range", field="agent_probability",
@@ -292,9 +292,9 @@ def _actor_probability_range():
     )
 
 
-def _actor_type_consistency():
+async def _actor_type_consistency():
     """actor_type must match threshold applied to agent_probability."""
-    return _count_check(
+    return await _count_check(
         """
         SELECT COUNT(*) AS cnt FROM wallet_graph.actor_classifications
         WHERE actor_type NOT IN ('autonomous_agent', 'human', 'contract_vault', 'unknown')
@@ -305,16 +305,16 @@ def _actor_type_consistency():
     )
 
 
-def _treasury_registry_nonempty():
-    return _min_count_check(
+async def _treasury_registry_nonempty():
+    return await _min_count_check(
         "SELECT COUNT(*) AS cnt FROM wallet_graph.treasury_registry WHERE monitoring_enabled = TRUE",
         minimum=1, rule="treasury_registry_empty", field="row_count", level="info",
         message="No monitoring-enabled treasuries in registry",
     )
 
 
-def _treasury_events_severity_valid():
-    return _count_check(
+async def _treasury_events_severity_valid():
+    return await _count_check(
         "SELECT COUNT(*) AS cnt FROM wallet_graph.treasury_events WHERE severity NOT IN ('info', 'warning', 'critical')",
         rule="treasury_severity_invalid", field="severity", level="error",
         message="Treasury events with invalid severity values",
@@ -323,11 +323,11 @@ def _treasury_events_severity_valid():
 
 # -- Provenance source health rules --
 
-def _provenance_disabled_ratio():
+async def _provenance_disabled_ratio():
     """Flag if >20% of provenance sources are disabled."""
     try:
-        total = fetch_one("SELECT COUNT(*) AS cnt FROM provenance_sources")
-        disabled = fetch_one("SELECT COUNT(*) AS cnt FROM provenance_sources WHERE enabled = FALSE")
+        total = await fetch_one_async("SELECT COUNT(*) AS cnt FROM provenance_sources")
+        disabled = await fetch_one_async("SELECT COUNT(*) AS cnt FROM provenance_sources WHERE enabled = FALSE")
         total_cnt = total["cnt"] if total else 0
         disabled_cnt = disabled["cnt"] if disabled else 0
         if total_cnt > 0 and disabled_cnt / total_cnt > 0.20:
@@ -341,10 +341,10 @@ def _provenance_disabled_ratio():
     return None
 
 
-def _provenance_proof_freshness():
+async def _provenance_proof_freshness():
     """Flag if no provenance proofs registered in >2 hours (prover may be down)."""
     try:
-        row = fetch_one("SELECT MAX(proved_at) AS latest FROM provenance_proofs")
+        row = await fetch_one_async("SELECT MAX(proved_at) AS latest FROM provenance_proofs")
         if not row or not row.get("latest"):
             return {
                 "rule": "provenance_no_proofs", "field": "latest_proof",
@@ -366,9 +366,9 @@ def _provenance_proof_freshness():
     return None
 
 
-def _provenance_sources_exist():
+async def _provenance_sources_exist():
     """At least 1 provenance source should be registered."""
-    return _min_count_check(
+    return await _min_count_check(
         "SELECT COUNT(*) AS cnt FROM provenance_sources",
         minimum=1, rule="no_provenance_sources", field="row_count", level="warning",
         message="No provenance sources registered",
@@ -478,7 +478,7 @@ DOMAINS = {
 # Core API
 # ---------------------------------------------------------------------------
 
-def check_domain(domain: str) -> dict:
+async def check_domain(domain: str) -> dict:
     """Check freshness and coherence for a single domain."""
     if domain not in DOMAINS:
         return {"domain": domain, "status": "error", "warnings": [{"rule": "unknown_domain", "field": "", "value": domain, "level": "error", "message": f"Unknown domain: {domain}"}]}
@@ -493,7 +493,7 @@ def check_domain(domain: str) -> dict:
     status = "fresh"
 
     try:
-        row = fetch_one(cfg["freshness_query"])
+        row = await fetch_one_async(cfg["freshness_query"])
         row_count = row["cnt"] if row else 0
         latest = row.get("latest") if row else None
         if latest is None:
@@ -544,12 +544,12 @@ def check_domain(domain: str) -> dict:
     }
 
 
-def check_all() -> dict:
+async def check_all() -> dict:
     """Check all domains and compute overall status."""
     now = datetime.now(timezone.utc)
     domains = {}
     for name in DOMAINS:
-        domains[name] = check_domain(name)
+        domains[name] = await check_domain(name)
 
     has_error = any(d["status"] == "error" for d in domains.values())
     has_stale = any(d["status"] == "stale" for d in domains.values())
@@ -568,9 +568,9 @@ def check_all() -> dict:
     }
 
 
-def check_all_and_store() -> dict:
-    """Run check_all() and persist every domain result to integrity_checks."""
-    result = check_all()
+async def check_all_and_store() -> dict:
+    """Run await check_all() and persist every domain result to integrity_checks."""
+    result = await check_all()
     now = datetime.now(timezone.utc)
 
     for domain_name, domain_result in result.get("domains", {}).items():
@@ -582,7 +582,7 @@ def check_all_and_store() -> dict:
             freshness_status = "fail"
 
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO integrity_checks
                     (domain, check_type, status, detail, cycle_timestamp)
                 VALUES (%s, %s, %s, %s, %s)
@@ -608,7 +608,7 @@ def check_all_and_store() -> dict:
             coherence_status = "warn"
 
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO integrity_checks
                     (domain, check_type, status, detail, cycle_timestamp)
                 VALUES (%s, %s, %s, %s, %s)
@@ -623,17 +623,17 @@ def check_all_and_store() -> dict:
     return result
 
 
-def get_integrity_history(domain: str = None, days: int = 7) -> list:
+async def get_integrity_history(domain: str = None, days: int = 7) -> list:
     """Get integrity check history for trending analysis."""
     if domain:
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT domain, check_type, status, detail, cycle_timestamp
             FROM integrity_checks
             WHERE domain = %s AND cycle_timestamp >= NOW() - INTERVAL '%s days'
             ORDER BY cycle_timestamp DESC
         """, (domain, days))
     else:
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT domain, check_type, status, detail, cycle_timestamp
             FROM integrity_checks
             WHERE cycle_timestamp >= NOW() - INTERVAL '%s days'

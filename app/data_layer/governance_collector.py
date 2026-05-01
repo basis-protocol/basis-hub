@@ -459,8 +459,8 @@ async def run_governance_collection() -> dict:
         from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
         if total_proposals > 0:
             attest_data_batch("governance_proposals", [{"proposals": total_proposals, "voters": total_voters}])
-            link_batch_to_proof("governance_proposals", "governance_proposals")
-            link_batch_to_proof("governance_voters", "governance_voters")
+            await link_batch_to_proof("governance_proposals", "governance_proposals")
+            await link_batch_to_proof("governance_voters", "governance_voters")
     except Exception as e:
         logger.debug(f"Governance provenance failed: {e}")
 

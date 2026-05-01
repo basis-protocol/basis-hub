@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_one
+from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.index_definitions.bri_v01 import BRIDGE_ENTITIES
 from app.api_usage_tracker import track_api_call
 
@@ -240,7 +240,7 @@ def normalize_uptime_pct(uptime: float) -> float:
 # Main runner
 # =============================================================================
 
-def run_bridge_monitoring() -> list[dict]:
+async def run_bridge_monitoring() -> list[dict]:
     """
     Collect message success rates for all BRI bridge entities.
     Called from worker fast cycle (hourly).
@@ -263,7 +263,7 @@ def run_bridge_monitoring() -> list[dict]:
 
             # Store as component readings
             try:
-                execute(
+                await execute_async(
                     """
                     INSERT INTO generic_index_scores (index_id, entity_slug, entity_name,
                         overall_score, category_scores, component_scores, raw_values,

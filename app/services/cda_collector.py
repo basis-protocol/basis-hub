@@ -356,7 +356,7 @@ async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str, disclosure_ty
     Try to parse a PDF with Reducto and store the result.
     Returns (success: bool, method_label: str).
     """
-    if _already_collected_today(symbol, pdf_url):
+    if await _already_collected_today(symbol, pdf_url):
         logger.info(f"{prefix} — PDF already parsed today: {pdf_url[:60]}...")
         return True, "already_collected"
 
@@ -375,7 +375,7 @@ async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str, disclosure_ty
 
     logger.info(f"{prefix} — Reducto OK (confidence: {confidence:.2f})")
 
-    _store_extraction(
+    await _store_extraction(
         asset_symbol=symbol,
         source_url=pdf_url,
         source_type="pdf_attestation",
@@ -425,7 +425,7 @@ async def _step_parallel_extract(issuer: dict, prefix: str) -> dict | None:
 
     symbol = issuer["asset_symbol"]
 
-    if _already_collected_today(symbol, url):
+    if await _already_collected_today(symbol, url):
         logger.info(f"{prefix} — [Step 1] page already collected today")
         return None  # Already tried today, let waterfall continue
 
@@ -448,7 +448,7 @@ async def _step_parallel_extract(issuer: dict, prefix: str) -> dict | None:
         excerpts = r.get("excerpts", []) or []
 
     # Store the web extraction
-    _store_extraction(
+    await _store_extraction(
         asset_symbol=symbol,
         source_url=url,
         source_type="transparency_page",
@@ -478,7 +478,7 @@ async def _step_parallel_extract(issuer: dict, prefix: str) -> dict | None:
     # Try extracting data directly from page markdown
     page_data = _extract_reserve_data_from_markdown(full_content)
     if page_data:
-        _store_extraction(
+        await _store_extraction(
             asset_symbol=symbol,
             source_url=url,
             source_type="transparency_page",
@@ -594,7 +594,7 @@ async def _step_firecrawl_js(issuer: dict, prefix: str) -> dict | None:
         # 3b: Try extracting reserve data from rendered markdown
         page_data = _extract_reserve_data_from_markdown(markdown)
         if page_data:
-            _store_extraction(
+            await _store_extraction(
                 asset_symbol=symbol,
                 source_url=url,
                 source_type="transparency_page",
@@ -654,7 +654,7 @@ async def _step_firecrawl_json(issuer: dict, prefix: str) -> dict | None:
         if isinstance(extract_data, dict) and any(
             v for v in extract_data.values() if v is not None and v != "" and v != 0
         ):
-            _store_extraction(
+            await _store_extraction(
                 asset_symbol=symbol,
                 source_url=url,
                 source_type="transparency_page",
@@ -769,7 +769,7 @@ async def _step_parallel_task(issuer: dict, prefix: str) -> dict | None:
             except ValueError:
                 pass
 
-        _store_extraction(
+        await _store_extraction(
             asset_symbol=symbol,
             source_url="research",
             source_type="research",
@@ -851,7 +851,7 @@ async def _collect_multi_source(issuer: dict, source_urls: list, prefix: str) ->
         if not src_url:
             continue
 
-        if _already_collected_today(symbol, src_url):
+        if await _already_collected_today(symbol, src_url):
             logger.info(f"{prefix} — [Source {i+1}/{len(source_urls)}] {src_type} already collected today")
             results.append({"source": src_type, "status": "already_collected"})
             any_success = True
@@ -943,7 +943,7 @@ async def _collect_dashboard(symbol: str, url: str, disc_type: str, prefix: str)
         if isinstance(extract_data, dict) and any(
             v for v in extract_data.values() if v is not None and v != "" and v != 0
         ):
-            _store_extraction(
+            await _store_extraction(
                 asset_symbol=symbol,
                 source_url=url,
                 source_type="dashboard",
@@ -974,7 +974,7 @@ async def _collect_dashboard(symbol: str, url: str, disc_type: str, prefix: str)
         else:
             page_data = None
         if page_data:
-            _store_extraction(
+            await _store_extraction(
                 asset_symbol=symbol,
                 source_url=url,
                 source_type="dashboard",
@@ -1032,7 +1032,7 @@ async def _collect_attestation_page(issuer: dict, url: str, prefix: str) -> dict
         full_content = results_list[0].get("full_content", "") or ""
 
     # Store page scrape
-    _store_extraction(
+    await _store_extraction(
         asset_symbol=symbol,
         source_url=url,
         source_type="attestation_page",
@@ -1087,7 +1087,7 @@ async def _collect_api_source(symbol: str, url: str, prefix: str) -> dict | None
             data = resp.json()
 
             if data:
-                _store_extraction(
+                await _store_extraction(
                     asset_symbol=symbol,
                     source_url=url,
                     source_type="api",

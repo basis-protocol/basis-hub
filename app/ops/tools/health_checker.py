@@ -8,7 +8,7 @@ import time
 import json
 import httpx
 from datetime import datetime, timezone
-from app.database import fetch_one, fetch_all, execute, get_cursor
+from app.database import fetch_one, fetch_all, execute, get_cursor, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -530,14 +530,14 @@ ALL_CHECKS = [
 ]
 
 
-def run_all_checks():
+async def run_all_checks():
     """Run all health checks, store results, prune old records."""
     results = []
     for check_fn in ALL_CHECKS:
         try:
             result = check_fn()
             results.append(result)
-            execute(
+            await execute_async(
                 "INSERT INTO ops_health_checks (system, status, details) VALUES (%s, %s, %s)",
                 (result["system"], result["status"], json.dumps(result["details"])),
             )
@@ -547,7 +547,7 @@ def run_all_checks():
 
     # Prune records older than 7 days
     try:
-        execute("DELETE FROM ops_health_checks WHERE checked_at < NOW() - INTERVAL '7 days'")
+        await execute_async("DELETE FROM ops_health_checks WHERE checked_at < NOW() - INTERVAL '7 days'")
     except Exception:
         pass
 

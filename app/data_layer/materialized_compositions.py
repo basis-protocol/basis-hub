@@ -17,12 +17,12 @@ import math
 import time
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one, execute, get_cursor
+from app.database import fetch_all, fetch_one, execute, get_cursor, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
 
-def _compute_cqi_scores() -> list[dict]:
+async def _compute_cqi_scores() -> list[dict]:
     """
     Compute CQI (Composite Quality Index) for all stablecoin-protocol pairs.
     CQI = geometric_mean(SII_score, PSI_score) for each pair in collateral exposure.
@@ -30,7 +30,7 @@ def _compute_cqi_scores() -> list[dict]:
     from app.composition import compose_geometric_mean
 
     # Get all SII scores
-    sii_rows = fetch_all(
+    sii_rows = await fetch_all_async(
         "SELECT stablecoin_id, overall_score FROM scores WHERE overall_score IS NOT NULL"
     )
     if not sii_rows:
@@ -38,7 +38,7 @@ def _compute_cqi_scores() -> list[dict]:
     sii_scores = {r["stablecoin_id"]: float(r["overall_score"]) for r in sii_rows}
 
     # Get all PSI scores
-    psi_rows = fetch_all(
+    psi_rows = await fetch_all_async(
         """SELECT protocol_slug, overall_score FROM psi_scores
            WHERE overall_score IS NOT NULL"""
     )
@@ -47,7 +47,7 @@ def _compute_cqi_scores() -> list[dict]:
     psi_scores = {r["protocol_slug"]: float(r["overall_score"]) for r in psi_rows}
 
     # Get collateral exposure pairs
-    pairs = fetch_all(
+    pairs = await fetch_all_async(
         """SELECT DISTINCT protocol_slug, stablecoin_id
            FROM protocol_collateral_exposure
            WHERE snapshot_date >= CURRENT_DATE - 7"""
@@ -152,7 +152,7 @@ def _store_materialized_scores(scores: list[dict]):
         )
 
 
-def run_materialized_compositions() -> dict:
+async def run_materialized_compositions() -> dict:
     """
     Recompute all materialized compositions.
     Called after each scoring cycle.
@@ -162,7 +162,7 @@ def run_materialized_compositions() -> dict:
 
     # CQI
     try:
-        cqi_scores = _compute_cqi_scores()
+        cqi_scores = await _compute_cqi_scores()
         if cqi_scores:
             _store_materialized_scores(cqi_scores)
             results["cqi"] = {

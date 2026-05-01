@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.database import fetch_all, fetch_one, execute, get_cursor, fetch_all_async, execute_async
+from app.database import fetch_all, fetch_one, execute, get_cursor, fetch_all_async, execute_async, fetch_one_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -390,7 +390,7 @@ def tag_pre_stress_readings(
         return 0
 
 
-def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, latency: int):
+async def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, latency: int):
     """Handle oracle stress event: create or update."""
     oracle_addr = oracle["oracle_address"]
     asset = oracle["asset_symbol"]
@@ -412,7 +412,7 @@ def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, late
         event_type = "stale_price"
 
     # Check for open event
-    open_event = fetch_one(
+    open_event = await fetch_one_async(
         """SELECT id, max_deviation_pct, max_latency_seconds, reading_count
            FROM oracle_stress_events
            WHERE oracle_address = %s AND chain = %s AND event_end IS NULL
@@ -425,7 +425,7 @@ def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, late
         new_max_dev = max(abs_dev, float(open_event.get("max_deviation_pct") or 0))
         new_max_lat = max(latency, open_event.get("max_latency_seconds") or 0)
         new_count = (open_event.get("reading_count") or 1) + 1
-        execute(
+        await execute_async(
             """UPDATE oracle_stress_events
                SET max_deviation_pct = %s, max_latency_seconds = %s,
                    reading_count = %s
@@ -440,7 +440,7 @@ def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, late
 
         if entity_slug:
             try:
-                sii_row = fetch_one(
+                sii_row = await fetch_one_async(
                     "SELECT overall_score FROM scores WHERE stablecoin_id = LOWER(%s) ORDER BY scored_at DESC LIMIT 1",
                     (entity_slug,),
                 )
@@ -452,7 +452,7 @@ def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, late
         # Find affected protocols (protocols that use this oracle's asset)
         affected = []
         try:
-            dep_rows = fetch_all(
+            dep_rows = await fetch_all_async(
                 """SELECT DISTINCT entity_slug FROM contract_dependencies
                    WHERE depends_on_address = LOWER(%s) AND removed_at IS NULL""",
                 (oracle_addr,),
@@ -463,7 +463,7 @@ def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, late
 
         for slug in affected:
             try:
-                psi_row = fetch_one(
+                psi_row = await fetch_one_async(
                     "SELECT overall_score FROM psi_scores WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1",
                     (slug,),
                 )
@@ -476,7 +476,7 @@ def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, late
         content_data = f"{oracle_addr}{chain}{event_type}{now.isoformat()}"
         content_hash = "0x" + hashlib.sha256(content_data.encode()).hexdigest()
 
-        new_event = fetch_one(
+        new_event = await fetch_one_async(
             """INSERT INTO oracle_stress_events
                 (oracle_address, oracle_name, asset_symbol, chain,
                  event_type, event_start, max_deviation_pct, max_latency_seconds,
@@ -524,12 +524,12 @@ def _handle_stress_event(oracle: dict, reading: dict, deviation_pct: float, late
         )
 
 
-def _close_stress_event_if_open(oracle: dict):
+async def _close_stress_event_if_open(oracle: dict):
     """Close an open stress event if the oracle is now healthy."""
     oracle_addr = oracle["oracle_address"]
     chain = oracle["chain"]
 
-    open_event = fetch_one(
+    open_event = await fetch_one_async(
         """SELECT id, event_start FROM oracle_stress_events
            WHERE oracle_address = %s AND chain = %s AND event_end IS NULL
            ORDER BY event_start DESC LIMIT 1""",
@@ -544,7 +544,7 @@ def _close_stress_event_if_open(oracle: dict):
         event_start = event_start.replace(tzinfo=timezone.utc)
     duration = int((now - event_start).total_seconds()) if event_start else 0
 
-    execute(
+    await execute_async(
         """UPDATE oracle_stress_events
            SET event_end = NOW(), duration_seconds = %s
            WHERE id = %s""",
@@ -676,10 +676,10 @@ async def collect_oracle_readings() -> dict:
 
                 # Handle stress events
                 if is_stress:
-                    _handle_stress_event(oracle, reading, deviation_pct, latency)
+                    await _handle_stress_event(oracle, reading, deviation_pct, latency)
                     return {"stress": True}
                 else:
-                    _close_stress_event_if_open(oracle)
+                    await _close_stress_event_if_open(oracle)
                     return {"stress": False}
 
             except Exception as e:
@@ -687,7 +687,7 @@ async def collect_oracle_readings() -> dict:
                 return None
 
         # Run all oracle reads concurrently
-        tasks = [_process_oracle(o) for o in oracles]
+        tasks = [await _process_oracle(o) for o in oracles]
         oracle_results = await asyncio.gather(*tasks)
 
         for i, res in enumerate(oracle_results):

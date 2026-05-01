@@ -325,8 +325,8 @@ async def run_peg_monitoring() -> dict:
         from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
         if total_snapshots > 0:
             attest_data_batch("peg_snapshots_5m", [{"snapshots": total_snapshots, "vol_surfaces": vol_surfaces}])
-            link_batch_to_proof("peg_snapshots_5m", "peg_snapshots_5m")
-            link_batch_to_proof("volatility_surfaces", "volatility_surfaces")
+            await link_batch_to_proof("peg_snapshots_5m", "peg_snapshots_5m")
+            await link_batch_to_proof("volatility_surfaces", "volatility_surfaces")
     except Exception as e:
         logger.debug(f"Peg provenance failed: {e}")
 

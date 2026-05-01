@@ -265,7 +265,7 @@ async def run_ohlcv_collection() -> dict:
         from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
         if total_records > 0:
             attest_data_batch("dex_pool_ohlcv", [{"records": total_records, "pools": pools_processed}])
-            link_batch_to_proof("dex_pool_ohlcv", "liquidity_depth")
+            await link_batch_to_proof("dex_pool_ohlcv", "liquidity_depth")
     except Exception:
         pass
 

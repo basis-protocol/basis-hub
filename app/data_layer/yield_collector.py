@@ -269,7 +269,7 @@ async def run_yield_collection() -> dict:
         from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
         if snapshots:
             attest_data_batch("yield_snapshots", [{"pools": len(snapshots)}])
-            link_batch_to_proof("yield_snapshots", "yield_snapshots")
+            await link_batch_to_proof("yield_snapshots", "yield_snapshots")
     except Exception as e:
         logger.debug(f"Yield provenance failed: {e}")
 

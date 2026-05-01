@@ -26,7 +26,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_one, execute, fetch_all
+from app.database import fetch_one, execute, fetch_all, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ def attest_data_batch(
 # Proof linking — connect data rows to nearest TLSNotary proof
 # =============================================================================
 
-def get_nearest_proof_id(data_type: str) -> int:
+async def get_nearest_proof_id(data_type: str) -> int:
     """
     Get the ID of the most recent TLSNotary proof for this data type.
     Used to set provenance_proof_id on newly stored data rows.
@@ -199,7 +199,7 @@ def get_nearest_proof_id(data_type: str) -> int:
     try:
         # Find the most recent proof across all source domains for this data type
         placeholders = ",".join(["%s"] * len(source_domains))
-        row = fetch_one(
+        row = await fetch_one_async(
             f"""SELECT id FROM provenance_proofs
                 WHERE source_domain IN ({placeholders})
                 ORDER BY proved_at DESC LIMIT 1""",
@@ -210,14 +210,14 @@ def get_nearest_proof_id(data_type: str) -> int:
         return None
 
 
-def link_batch_to_proof(table_name: str, data_type: str, batch_timestamp: str = None):
+async def link_batch_to_proof(table_name: str, data_type: str, batch_timestamp: str = None):
     """
     Update recently stored rows in a data table to link them to the nearest proof.
     Called after a collector stores data.
 
     Only updates rows where provenance_proof_id IS NULL (not already linked).
     """
-    proof_id = get_nearest_proof_id(data_type)
+    proof_id = await get_nearest_proof_id(data_type)
     if not proof_id:
         return 0
 
@@ -249,7 +249,7 @@ def link_batch_to_proof(table_name: str, data_type: str, batch_timestamp: str = 
         return 0
 
     try:
-        execute(
+        await execute_async(
             f"""UPDATE {table_name}
                 SET provenance_proof_id = %s
                 WHERE provenance_proof_id IS NULL
@@ -266,14 +266,14 @@ def link_batch_to_proof(table_name: str, data_type: str, batch_timestamp: str = 
 # Registry and catalog functions
 # =============================================================================
 
-def get_provenance_registry() -> dict:
+async def get_provenance_registry() -> dict:
     """Return the full provenance source registry with current proof status."""
     registry = {}
 
     for source_id, source in PROVENANCE_SOURCES.items():
         latest_proof = None
         try:
-            row = fetch_one(
+            row = await fetch_one_async(
                 """SELECT id, proved_at, attestation_hash
                    FROM provenance_proofs
                    WHERE source_domain = %s
@@ -293,7 +293,7 @@ def get_provenance_registry() -> dict:
         latest_attestation = None
         for dt in source["data_types"]:
             try:
-                att = fetch_one(
+                att = await fetch_one_async(
                     """SELECT batch_hash, cycle_timestamp
                        FROM state_attestations
                        WHERE domain = %s
@@ -323,7 +323,7 @@ def get_provenance_registry() -> dict:
     return registry
 
 
-def get_data_type_provenance(data_type: str) -> dict:
+async def get_data_type_provenance(data_type: str) -> dict:
     """Get provenance chain for a specific data type."""
     source_domains = _DATA_TYPE_TO_SOURCES.get(data_type, [])
 
@@ -337,7 +337,7 @@ def get_data_type_provenance(data_type: str) -> dict:
     proofs = []
     for source_id in source_domains:
         try:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT id, proved_at, attestation_hash, source_domain, source_endpoint
                    FROM provenance_proofs
                    WHERE source_domain = %s
@@ -352,7 +352,7 @@ def get_data_type_provenance(data_type: str) -> dict:
     # Also check state attestations
     attestations = []
     try:
-        att_rows = fetch_all(
+        att_rows = await fetch_all_async(
             """SELECT domain, batch_hash, record_count, cycle_timestamp
                FROM state_attestations
                WHERE domain = %s
@@ -377,13 +377,13 @@ def get_data_type_provenance(data_type: str) -> dict:
     }
 
 
-def update_catalog_provenance():
+async def update_catalog_provenance():
     """Update data_catalog with provenance status for each data type."""
     updated = 0
 
     # Get all data types from catalog
     try:
-        catalog_rows = fetch_all("SELECT data_type FROM data_catalog")
+        catalog_rows = await fetch_all_async("SELECT data_type FROM data_catalog")
         if not catalog_rows:
             return
     except Exception:
@@ -391,7 +391,7 @@ def update_catalog_provenance():
 
     for row in catalog_rows:
         data_type = row["data_type"]
-        prov = get_data_type_provenance(data_type)
+        prov = await get_data_type_provenance(data_type)
         status = prov["provenance_status"]
 
         # Build proof details for catalog display
@@ -412,7 +412,7 @@ def update_catalog_provenance():
             }
 
         try:
-            execute(
+            await execute_async(
                 """UPDATE data_catalog
                    SET provenance_status = %s,
                        schema_info = COALESCE(schema_info, '{}'::jsonb) || %s::jsonb,
@@ -431,7 +431,7 @@ def update_catalog_provenance():
     logger.info(f"Data catalog provenance updated: {updated} data types")
 
 
-def run_provenance_linking():
+async def run_provenance_linking():
     """
     Link all recent unlinked data rows to their nearest proofs.
     Called at end of enrichment cycle.
@@ -454,7 +454,7 @@ def run_provenance_linking():
     linked = 0
     for table_name, data_type in tables:
         try:
-            result = link_batch_to_proof(table_name, data_type)
+            result = await link_batch_to_proof(table_name, data_type)
             if result:
                 linked += 1
         except Exception:
@@ -464,11 +464,11 @@ def run_provenance_linking():
     return linked
 
 
-def get_coverage_report() -> dict:
+async def get_coverage_report() -> dict:
     """
     Report: how many data sources are proven out of how many total?
     """
-    registry = get_provenance_registry()
+    registry = await get_provenance_registry()
 
     total = len(registry)
     proven = sum(1 for s in registry.values() if s["status"] == "proven")

@@ -314,10 +314,10 @@ async def run_liquidity_collection() -> dict:
 
     Returns summary of collection.
     """
-    from app.database import fetch_all
+    from app.database import fetch_all, fetch_all_async
 
     # Get stablecoins to collect for
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT id, symbol, coingecko_id, contract
            FROM stablecoins WHERE scoring_enabled = TRUE"""
     )
@@ -378,7 +378,7 @@ async def run_liquidity_collection() -> dict:
         from app.data_layer.provenance_scaling import attest_data_batch, link_batch_to_proof
         if total_records > 0:
             attest_data_batch("liquidity_depth", [{"records": total_records, "cex": total_cex, "dex": total_dex}])
-            link_batch_to_proof("liquidity_depth", "liquidity_depth")
+            await link_batch_to_proof("liquidity_depth", "liquidity_depth")
     except Exception as e:
         logger.debug(f"Liquidity provenance failed: {e}")
 

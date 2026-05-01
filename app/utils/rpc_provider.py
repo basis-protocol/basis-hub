@@ -43,7 +43,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from app.database import execute, fetch_one
+from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -210,12 +210,12 @@ def route(method: str, params: list, chain: str = "ethereum",
 # Usage tracking — hourly upserts into rpc_provider_usage
 # ---------------------------------------------------------------------------
 
-def _track(provider: str, method: str, chain: str, status: str,
+async def _track(provider: str, method: str, chain: str, status: str,
            fallback_reason: str | None = None) -> None:
     """Hourly counter upsert. Non-fatal on error — tracking must never
     break an RPC call path."""
     try:
-        execute(
+        await execute_async(
             """
             INSERT INTO rpc_provider_usage
                 (provider, method, chain, status, fallback_reason, hour, calls)
@@ -453,11 +453,11 @@ async def _fetch_archive_block_tag(client: httpx.AsyncClient, chain: str) -> str
     return hex(archive_block)
 
 
-def _record_capability(provider: str, chain: str, method: str, status: str,
+async def _record_capability(provider: str, chain: str, method: str, status: str,
                        error_message: str | None = None,
                        sample_params: list | None = None) -> None:
     try:
-        execute(
+        await execute_async(
             """
             INSERT INTO rpc_capabilities
                 (provider, chain, method, status, error_message, sample_params, tested_at)
@@ -543,21 +543,21 @@ async def probe_rpc_capabilities(chain: str = "ethereum") -> dict[str, str]:
                     RPCProvider.DWELLIR, method, params, chain, client, timeout=15,
                 )
                 capabilities[label] = "ok"
-                _record_capability(
+                await _record_capability(
                     RPCProvider.DWELLIR, chain, method, "ok", None, params,
                 )
                 logger.error(f"[rpc_probe] dwellir {label}: OK")
             except RPCError as e:
                 err_str = str(e)[:100]
                 capabilities[label] = f"FAIL: {err_str}"
-                _record_capability(
+                await _record_capability(
                     RPCProvider.DWELLIR, chain, method, "fail", err_str, params,
                 )
                 logger.error(f"[rpc_probe] dwellir {label}: FAIL {err_str}")
             except Exception as e:
                 err_str = f"{type(e).__name__}: {e}"[:100]
                 capabilities[label] = f"FAIL: {err_str}"
-                _record_capability(
+                await _record_capability(
                     RPCProvider.DWELLIR, chain, method, "fail", err_str, params,
                 )
                 logger.error(f"[rpc_probe] dwellir {label}: FAIL {err_str}")
