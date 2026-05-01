@@ -140,7 +140,7 @@ async def collect_all_components(
     Collect all components from all sources for one stablecoin.
     Returns flat list of component dicts ready for DB insert.
     """
-    cfg = get_stablecoin_config(stablecoin_id)
+    cfg = await asyncio.to_thread(get_stablecoin_config, stablecoin_id)
     if not cfg:
         logger.error(f"Unknown stablecoin: {stablecoin_id}")
         return []
@@ -964,7 +964,7 @@ async def run_fast_cycle():
     # SII scoring — score all stablecoins
     # -------------------------------------------------------------------------
     logger.error("[prelude-phase] get_scoring_ids_from_db start")
-    stablecoins = get_scoring_ids_from_db()
+    stablecoins = await asyncio.to_thread(get_scoring_ids_from_db)
     logger.error(f"[prelude-phase] get_scoring_ids_from_db end, n={len(stablecoins)}")
     logger.error(f"[fc-1] entering scoring loop, coins to score: {len(stablecoins)}")
 
@@ -2366,10 +2366,10 @@ async def run_slow_cycle():
             report_count = 0
 
             # Stablecoin reports
-            stablecoin_ids = get_scoring_ids_from_db()
+            stablecoin_ids = await asyncio.to_thread(get_scoring_ids_from_db)
             for sid in stablecoin_ids:
                 try:
-                    cfg = get_stablecoin_config(sid)
+                    cfg = await asyncio.to_thread(get_stablecoin_config, sid)
                     if cfg:
                         assemble_report_data("stablecoin", cfg["symbol"])
                         report_count += 1
@@ -3022,13 +3022,13 @@ async def main():
     ]
     for _ddl in _data_layer_creates:
         try:
-            execute(_ddl)
+            await execute_async(_ddl)
         except Exception as _de:
             logger.error(f"[startup] DDL failed: {str(_de)[:100]}")
 
     # Ensure incident_events table exists
     try:
-        execute("""CREATE TABLE IF NOT EXISTS incident_events (
+        await execute_async("""CREATE TABLE IF NOT EXISTS incident_events (
             id SERIAL PRIMARY KEY, entity_id TEXT NOT NULL, entity_type TEXT,
             incident_type TEXT NOT NULL, severity TEXT, title TEXT, description TEXT,
             started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ended_at TIMESTAMPTZ,
@@ -3040,7 +3040,7 @@ async def main():
 
     # Ensure wallet_graph.wallets has a unique constraint on address
     try:
-        execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallets_address_unique ON wallet_graph.wallets (address)")
+        await execute_async("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallets_address_unique ON wallet_graph.wallets (address)")
     except Exception as _we:
         logger.error(f"[startup] wallets unique index failed: {_we}")
 
@@ -3067,13 +3067,13 @@ async def main():
     ]
     for _ui in _unique_indexes:
         try:
-            execute(_ui)
+            await execute_async(_ui)
         except Exception as _ue:
             logger.error(f"[startup] unique index failed: {_ui[:80]} — {_ue}")
 
     for _alt in _data_layer_alters:
         try:
-            execute(_alt)
+            await execute_async(_alt)
         except Exception as _ae:
             logger.error(f"[startup] ALTER failed: {_alt[:80]} — {_ae}")
 
@@ -3094,13 +3094,13 @@ async def main():
     ]
     for _alt in _oracle_alters:
         try:
-            execute(_alt)
+            await execute_async(_alt)
         except Exception as _ae:
             logger.error(f"[startup] oracle ALTER failed: {_ae}")
 
     # Ensure API usage tracking tables exist
     try:
-        execute("""
+        await execute_async("""
             CREATE TABLE IF NOT EXISTS api_usage_tracker (
                 id BIGSERIAL PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -3112,7 +3112,7 @@ async def main():
                 recorded_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        execute("""
+        await execute_async("""
             CREATE TABLE IF NOT EXISTS api_usage_hourly (
                 id SERIAL PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -3171,7 +3171,7 @@ async def main():
 
     # Create state_growth_snapshots table if needed
     try:
-        execute("""
+        await execute_async("""
             CREATE TABLE IF NOT EXISTS state_growth_snapshots (
                 id SERIAL PRIMARY KEY,
                 table_name TEXT NOT NULL,
@@ -3185,7 +3185,7 @@ async def main():
 
     # Ensure oracle tables exist (migration 073 may not have been applied)
     try:
-        execute("""CREATE TABLE IF NOT EXISTS oracle_registry (
+        await execute_async("""CREATE TABLE IF NOT EXISTS oracle_registry (
             id SERIAL PRIMARY KEY,
             oracle_address VARCHAR(42) NOT NULL,
             oracle_name VARCHAR(200) NOT NULL,
@@ -3201,7 +3201,7 @@ async def main():
             added_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE (oracle_address, chain, asset_symbol)
         )""")
-        execute("""CREATE TABLE IF NOT EXISTS oracle_price_readings (
+        await execute_async("""CREATE TABLE IF NOT EXISTS oracle_price_readings (
             id SERIAL PRIMARY KEY,
             oracle_address VARCHAR(42) NOT NULL,
             oracle_name VARCHAR(200),
@@ -3223,7 +3223,7 @@ async def main():
             content_hash VARCHAR(66),
             attested_at TIMESTAMPTZ
         )""")
-        execute("""CREATE TABLE IF NOT EXISTS oracle_stress_events (
+        await execute_async("""CREATE TABLE IF NOT EXISTS oracle_stress_events (
             id SERIAL PRIMARY KEY,
             oracle_address VARCHAR(42) NOT NULL,
             oracle_name VARCHAR(200),
@@ -3243,9 +3243,9 @@ async def main():
             attested_at TIMESTAMPTZ
         )""")
         # Seed oracle feeds if empty
-        oracle_count = fetch_one("SELECT COUNT(*) as cnt FROM oracle_registry")
+        oracle_count = await fetch_one_async("SELECT COUNT(*) as cnt FROM oracle_registry")
         if oracle_count and oracle_count["cnt"] == 0:
-            execute("""
+            await execute_async("""
                 INSERT INTO oracle_registry
                     (oracle_address, oracle_name, oracle_provider, chain, asset_symbol, quote_symbol,
                      decimals, read_function, entity_type, entity_slug)
@@ -3264,7 +3264,7 @@ async def main():
                      'ethereum', 'stETH', 'eth', 18, 'latestRoundData', 'stablecoin', 'steth')
                 ON CONFLICT (oracle_address, chain, asset_symbol) DO NOTHING
             """)
-            execute("DELETE FROM oracle_registry WHERE oracle_provider = 'pyth'")
+            await execute_async("DELETE FROM oracle_registry WHERE oracle_provider = 'pyth'")
             logger.info("Oracle registry seeded with 6 Chainlink feeds at startup")
     except Exception as e:
         logger.error(f"[startup] Oracle table creation failed: {e}")
@@ -3275,7 +3275,7 @@ async def main():
     _schema_tables = ["governance_proposals", "psi_scores", "scores", "oracle_registry"]
     for _st in _schema_tables:
         try:
-            _cols = fetch_all(
+            _cols = await fetch_all_async(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = %s ORDER BY ordinal_position",
                 (_st.split(".")[-1],),
@@ -3327,20 +3327,20 @@ async def main():
         "ALTER TABLE governance_proposals ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ DEFAULT NOW()",
     ]:
         try:
-            execute(_col_sql)
+            await execute_async(_col_sql)
         except Exception as _ae:
             logger.error(f"[schema_fix] ALTER failed: {_col_sql[:80]} — {_ae}")
 
     # Fix psi_scores — add scored_at alias if missing (code references scored_at but table has computed_at)
     try:
-        execute("ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ DEFAULT NOW()")
+        await execute_async("ALTER TABLE psi_scores ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ DEFAULT NOW()")
         logger.error("[schema_fix] psi_scores.scored_at column ensured")
     except Exception as _ae:
         logger.error(f"[schema_fix] psi_scores.scored_at failed: {_ae}")
 
     # Unique index for governance_proposals 069-style
     try:
-        execute("""
+        await execute_async("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_proposals_source_id
             ON governance_proposals (proposal_source, proposal_id)
         """)
@@ -3350,7 +3350,7 @@ async def main():
     # Log schema AFTER fixes
     for _st in ["governance_proposals", "psi_scores"]:
         try:
-            _cols = fetch_all(
+            _cols = await fetch_all_async(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = %s ORDER BY ordinal_position",
                 (_st,),
@@ -3363,7 +3363,7 @@ async def main():
     # Schema validation — catch all drift in one shot
     try:
         from app.db_schema_validator import validate_schemas
-        validate_schemas()
+        await validate_schemas()
     except Exception as e:
         logger.error(f"[schema_validator] failed to run: {e}")
 
@@ -3430,16 +3430,16 @@ async def main():
 
     # Seed email alert channel if not configured
     try:
-        existing = fetch_one("SELECT id FROM ops_alert_config WHERE channel = 'email'")
+        existing = await fetch_one_async("SELECT id FROM ops_alert_config WHERE channel = 'email'")
         if not existing:
-            execute(
+            await execute_async(
                 "INSERT INTO ops_alert_config (channel, config, alert_types, enabled) VALUES (%s, %s, %s, TRUE)",
                 ("email", "{}",
                  ["health_failure", "engagement_response", "state_growth", "daily_digest", "service_restart"]),
             )
             logger.info("Email alert channel seeded in ops_alert_config")
         else:
-            execute(
+            await execute_async(
                 "UPDATE ops_alert_config SET alert_types = %s, enabled = TRUE WHERE channel = 'email'",
                 (["health_failure", "engagement_response", "state_growth", "daily_digest", "service_restart"],),
             )

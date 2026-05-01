@@ -8,7 +8,7 @@ Only validates tables known to have drift history. Not exhaustive.
 """
 
 import logging
-from app.database import fetch_all
+from app.database import fetch_all, fetch_all_async
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ EXPECTED_COLUMNS = {
 }
 
 
-def validate_schemas() -> dict:
+async def validate_schemas() -> dict:
     """
     Check that every expected column exists in the live DB.
     Returns {table: [missing_columns]} for any table with drift.
@@ -236,7 +236,7 @@ def validate_schemas() -> dict:
         # Strip schema prefix for information_schema lookup
         bare_name = table_name.split(".")[-1]
         try:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = %s ORDER BY ordinal_position",
                 (bare_name,),
