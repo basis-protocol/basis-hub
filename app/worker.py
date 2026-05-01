@@ -1096,7 +1096,6 @@ async def run_fast_cycle():
     logger.error("=== DATA LAYER START ===")
 
     import json as _dj, math as _dm
-    from app.database import get_cursor as _dl_gc, fetch_all as _dl_fa, fetch_one as _dl_fo
 
     def _sn(v):
         if v is None: return None
@@ -1111,7 +1110,7 @@ async def run_fast_cycle():
 
     # ==== 1. ENTITY SNAPSHOTS — all scored entities ====
     try:
-        _coins = _dl_fa("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
+        _coins = await fetch_all_async("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
         _cg_fix = {"susd": "nusd", "spark": "spark-protocol"}
         _entities = [(r["id"], _cg_fix.get(r["coingecko_id"], r["coingecko_id"]), "stablecoin") for r in _coins]
         _psi = {"aave":"aave","compound-finance":"compound-governance-token","morpho":"morpho",
@@ -1129,8 +1128,7 @@ async def run_fast_cycle():
                                 "community_data":"false","developer_data":"false"}, headers=CG_HDR)
                     if _r.status_code != 200: continue
                     _md = _r.json().get("market_data",{})
-                    with _dl_gc() as _c:
-                        _c.execute("""INSERT INTO entity_snapshots_hourly
+                    await execute_async("""INSERT INTO entity_snapshots_hourly
                             (entity_id,entity_type,market_cap,total_volume,price_usd,
                              price_change_24h,circulating_supply,total_supply,snapshot_at)
                             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
@@ -1144,7 +1142,8 @@ async def run_fast_cycle():
                     _es_err += 1
                     if _es_err <= 3: logger.error(f"entity fail {_eid}: {_e}")
                 await asyncio.sleep(0.15)
-        logger.error(f"=== ENTITIES: {_es_ok} ok, {_es_err} err, total={_dl_fo('SELECT COUNT(*) as c FROM entity_snapshots_hourly')} ===")
+        _es_total = await fetch_one_async("SELECT COUNT(*) as c FROM entity_snapshots_hourly")
+        logger.error(f"=== ENTITIES: {_es_ok} ok, {_es_err} err, total={_es_total} ===")
     except Exception as _e1: logger.error(f"=== ENTITIES FAILED: {_e1} ===")
 
     # ==== 2. EXCHANGE SNAPSHOTS ====
@@ -1166,8 +1165,7 @@ async def run_fast_cycle():
                     _r = await _xc.get(f"{CG_BASE}/exchanges/{_cg_xid}", headers=CG_HDR)
                     if _r.status_code != 200: continue
                     _d = _r.json()
-                    with _dl_gc() as _c:
-                        _c.execute("""INSERT INTO exchange_snapshots
+                    await execute_async("""INSERT INTO exchange_snapshots
                             (exchange_id,name,trust_score,trust_score_rank,trade_volume_24h_btc,
                              year_established,country,trading_pairs,snapshot_at)
                             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
@@ -1179,7 +1177,8 @@ async def run_fast_cycle():
                     _ex_err += 1
                     if _ex_err <= 3: logger.error(f"exchange fail {_xid}: {_e}")
                 await asyncio.sleep(0.15)
-        logger.error(f"=== EXCHANGES: {_ex_ok} ok, {_ex_err} err, total={_dl_fo('SELECT COUNT(*) as c FROM exchange_snapshots')} ===")
+        _ex_total = await fetch_one_async("SELECT COUNT(*) as c FROM exchange_snapshots")
+        logger.error(f"=== EXCHANGES: {_ex_ok} ok, {_ex_err} err, total={_ex_total} ===")
     except Exception as _e2: logger.error(f"=== EXCHANGES FAILED: {_e2} ===")
 
     # ==== 3. YIELD SNAPSHOTS (DeFiLlama) ====
@@ -1203,22 +1202,24 @@ async def run_fast_cycle():
             # Build single multi-row INSERT (one round-trip instead of 200)
             _ys_now = datetime.now(timezone.utc)
             _ys_rows_with_ts = [r + (_ys_now,) for r in _ys_rows]
-            from psycopg2.extras import execute_values as _ev_ys
-            with _dl_gc() as _c:
-                _ev_ys(_c,
-                    """INSERT INTO yield_snapshots
-                       (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
-                       VALUES %s
-                       ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
-                    _ys_rows_with_ts, page_size=500,
-                )
+            def _inner_yields():
+                from psycopg2.extras import execute_values as _ev_ys
+                from app.database import get_cursor as _gc
+                with _gc() as _c:
+                    _ev_ys(_c,
+                        """INSERT INTO yield_snapshots
+                           (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
+                           VALUES %s
+                           ON CONFLICT(pool_id,snapshot_at) DO UPDATE SET apy=EXCLUDED.apy,tvl_usd=EXCLUDED.tvl_usd""",
+                        _ys_rows_with_ts, page_size=500,
+                    )
+            await asyncio.to_thread(_inner_yields)
             _ys_ok = len(_ys_rows)
         except Exception as _yb:
             logger.error(f"yield batch failed, falling back to per-row: {_yb}")
             for _yr in _ys_rows:
                 try:
-                    with _dl_gc() as _c:
-                        _c.execute(
+                    await execute_async(
                             """INSERT INTO yield_snapshots
                                (pool_id,protocol,chain,asset,apy,apy_base,apy_reward,tvl_usd,stable_pool,snapshot_at)
                                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
@@ -1240,7 +1241,7 @@ async def run_fast_cycle():
     try:
         _pg_ok, _mc_ok = 0, 0
         _mc_start = time.time()
-        _peg_coins = _dl_fa("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
+        _peg_coins = await fetch_all_async("SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE AND coingecko_id IS NOT NULL") or []
         _cg_fix_mc = {"susd": "nusd", "spark": "spark-protocol"}
         async with httpx.AsyncClient(timeout=30) as _pc:
             for _sc in _peg_coins:
@@ -1262,17 +1263,20 @@ async def run_fast_cycle():
                         _mc_rows.append((_sc["coingecko_id"], _sc["id"], _ts, _pt[1]))
                     if _peg_rows:
                         try:
-                            with _dl_gc() as _c:
-                                _ev(_c,
-                                    "INSERT INTO peg_snapshots_5m(stablecoin_id,price,timestamp,deviation_bps) "
-                                    "VALUES %s ON CONFLICT DO NOTHING",
-                                    _peg_rows, page_size=500,
-                                )
-                                _ev(_c,
-                                    "INSERT INTO market_chart_history(coin_id,stablecoin_id,timestamp,price,granularity) "
-                                    "VALUES %s ON CONFLICT DO NOTHING",
-                                    [r + ('5min',) for r in _mc_rows], page_size=500,
-                                )
+                            def _inner_peg_mc():
+                                from app.database import get_cursor as _gc
+                                with _gc() as _c:
+                                    _ev(_c,
+                                        "INSERT INTO peg_snapshots_5m(stablecoin_id,price,timestamp,deviation_bps) "
+                                        "VALUES %s ON CONFLICT DO NOTHING",
+                                        _peg_rows, page_size=500,
+                                    )
+                                    _ev(_c,
+                                        "INSERT INTO market_chart_history(coin_id,stablecoin_id,timestamp,price,granularity) "
+                                        "VALUES %s ON CONFLICT DO NOTHING",
+                                        [r + ('5min',) for r in _mc_rows], page_size=500,
+                                    )
+                            await asyncio.to_thread(_inner_peg_mc)
                             _pg_ok += len(_peg_rows)
                             _mc_ok += len(_mc_rows)
                         except Exception as _ei:
@@ -1295,8 +1299,7 @@ async def run_fast_cycle():
                     for _tk in _r.json().get("tickers",[])[:20]:
                         if (_tk.get("target","")).upper() not in ("USD","USDT","USDC","BUSD"): continue
                         try:
-                            with _dl_gc() as _c:
-                                _c.execute("""INSERT INTO liquidity_depth
+                            await execute_async("""INSERT INTO liquidity_depth
                                     (asset_id,venue,venue_type,spread_bps,volume_24h,trust_score,snapshot_at)
                                     VALUES(%s,%s,'cex',%s,%s,%s,NOW())""",
                                     (_sc["id"],_tk.get("market",{}).get("identifier","?"),
@@ -1308,12 +1311,13 @@ async def run_fast_cycle():
                             _liq_err += 1
                 except Exception: pass
                 await asyncio.sleep(0.15)
-        logger.error(f"=== LIQUIDITY: {_liq_ok} ok, {_liq_err} err, total={_dl_fo('SELECT COUNT(*) as c FROM liquidity_depth')} ===")
+        _liq_total = await fetch_one_async("SELECT COUNT(*) as c FROM liquidity_depth")
+        logger.error(f"=== LIQUIDITY: {_liq_ok} ok, {_liq_err} err, total={_liq_total} ===")
     except Exception as _e6: logger.error(f"=== LIQUIDITY FAILED: {_e6} ===")
 
     # ==== 7. MINT/BURN EVENTS (Etherscan tokentx, daily gate) ====
     try:
-        _mb_last = _dl_fo("SELECT MAX(collected_at) as t FROM mint_burn_events")
+        _mb_last = await fetch_one_async("SELECT MAX(collected_at) as t FROM mint_burn_events")
         _mb_age = 25
         if _mb_last and _mb_last.get("t"):
             _mt = _mb_last["t"]
@@ -1323,7 +1327,7 @@ async def run_fast_cycle():
         if _mb_age >= 20:
             ETH_KEY = os.environ.get("ETHERSCAN_API_KEY", "")
             _mb_ok, _mb_err = 0, 0
-            _mb_coins = _dl_fa("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []
+            _mb_coins = await fetch_all_async("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []
             logger.error(f"[mintburn-diag] coins_to_scan={len(_mb_coins)}, has_api_key={bool(ETH_KEY)}")
             async with httpx.AsyncClient(timeout=15) as _mbc:
                 for _sc in _mb_coins:
@@ -1363,8 +1367,7 @@ async def run_fast_cycle():
                                 try: _ts = datetime.fromtimestamp(int(_tx["timeStamp"]), tz=timezone.utc)
                                 except: pass
                             try:
-                                with _dl_gc() as _c:
-                                    _c.execute("""INSERT INTO mint_burn_events
+                                await execute_async("""INSERT INTO mint_burn_events
                                         (stablecoin_id,chain,event_type,amount,tx_hash,block_number,
                                          from_address,to_address,timestamp,collected_at)
                                         VALUES(%s,'ethereum',%s,%s,%s,%s,%s,%s,%s,NOW())
@@ -1379,14 +1382,15 @@ async def run_fast_cycle():
                     except Exception as _e:
                         logger.error(f"[mintburn-diag] {_sc['id']}: EXCEPTION {type(_e).__name__}: {_e}")
                     await asyncio.sleep(0.15)
-            logger.error(f"=== MINTBURN: {_mb_ok} ok, {_mb_err} err, coins={len(_mb_coins)}, total={_dl_fo('SELECT COUNT(*) as c FROM mint_burn_events')} ===")
+            _mb_total = await fetch_one_async("SELECT COUNT(*) as c FROM mint_burn_events")
+            logger.error(f"=== MINTBURN: {_mb_ok} ok, {_mb_err} err, coins={len(_mb_coins)}, total={_mb_total} ===")
         else:
             logger.error(f"=== MINTBURN: skipped (last {_mb_age:.0f}h ago) ===")
     except Exception as _e7: logger.error(f"=== MINTBURN FAILED: {_e7} ===")
 
     # ==== 8. PROTOCOL POOL WALLETS (Blockscout/Etherscan top holders, daily gate) ====
     try:
-        _pw_last = _dl_fo("SELECT MAX(discovered_at) as t FROM protocol_pool_wallets")
+        _pw_last = await fetch_one_async("SELECT MAX(discovered_at) as t FROM protocol_pool_wallets")
         _pw_age = 25
         if _pw_last and _pw_last.get("t"):
             _pt = _pw_last["t"]
@@ -1409,8 +1413,7 @@ async def run_fast_cycle():
                             _addr = (_h.get("address") or _h.get("TokenHolderAddress","")).lower()
                             if not _addr or _addr == "0x0000000000000000000000000000000000000000": continue
                             try:
-                                with _dl_gc() as _c:
-                                    _c.execute("""INSERT INTO protocol_pool_wallets
+                                await execute_async("""INSERT INTO protocol_pool_wallets
                                         (protocol_slug,stablecoin_symbol,chain,wallet_address,
                                          pool_contract_address,discovered_at,last_seen)
                                         VALUES(%s,%s,%s,%s,%s,NOW(),NOW())
@@ -1431,7 +1434,7 @@ async def run_fast_cycle():
 
     # ==== 9. GOVERNANCE VOTERS (Snapshot, daily gate) ====
     try:
-        _gv_last = _dl_fo("SELECT MAX(collected_at) as t FROM governance_voters")
+        _gv_last = await fetch_one_async("SELECT MAX(collected_at) as t FROM governance_voters")
         _gv_age = 25
         if _gv_last and _gv_last.get("t"):
             _gt = _gv_last["t"]
@@ -1463,8 +1466,7 @@ async def run_fast_cycle():
                                 if _v.get("created"):
                                     try: _vts = datetime.fromtimestamp(_v["created"], tz=timezone.utc)
                                     except: pass
-                                with _dl_gc() as _c:
-                                    _c.execute("""INSERT INTO governance_voters
+                                await execute_async("""INSERT INTO governance_voters
                                         (protocol,source,proposal_id,voter_address,voting_power,choice,created_at,collected_at)
                                         VALUES(%s,'snapshot',%s,%s,%s,%s,%s,NOW())
                                         ON CONFLICT(protocol,proposal_id,voter_address) DO UPDATE SET collected_at=NOW()""",
@@ -1484,7 +1486,7 @@ async def run_fast_cycle():
 
     # ==== 10. CONTRACT SURVEILLANCE (Etherscan source code, weekly gate) ====
     try:
-        _cs_last = _dl_fo("SELECT MAX(scanned_at) as t FROM contract_surveillance")
+        _cs_last = await fetch_one_async("SELECT MAX(scanned_at) as t FROM contract_surveillance")
         _cs_age = 170
         if _cs_last and _cs_last.get("t"):
             _ct = _cs_last["t"]
@@ -1494,7 +1496,7 @@ async def run_fast_cycle():
             import hashlib as _hl
             ETH_KEY = os.environ.get("ETHERSCAN_API_KEY", "")
             _cs_ok, _cs_err = 0, 0
-            _cs_coins = _dl_fa("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []
+            _cs_coins = await fetch_all_async("SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL") or []
             async with httpx.AsyncClient(timeout=15) as _csc:
                 for _sc in _cs_coins:
                     _addr = _sc.get("contract","")
@@ -1508,8 +1510,7 @@ async def run_fast_cycle():
                         _src = _res[0] if isinstance(_res,list) and _res else {}
                         _code = _src.get("SourceCode","")
                         _hash = _hl.sha256(_code.encode()).hexdigest() if _code else None
-                        with _dl_gc() as _c:
-                            _c.execute("""INSERT INTO contract_surveillance
+                        await execute_async("""INSERT INTO contract_surveillance
                                 (entity_id,chain,contract_address,source_code_hash,
                                  is_upgradeable,has_admin_keys,scanned_at)
                                 VALUES(%s,'ethereum',%s,%s,%s,%s,NOW())
