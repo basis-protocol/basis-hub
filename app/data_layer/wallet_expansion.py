@@ -10,6 +10,7 @@ discover counterparties via Etherscan tokentx, auto-seed into graph.
 Uses EtherscanPipeline for ~26% throughput increase over sequential.
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -35,7 +36,10 @@ async def run_wallet_graph_expansion(
     Producer: fetches tokentx from Etherscan at rate-limited speed.
     Consumer: extracts counterparty addresses, batches inserts.
     """
-    from app.database import fetch_all, fetch_one, get_cursor
+    from app.database import (
+        fetch_all, fetch_one, get_cursor,
+        fetch_all_async, fetch_one_async,
+    )
     from app.data_layer.async_pipeline import EtherscanPipeline
 
     ETHERSCAN_API_KEY = os.environ.get("ETHERSCAN_API_KEY", "")
@@ -45,7 +49,7 @@ async def run_wallet_graph_expansion(
 
     # 1. Find edge wallets: high value, few connections
     logger.error("[wallet_expansion] querying edge wallets (value >= $100K, sorted by fewest edges)")
-    edge_wallets = fetch_all(
+    edge_wallets = await fetch_all_async(
         """SELECT w.address, r.total_stablecoin_value,
                   COALESCE(e.edge_count, 0) as edge_count
            FROM wallet_graph.wallets w
@@ -64,14 +68,14 @@ async def run_wallet_graph_expansion(
     if not edge_wallets:
         logger.error("[wallet_expansion] ZERO edge wallets found — no wallets have $100K+ value with risk scores")
         # Diagnostic: how many wallets have risk scores at all?
-        _scored = fetch_one("SELECT COUNT(*) as cnt FROM wallet_graph.wallet_risk_scores WHERE total_stablecoin_value > 0")
-        _total = fetch_one("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
+        _scored = await fetch_one_async("SELECT COUNT(*) as cnt FROM wallet_graph.wallet_risk_scores WHERE total_stablecoin_value > 0")
+        _total = await fetch_one_async("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
         logger.error(
             f"[wallet_expansion] DEBUG: total_wallets={_total['cnt'] if _total else 0}, "
             f"scored_with_value={_scored['cnt'] if _scored else 0}"
         )
         # Try lower threshold
-        edge_wallets = fetch_all(
+        edge_wallets = await fetch_all_async(
             """SELECT w.address, COALESCE(r.total_stablecoin_value, 0) as total_stablecoin_value,
                       0 as edge_count
                FROM wallet_graph.wallets w
@@ -91,7 +95,7 @@ async def run_wallet_graph_expansion(
     )
 
     # Pre-load existing addresses for dedup
-    existing = fetch_all("SELECT address FROM wallet_graph.wallets")
+    existing = await fetch_all_async("SELECT address FROM wallet_graph.wallets")
     existing_set = set(r["address"].lower() for r in existing) if existing else set()
     logger.error(f"[wallet_expansion] existing wallets for dedup: {len(existing_set)}")
     discovered_addresses = set()
@@ -217,17 +221,20 @@ async def run_wallet_graph_expansion(
         logger.error(f"[wallet_expansion] inserting {len(batch)} discovered addresses")
         for addr in batch:
             try:
-                with get_cursor() as cur:
-                    cur.execute(
-                        """INSERT INTO wallet_graph.wallets (address, source, created_at)
-                           VALUES (%s, 'graph_expansion', NOW())
-                           ON CONFLICT (address) DO NOTHING""",
-                        (addr,),
-                    )
-                    if cur.rowcount > 0:
-                        new_wallets_seeded += 1
-                    else:
-                        already_existed += 1
+                def _inner_one(_addr=addr):
+                    with get_cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO wallet_graph.wallets (address, source, created_at)
+                               VALUES (%s, 'graph_expansion', NOW())
+                               ON CONFLICT (address) DO NOTHING""",
+                            (_addr,),
+                        )
+                        return cur.rowcount
+                _rowcount = await asyncio.to_thread(_inner_one)
+                if _rowcount > 0:
+                    new_wallets_seeded += 1
+                else:
+                    already_existed += 1
             except Exception as e:
                 insert_errors += 1
                 if insert_errors <= 3:
@@ -242,7 +249,7 @@ async def run_wallet_graph_expansion(
 
     # Stats
     try:
-        total_wallets = fetch_one("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
+        total_wallets = await fetch_one_async("SELECT COUNT(*) as cnt FROM wallet_graph.wallets")
         total_count = total_wallets["cnt"] if total_wallets else 0
     except Exception:
         total_count = "unknown"
@@ -273,14 +280,17 @@ async def run_multi_source_seeding() -> dict:
     """
     Seed wallets from non-edge sources. Bulk INSERT with overlap diagnostics.
     """
-    from app.database import fetch_one, fetch_all, get_cursor
+    from app.database import (
+        fetch_one, fetch_all, get_cursor,
+        fetch_one_async, fetch_all_async,
+    )
 
     results = {"sources": {}, "total_new": 0}
 
     # Source 1: Governance voters
     try:
-        src_count = fetch_one("SELECT COUNT(DISTINCT voter_address) as cnt FROM governance_voters WHERE voter_address IS NOT NULL")
-        overlap = fetch_one("""
+        src_count = await fetch_one_async("SELECT COUNT(DISTINCT voter_address) as cnt FROM governance_voters WHERE voter_address IS NOT NULL")
+        overlap = await fetch_one_async("""
             SELECT COUNT(DISTINCT gv.voter_address) as cnt
             FROM governance_voters gv
             JOIN wallet_graph.wallets w ON LOWER(gv.voter_address) = LOWER(w.address)
@@ -288,16 +298,18 @@ async def run_multi_source_seeding() -> dict:
         src_n = src_count["cnt"] if src_count else 0
         ovl_n = overlap["cnt"] if overlap else 0
         logger.error(f"[wallet_seeding] governance_voters: source={src_n}, overlap={ovl_n}, expected_new={src_n - ovl_n}")
-        with get_cursor() as cur:
-            cur.execute("""
-                INSERT INTO wallet_graph.wallets (address, source, created_at)
-                SELECT DISTINCT LOWER(voter_address), 'governance_voter', NOW()
-                FROM governance_voters
-                WHERE voter_address IS NOT NULL
-                  AND LOWER(voter_address) NOT IN (SELECT LOWER(address) FROM wallet_graph.wallets)
-                ON CONFLICT (address) DO NOTHING
-            """)
-            count = cur.rowcount
+        def _inner_gv():
+            with get_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO wallet_graph.wallets (address, source, created_at)
+                    SELECT DISTINCT LOWER(voter_address), 'governance_voter', NOW()
+                    FROM governance_voters
+                    WHERE voter_address IS NOT NULL
+                      AND LOWER(voter_address) NOT IN (SELECT LOWER(address) FROM wallet_graph.wallets)
+                    ON CONFLICT (address) DO NOTHING
+                """)
+                return cur.rowcount
+        count = await asyncio.to_thread(_inner_gv)
         results["sources"]["governance_voters"] = count
         results["total_new"] += count
         logger.error(f"[wallet_seeding] governance_voters: inserted={count}")
@@ -306,11 +318,11 @@ async def run_multi_source_seeding() -> dict:
 
     # Source 2: Mint/burn originators
     try:
-        src_count = fetch_one("""
+        src_count = await fetch_one_async("""
             SELECT COUNT(DISTINCT from_address) as cnt FROM mint_burn_events
             WHERE from_address IS NOT NULL AND from_address != '0x0000000000000000000000000000000000000000'
         """)
-        overlap = fetch_one("""
+        overlap = await fetch_one_async("""
             SELECT COUNT(DISTINCT mb.from_address) as cnt
             FROM mint_burn_events mb
             JOIN wallet_graph.wallets w ON LOWER(mb.from_address) = LOWER(w.address)
@@ -319,17 +331,19 @@ async def run_multi_source_seeding() -> dict:
         src_n = src_count["cnt"] if src_count else 0
         ovl_n = overlap["cnt"] if overlap else 0
         logger.error(f"[wallet_seeding] mint_burn: source={src_n}, overlap={ovl_n}, expected_new={src_n - ovl_n}")
-        with get_cursor() as cur:
-            cur.execute("""
-                INSERT INTO wallet_graph.wallets (address, source, created_at)
-                SELECT DISTINCT LOWER(from_address), 'mint_burn', NOW()
-                FROM mint_burn_events
-                WHERE from_address IS NOT NULL
-                  AND from_address != '0x0000000000000000000000000000000000000000'
-                  AND LOWER(from_address) NOT IN (SELECT LOWER(address) FROM wallet_graph.wallets)
-                ON CONFLICT (address) DO NOTHING
-            """)
-            count = cur.rowcount
+        def _inner_mb():
+            with get_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO wallet_graph.wallets (address, source, created_at)
+                    SELECT DISTINCT LOWER(from_address), 'mint_burn', NOW()
+                    FROM mint_burn_events
+                    WHERE from_address IS NOT NULL
+                      AND from_address != '0x0000000000000000000000000000000000000000'
+                      AND LOWER(from_address) NOT IN (SELECT LOWER(address) FROM wallet_graph.wallets)
+                    ON CONFLICT (address) DO NOTHING
+                """)
+                return cur.rowcount
+        count = await asyncio.to_thread(_inner_mb)
         results["sources"]["mint_burn"] = count
         results["total_new"] += count
         logger.error(f"[wallet_seeding] mint_burn: inserted={count}")
@@ -338,8 +352,8 @@ async def run_multi_source_seeding() -> dict:
 
     # Source 3: Protocol pool wallets
     try:
-        src_count = fetch_one("SELECT COUNT(DISTINCT wallet_address) as cnt FROM protocol_pool_wallets")
-        overlap = fetch_one("""
+        src_count = await fetch_one_async("SELECT COUNT(DISTINCT wallet_address) as cnt FROM protocol_pool_wallets")
+        overlap = await fetch_one_async("""
             SELECT COUNT(DISTINCT pw.wallet_address) as cnt
             FROM protocol_pool_wallets pw
             JOIN wallet_graph.wallets w ON LOWER(pw.wallet_address) = LOWER(w.address)
@@ -347,15 +361,17 @@ async def run_multi_source_seeding() -> dict:
         src_n = src_count["cnt"] if src_count else 0
         ovl_n = overlap["cnt"] if overlap else 0
         logger.error(f"[wallet_seeding] pool_wallets: source={src_n}, overlap={ovl_n}, expected_new={src_n - ovl_n}")
-        with get_cursor() as cur:
-            cur.execute("""
-                INSERT INTO wallet_graph.wallets (address, source, created_at)
-                SELECT DISTINCT LOWER(wallet_address), 'pool_wallet', NOW()
-                FROM protocol_pool_wallets
-                WHERE LOWER(wallet_address) NOT IN (SELECT LOWER(address) FROM wallet_graph.wallets)
-                ON CONFLICT (address) DO NOTHING
-            """)
-            count = cur.rowcount
+        def _inner_pw():
+            with get_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO wallet_graph.wallets (address, source, created_at)
+                    SELECT DISTINCT LOWER(wallet_address), 'pool_wallet', NOW()
+                    FROM protocol_pool_wallets
+                    WHERE LOWER(wallet_address) NOT IN (SELECT LOWER(address) FROM wallet_graph.wallets)
+                    ON CONFLICT (address) DO NOTHING
+                """)
+                return cur.rowcount
+        count = await asyncio.to_thread(_inner_pw)
         results["sources"]["pool_wallets"] = count
         results["total_new"] += count
         logger.error(f"[wallet_seeding] pool_wallets: inserted={count}")
@@ -366,7 +382,7 @@ async def run_multi_source_seeding() -> dict:
     try:
         api_key = os.environ.get("ETHERSCAN_API_KEY", "")
         if api_key:
-            stablecoins = fetch_all(
+            stablecoins = await fetch_all_async(
                 "SELECT id, contract FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL LIMIT 5"
             )
             holder_count = 0
@@ -404,13 +420,16 @@ async def run_multi_source_seeding() -> dict:
                             addr = (h.get("TokenHolderAddress") or "").lower()
                             if addr and addr.startswith("0x") and len(addr) == 42:
                                 try:
-                                    with get_cursor() as cur:
-                                        cur.execute(
-                                            "INSERT INTO wallet_graph.wallets (address, source, created_at) VALUES (%s, 'top_holder', NOW()) ON CONFLICT DO NOTHING",
-                                            (addr,),
-                                        )
-                                        if cur.rowcount > 0:
-                                            holder_count += 1
+                                    def _inner_th(_addr=addr):
+                                        with get_cursor() as cur:
+                                            cur.execute(
+                                                "INSERT INTO wallet_graph.wallets (address, source, created_at) VALUES (%s, 'top_holder', NOW()) ON CONFLICT DO NOTHING",
+                                                (_addr,),
+                                            )
+                                            return cur.rowcount
+                                    _rowcount = await asyncio.to_thread(_inner_th)
+                                    if _rowcount > 0:
+                                        holder_count += 1
                                 except Exception:
                                     pass
                         await asyncio.sleep(0.2)
