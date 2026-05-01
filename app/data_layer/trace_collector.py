@@ -15,7 +15,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg2
 
-from app.database import fetch_all, fetch_one, get_cursor
+from app.database import (
+    fetch_all, fetch_one, get_cursor,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -74,7 +77,7 @@ async def run_trace_collection() -> dict:
         return {"status": "disabled"}
 
     logger.error("[trace_collector] step 1: querying rpi_protocol_config")
-    protocols = fetch_all(
+    protocols = await fetch_all_async(
         "SELECT DISTINCT protocol_slug FROM rpi_protocol_config WHERE protocol_slug IS NOT NULL"
     )
     if not protocols:
@@ -86,7 +89,7 @@ async def run_trace_collection() -> dict:
 
     # Get contract addresses for each protocol
     logger.error("[trace_collector] step 3: querying protocol_pool_wallets")
-    addr_rows = fetch_all("""
+    addr_rows = await fetch_all_async("""
         SELECT DISTINCT protocol_slug, wallet_address, chain
         FROM protocol_pool_wallets
         WHERE protocol_slug = ANY(%s)
@@ -206,8 +209,7 @@ async def run_trace_collection() -> dict:
 
                 ch = _content_hash(tx_hash, chain, block_num)
 
-                with get_cursor() as cur:
-                    cur.execute("""
+                await execute_async("""
                         INSERT INTO protocol_trace_observations
                             (tx_hash, protocol_slug, chain, block_number, value_usd,
                              trace_json, trace_depth, internal_call_count, revert_reason,
@@ -282,7 +284,7 @@ async def trace_collector_background_loop():
     consecutive_db_failures = 0
     while True:
         try:
-            last = fetch_one(
+            last = await fetch_one_async(
                 "SELECT MAX(captured_at) AS latest FROM protocol_trace_observations"
             )
             latest = last.get("latest") if last else None

@@ -912,7 +912,7 @@ async def run_cycle_diagnostics():
     # hasn't run yet or if no rows have landed.
     try:
         from app.data_layer.mempool_watcher import emit_24h_summary as _mp_summary
-        _mp_summary()
+        await _mp_summary()
     except Exception as _e:
         logger.debug(f"[mempool_observations] diagnostic skipped: {_e}")
 

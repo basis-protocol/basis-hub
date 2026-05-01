@@ -14,7 +14,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg2
 
-from app.database import fetch_all, fetch_one, get_cursor
+from app.database import (
+    fetch_all, fetch_one, get_cursor,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -44,7 +47,7 @@ async def run_approval_collection() -> dict:
         return {"status": "disabled"}
 
     logger.error("[approval_collector] step 1: querying wallet_graph.wallets")
-    wallets = fetch_all(f"""
+    wallets = await fetch_all_async(f"""
         SELECT address, total_stablecoin_value
         FROM wallet_graph.wallets
         WHERE total_stablecoin_value IS NOT NULL
@@ -66,7 +69,7 @@ async def run_approval_collection() -> dict:
     max_allowance_usd = 0.0
 
     # Check if table is nearly empty — skip diff-capture to bootstrap data
-    bootstrap_row = fetch_one("SELECT COUNT(*) AS cnt FROM token_approval_snapshots")
+    bootstrap_row = await fetch_one_async("SELECT COUNT(*) AS cnt FROM token_approval_snapshots")
     bootstrap_mode = (int(bootstrap_row["cnt"]) if bootstrap_row else 0) < 100
     if bootstrap_mode:
         logger.error("[approval_collector] BOOTSTRAP MODE: table <100 rows, skipping diff-capture")
@@ -165,7 +168,7 @@ async def run_approval_collection() -> dict:
 
                 prev_allowance = None
                 if not bootstrap_mode:
-                    prev = fetch_one("""
+                    prev = await fetch_one_async("""
                         SELECT allowance FROM token_approval_snapshots
                         WHERE wallet_address = %s AND token_address = %s AND spender_address = %s AND chain = %s
                         ORDER BY snapshot_at DESC LIMIT 1
@@ -181,8 +184,7 @@ async def run_approval_collection() -> dict:
                     max_allowance_usd = allowance_usd
 
                 try:
-                    with get_cursor() as cur:
-                        cur.execute("""
+                    await execute_async("""
                             INSERT INTO token_approval_snapshots
                                 (wallet_address, token_address, spender_address,
                                  allowance, allowance_usd, chain, previous_allowance)
@@ -257,14 +259,14 @@ async def approval_collector_background_loop():
     while True:
         try:
             # Force-open gate if table has very few rows (FFFF fix verification)
-            count_row = fetch_one("SELECT COUNT(*) AS cnt FROM token_approval_snapshots")
+            count_row = await fetch_one_async("SELECT COUNT(*) AS cnt FROM token_approval_snapshots")
             row_count = int(count_row["cnt"]) if count_row else 0
 
             if row_count < 100:
                 logger.error(f"[approval_bg] gate forced open: only {row_count} rows (< 100 threshold)")
                 age_h = float("inf")
             else:
-                last = fetch_one(
+                last = await fetch_one_async(
                     "SELECT MAX(snapshot_at) AS latest FROM token_approval_snapshots"
                 )
                 latest = last.get("latest") if last else None

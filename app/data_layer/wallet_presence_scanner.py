@@ -17,7 +17,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg2
 
-from app.database import fetch_all, fetch_one, get_cursor
+from app.database import (
+    fetch_all, fetch_one, get_cursor,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -34,9 +37,9 @@ DAILY_CALL_CAP = 80_000
 BATCH_SIZE = 20_000
 
 
-def _get_blockscout_24h_usage() -> int:
+async def _get_blockscout_24h_usage() -> int:
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT SUM(total_calls) AS total FROM api_usage_hourly
             WHERE provider = 'blockscout' AND hour > NOW() - INTERVAL '24 hours'
         """)
@@ -47,7 +50,7 @@ def _get_blockscout_24h_usage() -> int:
 
 async def run_wallet_presence_scan() -> dict:
     logger.error("[wallet_presence] ENTRY — function called")
-    usage = _get_blockscout_24h_usage()
+    usage = await _get_blockscout_24h_usage()
     if usage > DAILY_CALL_CAP:
         logger.error(
             f"[wallet_presence] PAUSED: Blockscout 24h usage {usage:,} / 100,000. "
@@ -57,7 +60,7 @@ async def run_wallet_presence_scan() -> dict:
 
     # Find wallets with fewer than len(CHAINS_TO_CHECK) presences
     # that haven't been fully scanned recently
-    wallets = fetch_all(f"""
+    wallets = await fetch_all_async(f"""
         SELECT w.address
         FROM wallet_graph.wallets w
         LEFT JOIN (
@@ -78,7 +81,7 @@ async def run_wallet_presence_scan() -> dict:
     logger.error(f"[wallet_presence] starting: {len(addresses)} wallets to check across {len(CHAINS_TO_CHECK)} chains")
 
     # Get existing presences for these wallets
-    existing = fetch_all("""
+    existing = await fetch_all_async("""
         SELECT wallet_address, chain FROM wallet_chain_presence
         WHERE wallet_address = ANY(%s)
     """, (addresses,))
@@ -128,8 +131,7 @@ async def run_wallet_presence_scan() -> dict:
 
                     chain_id = CHAIN_IDS[chain]
                     try:
-                        with get_cursor() as cur:
-                            cur.execute("""
+                        await execute_async("""
                                 INSERT INTO wallet_chain_presence
                                     (wallet_address, chain, chain_id, tx_count, token_count,
                                      discovery_method)
@@ -186,13 +188,13 @@ async def wallet_presence_background_loop():
     while True:
         try:
             logger.error("[presence_bg] loop tick, checking gate")
-            count_row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_chain_presence WHERE discovery_method = 'presence_check'")
+            count_row = await fetch_one_async("SELECT COUNT(*) AS cnt FROM wallet_chain_presence WHERE discovery_method = 'presence_check'")
             row_count = int(count_row["cnt"]) if count_row else 0
 
             if row_count == 0:
                 logger.error(f"[presence_bg] gate open: no presence_check rows yet")
             else:
-                last = fetch_one(
+                last = await fetch_one_async(
                     "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'presence_check'"
                 )
                 latest = last.get("latest") if last else None

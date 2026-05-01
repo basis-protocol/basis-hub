@@ -22,7 +22,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg2
 
-from app.database import fetch_all, fetch_one, get_cursor
+from app.database import (
+    fetch_all, fetch_one, get_cursor,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -61,13 +64,13 @@ GOVERNANCE_TOKENS = {
 }
 
 
-def _build_entity_specs() -> list[dict]:
+async def _build_entity_specs() -> list[dict]:
     """Build the full list of (entity_type, entity_id, contract, chain) to scan."""
     specs = []
 
     # 1. Stablecoins
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             "SELECT id, symbol, contract FROM stablecoins "
             "WHERE contract IS NOT NULL AND scoring_enabled = TRUE"
         ) or []
@@ -239,7 +242,7 @@ async def run_holder_ingestion() -> dict:
         logger.error("[holder_ingestion] no ETHERSCAN_API_KEY — cannot run")
         return {"error": "no api key"}
 
-    specs = _build_entity_specs()
+    specs = await _build_entity_specs()
     logger.error(f"[holder_ingestion] starting: {len(specs)} entities to scan")
 
     if not specs:
@@ -316,8 +319,7 @@ async def run_holder_ingestion() -> dict:
                 inserted = 0
                 for h in filtered:
                     try:
-                        with get_cursor() as cur:
-                            cur.execute("""
+                        await execute_async("""
                                 INSERT INTO wallet_holder_discovery
                                     (wallet_address, entity_type, entity_id, entity_contract,
                                      chain, balance_raw, balance_usd, rank_in_entity, source)
@@ -344,15 +346,17 @@ async def run_holder_ingestion() -> dict:
                 if addresses:
                     try:
                         source_label = f"holder_scan:{etype}:{eid}"
-                        with get_cursor() as cur:
+                        def _inner_promote():
                             from psycopg2.extras import execute_values
-                            execute_values(cur, """
-                                INSERT INTO wallet_graph.wallets (address, source, created_at)
-                                VALUES %s
-                                ON CONFLICT (address) DO NOTHING
-                            """, [(a, source_label, datetime.now(timezone.utc)) for a in addresses],
-                                page_size=1000)
-                            new_count = cur.rowcount
+                            with get_cursor() as cur:
+                                execute_values(cur, """
+                                    INSERT INTO wallet_graph.wallets (address, source, created_at)
+                                    VALUES %s
+                                    ON CONFLICT (address) DO NOTHING
+                                """, [(a, source_label, datetime.now(timezone.utc)) for a in addresses],
+                                    page_size=1000)
+                                return cur.rowcount
+                        new_count = await asyncio.to_thread(_inner_promote)
                     except Exception as e:
                         logger.error(f"[holder_ingestion] wallet promotion failed for {eid}: {e}")
 
@@ -415,13 +419,13 @@ async def holder_ingestion_background_loop():
     while True:
         try:
             logger.error("[holder_ingestion_bg] loop tick, checking gate")
-            count_row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_holder_discovery")
+            count_row = await fetch_one_async("SELECT COUNT(*) AS cnt FROM wallet_holder_discovery")
             row_count = int(count_row["cnt"]) if count_row else 0
 
             if row_count == 0:
                 logger.error(f"[holder_ingestion_bg] gate open: table empty ({row_count} rows)")
             else:
-                last = fetch_one("SELECT MAX(discovered_at) AS latest FROM wallet_holder_discovery")
+                last = await fetch_one_async("SELECT MAX(discovered_at) AS latest FROM wallet_holder_discovery")
                 latest = last.get("latest") if last else None
                 if latest:
                     if latest.tzinfo is None:

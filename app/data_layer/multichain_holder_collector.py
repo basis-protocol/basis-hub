@@ -20,7 +20,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg2
 
-from app.database import fetch_all, fetch_one, get_cursor
+from app.database import (
+    fetch_all, fetch_one, get_cursor,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -39,9 +42,9 @@ USD_THRESHOLD = 10_000
 BLOCKSCOUT_DAILY_CAP = 80_000
 
 
-def _get_blockscout_24h_usage() -> int:
+async def _get_blockscout_24h_usage() -> int:
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT SUM(total_calls) AS total FROM api_usage_hourly
             WHERE provider = 'blockscout' AND hour > NOW() - INTERVAL '24 hours'
         """)
@@ -88,7 +91,7 @@ async def _fetch_holders_blockscout(
 
 async def run_multichain_holder_scan() -> dict:
     logger.error("[multichain_holder] ENTRY — function called")
-    usage = _get_blockscout_24h_usage()
+    usage = await _get_blockscout_24h_usage()
     if usage > BLOCKSCOUT_DAILY_CAP:
         logger.error(
             f"[multichain_holder] PAUSED: Blockscout 24h usage {usage:,} / 100,000. "
@@ -153,8 +156,7 @@ async def run_multichain_holder_scan() -> dict:
                 # Insert holder discovery records
                 for h in filtered:
                     try:
-                        with get_cursor() as cur:
-                            cur.execute("""
+                        await execute_async("""
                                 INSERT INTO wallet_holder_discovery
                                     (wallet_address, entity_type, entity_id, entity_contract,
                                      chain, balance_usd, rank_in_entity, source)
@@ -171,16 +173,19 @@ async def run_multichain_holder_scan() -> dict:
                 new_presences = 0
                 for h in filtered:
                     try:
-                        with get_cursor() as cur:
-                            cur.execute("""
-                                INSERT INTO wallet_chain_presence
-                                    (wallet_address, chain, chain_id, discovery_method, discovery_entity)
-                                VALUES (%s, %s, %s, 'holder_scan', %s)
-                                ON CONFLICT (wallet_address, chain) DO UPDATE SET
-                                    last_verified_at = NOW()
-                            """, (h["address"], chain, chain_id, symbol))
-                            if cur.statusmessage and "INSERT" in cur.statusmessage:
-                                new_presences += 1
+                        def _inner_presence(_addr=h["address"]):
+                            with get_cursor() as cur:
+                                cur.execute("""
+                                    INSERT INTO wallet_chain_presence
+                                        (wallet_address, chain, chain_id, discovery_method, discovery_entity)
+                                    VALUES (%s, %s, %s, 'holder_scan', %s)
+                                    ON CONFLICT (wallet_address, chain) DO UPDATE SET
+                                        last_verified_at = NOW()
+                                """, (_addr, chain, chain_id, symbol))
+                                return cur.statusmessage
+                        _statusmsg = await asyncio.to_thread(_inner_presence)
+                        if _statusmsg and "INSERT" in _statusmsg:
+                            new_presences += 1
                     except Exception:
                         pass
                 stats[chain]["new_presences"] += new_presences
@@ -189,14 +194,16 @@ async def run_multichain_holder_scan() -> dict:
                 addresses = [h["address"] for h in filtered]
                 if addresses:
                     try:
-                        from psycopg2.extras import execute_values
-                        with get_cursor() as cur:
-                            execute_values(cur, """
-                                INSERT INTO wallet_graph.wallets (address, source, created_at)
-                                VALUES %s ON CONFLICT (address) DO NOTHING
-                            """, [(a, f"multichain:{chain}:{symbol}", datetime.now(timezone.utc)) for a in addresses],
-                                page_size=1000)
-                            stats[chain]["new_wallets"] += cur.rowcount
+                        def _inner_promote_mc():
+                            from psycopg2.extras import execute_values
+                            with get_cursor() as cur:
+                                execute_values(cur, """
+                                    INSERT INTO wallet_graph.wallets (address, source, created_at)
+                                    VALUES %s ON CONFLICT (address) DO NOTHING
+                                """, [(a, f"multichain:{chain}:{symbol}", datetime.now(timezone.utc)) for a in addresses],
+                                    page_size=1000)
+                                return cur.rowcount
+                        stats[chain]["new_wallets"] += await asyncio.to_thread(_inner_promote_mc)
                     except Exception as e:
                         stats[chain]["errors"] += 1
 
@@ -245,7 +252,7 @@ async def multichain_holder_background_loop():
     while True:
         try:
             logger.error("[multichain_bg] loop tick, checking gate")
-            last = fetch_one(
+            last = await fetch_one_async(
                 "SELECT MAX(last_verified_at) AS latest FROM wallet_chain_presence WHERE discovery_method = 'holder_scan'"
             )
             latest = last.get("latest") if last else None

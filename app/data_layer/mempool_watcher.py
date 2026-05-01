@@ -38,7 +38,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from app.database import execute, fetch_all, fetch_one, get_cursor
+from app.database import (
+    execute, fetch_all, fetch_one, get_cursor,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +74,7 @@ _ALCHEMY_WS_CHAIN_MAP = {
 # Watchlist builder
 # ---------------------------------------------------------------------------
 
-def build_watchlist(chain: str = "ethereum", limit: int = MAX_WATCHLIST_ADDRESSES) -> list[str]:
+async def build_watchlist(chain: str = "ethereum", limit: int = MAX_WATCHLIST_ADDRESSES) -> list[str]:
     """Assemble the address watchlist from available tables.
 
     Sources (in priority order):
@@ -103,7 +106,7 @@ def build_watchlist(chain: str = "ethereum", limit: int = MAX_WATCHLIST_ADDRESSE
 
     if chain == "ethereum":
         try:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 "SELECT contract FROM stablecoins "
                 "WHERE contract IS NOT NULL AND scoring_enabled = TRUE"
             ) or []
@@ -114,7 +117,7 @@ def build_watchlist(chain: str = "ethereum", limit: int = MAX_WATCHLIST_ADDRESSE
             logger.warning(f"[mempool_watcher] stablecoins watchlist skipped: {e}")
 
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT LOWER(pool_contract_address) AS addr, SUM(COALESCE(balance, 0)) AS bal
             FROM protocol_pool_wallets
@@ -155,7 +158,7 @@ def build_watchlist(chain: str = "ethereum", limit: int = MAX_WATCHLIST_ADDRESSE
 # Cost control
 # ---------------------------------------------------------------------------
 
-def _current_hour_cu(provider: str = "alchemy") -> int:
+async def _current_hour_cu(provider: str = "alchemy") -> int:
     """Approximate CU consumption for the current hour, derived from
     api_usage_hourly's total_calls. We don't have per-call CU accounting
     (Alchemy doesn't return it in responses), so this is a call-count
@@ -164,7 +167,7 @@ def _current_hour_cu(provider: str = "alchemy") -> int:
     subscription itself is a flat CU cost and not counted per-event, so
     this proxy is conservative."""
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             """
             SELECT COALESCE(SUM(total_calls), 0) AS total
             FROM api_usage_hourly
@@ -177,9 +180,9 @@ def _current_hour_cu(provider: str = "alchemy") -> int:
         return 0
 
 
-def _rolling_24h_cu(provider: str = "alchemy") -> int:
+async def _rolling_24h_cu(provider: str = "alchemy") -> int:
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             """
             SELECT COALESCE(SUM(total_calls), 0) AS total
             FROM api_usage_hourly
@@ -192,7 +195,7 @@ def _rolling_24h_cu(provider: str = "alchemy") -> int:
         return 0
 
 
-def _attest_capture_status(status: str, note: str, gap_seconds: int | None = None) -> None:
+async def _attest_capture_status(status: str, note: str, gap_seconds: int | None = None) -> None:
     """Record a pause/resume event to state_attestations so operators can
     see capture gaps. domain='mempool_capture_status'. Non-fatal."""
     try:
@@ -203,7 +206,7 @@ def _attest_capture_status(status: str, note: str, gap_seconds: int | None = Non
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }, sort_keys=True)
         content_hash = hashlib.sha256(payload.encode()).hexdigest()
-        execute(
+        await execute_async(
             """
             INSERT INTO state_attestations
                 (domain, entity_id, batch_hash, record_count, methodology_version, cycle_timestamp)
@@ -406,7 +409,7 @@ async def run_watcher(chain: str = "ethereum") -> None:
             await asyncio.sleep(min(wait, 60))
             continue
 
-        rolling_24h = _rolling_24h_cu("alchemy")
+        rolling_24h = await _rolling_24h_cu("alchemy")
         if rolling_24h > CU_DAILY_PAUSE_THRESHOLD:
             paused_until = now + PAUSE_DURATION_SEC
             logger.error(
@@ -414,21 +417,21 @@ async def run_watcher(chain: str = "ethereum") -> None:
                 f"{CU_DAILY_PAUSE_THRESHOLD:,} budget threshold — "
                 f"pausing subscription for {PAUSE_DURATION_SEC}s"
             )
-            _attest_capture_status(
+            await _attest_capture_status(
                 "paused",
                 f"alchemy_24h_cu={rolling_24h} exceeds {CU_DAILY_PAUSE_THRESHOLD} threshold",
                 gap_seconds=PAUSE_DURATION_SEC,
             )
             continue
 
-        hourly_cu = _current_hour_cu("alchemy")
+        hourly_cu = await _current_hour_cu("alchemy")
         if hourly_cu > CU_HOURLY_WARN_THRESHOLD:
             logger.error(
                 f"[mempool_watcher] WARN alchemy hourly CU={hourly_cu:,} > "
                 f"{CU_HOURLY_WARN_THRESHOLD:,} — sustained rate would exceed daily budget"
             )
 
-        watchlist = build_watchlist(chain=chain, limit=MAX_WATCHLIST_ADDRESSES)
+        watchlist = await build_watchlist(chain=chain, limit=MAX_WATCHLIST_ADDRESSES)
         if not watchlist:
             logger.error(
                 "[mempool_watcher] watchlist is empty — no stablecoins or pool "
@@ -452,7 +455,7 @@ async def run_watcher(chain: str = "ethereum") -> None:
                 logger.warning(
                     f"[mempool_watcher] connection closed after {events:,} events"
                 )
-                _attest_capture_status(
+                await _attest_capture_status(
                     "resumed",
                     f"connection lifetime={int(time.time() - connect_started)}s events={events}",
                 )
@@ -500,7 +503,7 @@ async def reconcile_once() -> dict:
     counts = {"checked": 0, "confirmed": 0, "dropped": 0, "still_pending": 0, "errors": 0}
 
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT id, tx_hash, seen_at, seen_at_ms
             FROM mempool_observations
@@ -546,7 +549,7 @@ async def reconcile_once() -> dict:
                 continue
             latency_ms = max(0, now_ms - int(r["seen_at_ms"]))
             try:
-                execute(
+                await execute_async(
                     """
                     UPDATE mempool_observations
                     SET confirmed_block = %s,
@@ -564,7 +567,7 @@ async def reconcile_once() -> dict:
             # Unconfirmed — if older than drop threshold, mark dropped.
             if int(r["seen_at_ms"]) < drop_cutoff_ms:
                 try:
-                    execute(
+                    await execute_async(
                         "UPDATE mempool_observations SET dropped = TRUE WHERE id = %s",
                         (r["id"],),
                     )
@@ -602,12 +605,12 @@ async def run_reconciliation_loop() -> None:
 # Diagnostics
 # ---------------------------------------------------------------------------
 
-def emit_24h_summary() -> None:
+async def emit_24h_summary() -> None:
     """Emit the 24h [mempool_observations] summary line expected by the
     acceptance checklist. Safe to call even if the table doesn't exist
     yet (logs the absence and returns)."""
     try:
-        summary = fetch_one(
+        summary = await fetch_one_async(
             """
             SELECT
                 COUNT(*) AS captured,
@@ -627,7 +630,7 @@ def emit_24h_summary() -> None:
         logger.error("[mempool_observations] 24h SUMMARY: no rows yet")
         return
 
-    top_to = fetch_all(
+    top_to = await fetch_all_async(
         """
         SELECT to_address AS addr, COUNT(*) AS cnt
         FROM mempool_observations
@@ -637,7 +640,7 @@ def emit_24h_summary() -> None:
         LIMIT 5
         """
     ) or []
-    top_selectors = fetch_all(
+    top_selectors = await fetch_all_async(
         """
         SELECT function_selector AS sel, COUNT(*) AS cnt
         FROM mempool_observations
@@ -648,7 +651,7 @@ def emit_24h_summary() -> None:
         """
     ) or []
 
-    cu_rolling = _rolling_24h_cu("alchemy")
+    cu_rolling = await _rolling_24h_cu("alchemy")
     avg_latency = int(summary["avg_latency_ms"]) if summary["avg_latency_ms"] else None
 
     top_to_str = ", ".join(f"{(r['addr'] or '')[:10]}={r['cnt']}" for r in top_to)
