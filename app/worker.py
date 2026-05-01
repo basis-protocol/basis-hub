@@ -998,8 +998,7 @@ async def run_fast_cycle():
                     await _fc_loop.run_in_executor(None, _mark_scoring_status, cfg["coingecko_id"], "in_progress")
             sid_t0 = time.time()
             try:
-                result = await asyncio.wait_for(
-                    await score_stablecoin(_scoring_client, sid), timeout=PER_COIN_TIMEOUT_SEC
+                result = await asyncio.wait_for(score_stablecoin(_scoring_client, sid), timeout=PER_COIN_TIMEOUT_SEC
                 )
                 sid_elapsed = time.time() - sid_t0
                 logger.error(f"[fc-3] coin {sid} computed in {sid_elapsed:.1f}s, score={'score' in result}")
@@ -1692,11 +1691,10 @@ async def run_fast_cycle():
 
     # Gate status diagnostic — log whether expansion and edge gates are open
     try:
-        from app.database import fetch_one as _gate_fo
-        _edge_ts = _gate_fo("SELECT EXTRACT(EPOCH FROM MAX(last_built_at)) AS ts FROM wallet_graph.edge_build_status")
+        _edge_ts = await fetch_one_async("SELECT EXTRACT(EPOCH FROM MAX(last_built_at)) AS ts FROM wallet_graph.edge_build_status")
         _edge_last = float(_edge_ts["ts"]) if _edge_ts and _edge_ts.get("ts") else 0
         _edge_age_h = (time.time() - _edge_last) / 3600 if _edge_last > 0 else 999
-        _wallet_max = _gate_fo("SELECT MAX(created_at) AS latest FROM wallet_graph.wallets WHERE created_at > NOW() - INTERVAL '48 hours'")
+        _wallet_max = await fetch_one_async("SELECT MAX(created_at) AS latest FROM wallet_graph.wallets WHERE created_at > NOW() - INTERVAL '48 hours'")
         _wallet_latest = _wallet_max.get("latest") if _wallet_max else None
         _wallet_age_h = 999
         if _wallet_latest:
@@ -1712,8 +1710,7 @@ async def run_fast_cycle():
 
     # One-time diagnostic: data layer table row counts via pg_stat (instant, no scan)
     try:
-        from app.database import fetch_all as _diag_fa
-        _diag_rows = _diag_fa("""
+        _diag_rows = await fetch_all_async("""
             SELECT relname AS table_name, n_live_tup
             FROM pg_stat_user_tables
             WHERE relname IN (
@@ -2085,8 +2082,7 @@ async def run_slow_cycle():
                 try:
                     from app.indexer.edges import run_edge_builder
                     logger.info(f"Running edge builder for {edge_chain} (top 100 unbuilt wallets by value, 15-min timeout)...")
-                    edge_result = await asyncio.wait_for(
-                        await run_edge_builder(max_wallets=500, priority="value", chain=edge_chain),
+                    edge_result = await asyncio.wait_for(run_edge_builder(max_wallets=500, priority="value", chain=edge_chain),
                         timeout=900,
                     )
                     logger.info(
@@ -2587,7 +2583,7 @@ async def run_slow_cycle_parallel():
                     await check_and_alert_health(health_results)
                 except Exception as alert_err:
                     logger.warning(f"Health alert dispatch failed: {alert_err}")
-        await asyncio.wait_for(await _health_sweep(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_health_sweep(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Health sweep timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
@@ -2599,7 +2595,7 @@ async def run_slow_cycle_parallel():
             from app.integrity import check_all_and_store
             result = await asyncio.to_thread(check_all_and_store)
             logger.info(f"Integrity: {result['status']} across {len(result['domains'])} domains")
-        await asyncio.wait_for(await _integrity(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_integrity(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Integrity check timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
@@ -2611,7 +2607,7 @@ async def run_slow_cycle_parallel():
             from app.actor_classification import classify_all_active
             result = await asyncio.to_thread(classify_all_active)
             logger.info(f"Actor classification: {result.get('classified', 0)} classified")
-        await asyncio.wait_for(await _actors(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_actors(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Actor classification timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
@@ -2622,7 +2618,7 @@ async def run_slow_cycle_parallel():
         async def _discovery():
             from app.discovery import run_discovery_cycle
             await asyncio.to_thread(run_discovery_cycle)
-        await asyncio.wait_for(await _discovery(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_discovery(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Discovery cycle timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
@@ -2649,7 +2645,7 @@ async def run_slow_cycle_parallel():
                 )
             else:
                 logger.info(f"Coherence sweep skipped -- last ran {coherence_age_hours:.1f}h ago")
-        await asyncio.wait_for(await _coherence(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_coherence(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Coherence sweep timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
@@ -2665,7 +2661,7 @@ async def run_slow_cycle_parallel():
             logger.error(f"=== WALLET EXPANSION: started, target=10000, current={_count} ===")
             result = await run_wallet_graph_expansion(target_new_wallets=10_000, max_etherscan_calls=5_000)
             logger.error(f"=== WALLET EXPANSION: {result.get('new_wallets_seeded', 0)} new wallets, result={result} ===")
-        await asyncio.wait_for(await _wallet_expansion(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_wallet_expansion(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.error("=== WALLET EXPANSION: timed out after %ds ===" % POST_TASK_TIMEOUT)
     except Exception as e:
@@ -2681,7 +2677,7 @@ async def run_slow_cycle_parallel():
                 f"{result.get('clusters_computed', 0)} clusters, "
                 f"{result.get('snapshots_stored', 0)} snapshots ==="
             )
-        await asyncio.wait_for(await _concentration(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_concentration(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Concentration analysis timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
@@ -2848,7 +2844,7 @@ async def run_slow_cycle_parallel():
                 f"Provenance recheck: {result['checked']} checked, "
                 f"{result['re_enabled']} re-enabled, {result['healed']} healed"
             )
-        await asyncio.wait_for(await _provenance_recheck(), timeout=POST_TASK_TIMEOUT)
+        await asyncio.wait_for(_provenance_recheck(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Provenance recheck timed out after %ds", POST_TASK_TIMEOUT)
     except Exception as e:
@@ -3578,7 +3574,7 @@ async def main():
                     # Fast cycle — runs every interval
                     logger.error("[checkpoint 9] fast cycle starting")
                     try:
-                        await asyncio.wait_for(await run_fast_cycle(), timeout=FAST_CYCLE_TIMEOUT)
+                        await asyncio.wait_for(run_fast_cycle(), timeout=FAST_CYCLE_TIMEOUT)
                     except asyncio.TimeoutError:
                         logger.error("Fast cycle exceeded 30-minute timeout")
                     logger.error("[checkpoint 10] fast cycle complete")
@@ -3587,7 +3583,7 @@ async def main():
                     cycle_counter += 1
                     try:
                         logger.error(f"=== Starting enrichment (cycle {cycle_counter}) ===")
-                        await asyncio.wait_for(await run_slow_cycle_parallel(), timeout=SLOW_CYCLE_TIMEOUT)
+                        await asyncio.wait_for(run_slow_cycle_parallel(), timeout=SLOW_CYCLE_TIMEOUT)
                     except asyncio.TimeoutError:
                         logger.error("Enrichment exceeded 60-minute timeout")
 
