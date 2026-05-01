@@ -28,7 +28,10 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import STABLECOIN_REGISTRY, COLLECTION_INTERVAL_MINUTES
-from app.database import init_pool, close_pool, get_cursor, fetch_one, fetch_all, execute
+from app.database import (
+    init_pool, close_pool, get_cursor, fetch_one, fetch_all, execute,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.scoring import (
     calculate_sii, calculate_structural_composite,
     aggregate_legacy_to_v1, score_to_grade, FORMULA_VERSION, SII_V1_WEIGHTS,
@@ -658,7 +661,7 @@ async def score_stablecoin(client: httpx.AsyncClient, stablecoin_id: str) -> dic
 # Cycle diagnostics — runs at startup and end of every fast cycle
 # =============================================================================
 
-def run_cycle_diagnostics():
+async def run_cycle_diagnostics():
     """Log stale types, provenance gaps, API budget, and usage stats."""
     # 1. Stale types
     try:
@@ -679,7 +682,7 @@ def run_cycle_diagnostics():
         _stale_found = []
         for _tbl, (_col, _max_h) in _stale_thresholds.items():
             try:
-                _row = fetch_one(f"SELECT MAX({_col}) as latest FROM {_tbl}")
+                _row = await fetch_one_async(f"SELECT MAX({_col}) as latest FROM {_tbl}")
                 if _row and _row.get("latest"):
                     _lt = _row["latest"]
                     if _lt.tzinfo is None:
@@ -700,8 +703,8 @@ def run_cycle_diagnostics():
 
     # 2. Provenance gaps
     try:
-        _configured = fetch_all("SELECT id, schedule FROM provenance_sources WHERE enabled = true")
-        _active = fetch_all(
+        _configured = await fetch_all_async("SELECT id, schedule FROM provenance_sources WHERE enabled = true")
+        _active = await fetch_all_async(
             "SELECT DISTINCT source_domain FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '24 hours'"
         )
         _hourly_ids = {r["id"] for r in (_configured or []) if r.get("schedule") == "hourly"}
@@ -742,7 +745,7 @@ def run_cycle_diagnostics():
         # Fallback to DB
         if not _parts:
             try:
-                _db_budget = fetch_all("""
+                _db_budget = await fetch_all_async("""
                     SELECT provider, SUM(total_calls) as total
                     FROM api_usage_hourly
                     WHERE hour > NOW() - INTERVAL '24 hours'
@@ -765,7 +768,7 @@ def run_cycle_diagnostics():
     try:
         _limits = {"coingecko": 16_600, "etherscan": 200_000, "blockscout": 100_000,
                     "defillama": 50_000, "snapshot": 10_000, "tally": 5_000}
-        _7d_rows = fetch_all("""
+        _7d_rows = await fetch_all_async("""
             SELECT provider, DATE(hour) AS day,
                    SUM(total_calls) AS calls,
                    SUM(error_calls) AS errors,
@@ -795,7 +798,7 @@ def run_cycle_diagnostics():
             logger.error("[api_usage_7d] no hourly data in last 7 days")
 
         # Endpoint hotspots (last 24h) — unnest callers JSON dict
-        _ep_rows = fetch_all("""
+        _ep_rows = await fetch_all_async("""
             SELECT provider, callers
             FROM api_usage_hourly
             WHERE hour > NOW() - INTERVAL '24 hours'
@@ -828,7 +831,7 @@ def run_cycle_diagnostics():
     # Emits one line per (provider, top methods) for the last 7 days, plus a
     # fallbacks_24h summary. Silently skips if the table doesn't exist yet.
     try:
-        _rpc_7d = fetch_all("""
+        _rpc_7d = await fetch_all_async("""
             SELECT provider, method, status, SUM(calls)::BIGINT AS total
             FROM rpc_provider_usage
             WHERE hour > NOW() - INTERVAL '7 days'
@@ -863,7 +866,7 @@ def run_cycle_diagnostics():
         else:
             logger.error("[rpc_usage_7d] no rpc_provider_usage data in last 7 days")
 
-        _fb_24h = fetch_all("""
+        _fb_24h = await fetch_all_async("""
             SELECT provider, method, SUM(calls)::BIGINT AS total, MAX(fallback_reason) AS reason
             FROM rpc_provider_usage
             WHERE status = 'fallback' AND hour > NOW() - INTERVAL '24 hours'
@@ -887,7 +890,7 @@ def run_cycle_diagnostics():
     # free tier supports. One row per (provider, chain, method); newest
     # tested_at per group.
     try:
-        _caps = fetch_all("""
+        _caps = await fetch_all_async("""
             SELECT DISTINCT ON (provider, chain, method)
                 provider, chain, method, status, error_message, tested_at
             FROM rpc_capabilities
@@ -915,8 +918,8 @@ def run_cycle_diagnostics():
 
     # 4. API usage table verification
     try:
-        _hourly = fetch_one("SELECT COUNT(*) as cnt, MAX(hour) as latest FROM api_usage_hourly")
-        _tracker = fetch_one("SELECT COUNT(*) as cnt, MAX(recorded_at) as latest FROM api_usage_tracker")
+        _hourly = await fetch_one_async("SELECT COUNT(*) as cnt, MAX(hour) as latest FROM api_usage_hourly")
+        _tracker = await fetch_one_async("SELECT COUNT(*) as cnt, MAX(recorded_at) as latest FROM api_usage_tracker")
         logger.error(
             f"[api_usage_verify] hourly: {_hourly['cnt'] if _hourly else 0} rows, "
             f"latest={_hourly.get('latest') if _hourly else 'none'} | "
@@ -1573,7 +1576,7 @@ async def run_fast_cycle():
     # Daily digest — send operational summary once per 24h
     # -------------------------------------------------------------------------
     try:
-        last_digest = fetch_one(
+        last_digest = await fetch_one_async(
             "SELECT MAX(sent_at) AS latest FROM ops_alert_log WHERE alert_type = 'daily_digest'"
         )
         digest_age_hours = 25
@@ -1591,7 +1594,7 @@ async def run_fast_cycle():
             total_cnt = len(health)
             failing = [r for r in health if r.get("status") in ("degraded", "down")]
 
-            sii_row = fetch_one("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM scores")
+            sii_row = await fetch_one_async("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM scores")
             sii_count = sii_row["cnt"] if sii_row else 0
             sii_age = "?"
             if sii_row and sii_row.get("latest"):
@@ -1600,7 +1603,7 @@ async def run_fast_cycle():
                     _sii_ts = _sii_ts.replace(tzinfo=timezone.utc)
                 sii_age = f"{(datetime.now(timezone.utc) - _sii_ts).total_seconds() / 3600:.1f}"
 
-            psi_row = fetch_one("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM psi_scores")
+            psi_row = await fetch_one_async("SELECT COUNT(*) as cnt, MAX(computed_at) as latest FROM psi_scores")
             psi_count = psi_row["cnt"] if psi_row else 0
             psi_age = "?"
             if psi_row and psi_row.get("latest"):
@@ -1609,7 +1612,7 @@ async def run_fast_cycle():
                     _psi_ts = _psi_ts.replace(tzinfo=timezone.utc)
                 psi_age = f"{(datetime.now(timezone.utc) - _psi_ts).total_seconds() / 3600:.1f}"
 
-            db_conns = fetch_one("SELECT count(*) as cnt FROM pg_stat_activity WHERE datname = current_database()")
+            db_conns = await fetch_one_async("SELECT count(*) as cnt FROM pg_stat_activity WHERE datname = current_database()")
             conn_count = db_conns["cnt"] if db_conns else "?"
 
             failures_summary = ""
@@ -3457,7 +3460,7 @@ async def main():
         await asyncio.sleep(60)  # wait 1 min for first cycle to start
         while True:
             try:
-                run_cycle_diagnostics()
+                await run_cycle_diagnostics()
             except Exception as _dl_e:
                 logger.error(f"[diagnostic_loop] failed: {_dl_e}")
             await asyncio.sleep(600)  # 10 minutes
