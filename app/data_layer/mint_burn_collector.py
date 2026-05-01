@@ -50,7 +50,9 @@ async def _fetch_token_transfers(
     from app.shared_rate_limiter import rate_limiter
     from app.api_usage_tracker import track_api_call
 
+    logger.error(f"[mb-diag] _fetch_token_transfers contract={contract} chain={chain} about to acquire rate limiter")
     await rate_limiter.acquire("etherscan")
+    logger.error(f"[mb-diag] _fetch_token_transfers contract={contract} chain={chain} rate limiter acquired, about to HTTP")
 
     chain_id = CHAIN_IDS.get(chain, 1)
     params = {
@@ -69,6 +71,7 @@ async def _fetch_token_transfers(
     start = time.time()
     try:
         resp = await client.get(ETHERSCAN_V2_BASE, params=params, timeout=15)
+        logger.error(f"[mb-diag] _fetch_token_transfers contract={contract} chain={chain} HTTP returned status={resp.status_code if hasattr(resp, 'status_code') else 'unknown'}")
         latency = int((time.time() - start) * 1000)
         track_api_call("etherscan", "/tokentx", caller="mint_burn_collector",
                        status=resp.status_code, latency_ms=latency)
@@ -184,12 +187,15 @@ async def run_mint_burn_collection() -> dict:
 
     Returns summary + any anomaly signals.
     """
+    logger.error("[mb-diag] run_mint_burn_collection ENTERED")
     from app.database import fetch_all_async
 
+    logger.error("[mb-diag] about to fetch stablecoins")
     rows = await fetch_all_async(
         """SELECT id, symbol, contract, decimals
            FROM stablecoins WHERE scoring_enabled = TRUE AND contract IS NOT NULL"""
     )
+    logger.error(f"[mb-diag] fetched {len(rows) if rows else 0} stablecoins, has_api_key={bool(os.environ.get('ETHERSCAN_API_KEY'))}")
     if not rows:
         return {"error": "no stablecoins with contracts found"}
 
@@ -197,6 +203,7 @@ async def run_mint_burn_collection() -> dict:
     total_burns = 0
     large_events = []
 
+    logger.error("[mb-diag] about to enter httpx context")
     async with httpx.AsyncClient(timeout=30) as client:
         for row in rows:
             stablecoin_id = row["id"]
@@ -206,10 +213,13 @@ async def run_mint_burn_collection() -> dict:
 
             for chain in ["ethereum", "base", "arbitrum"]:
                 try:
+                    logger.error(f"[mb-diag] coin={stablecoin_id} chain={chain} about to get_last_block")
                     last_block = await _get_last_block(stablecoin_id, chain)
+                    logger.error(f"[mb-diag] coin={stablecoin_id} chain={chain} last_block={last_block} about to fetch_token_transfers")
                     transfers = await _fetch_token_transfers(
                         client, contract, chain, start_block=last_block
                     )
+                    logger.error(f"[mb-diag] coin={stablecoin_id} chain={chain} got {len(transfers) if transfers else 0} transfers")
 
                     events = []
                     for tx in transfers:
@@ -308,6 +318,7 @@ async def run_mint_burn_collection() -> dict:
         f"{len(large_events)} large events, {len(anomalies)} anomalies"
     )
 
+    logger.error(f"[mb-diag] run_mint_burn_collection EXIT total_mints={total_mints} total_burns={total_burns}")
     return {
         "total_mints": total_mints,
         "total_burns": total_burns,
