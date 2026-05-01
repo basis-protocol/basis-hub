@@ -3,8 +3,10 @@ Basis Protocol - Database
 Simple PostgreSQL connection management with connection pooling.
 """
 
+import asyncio
 import os
 import logging
+import traceback
 from contextlib import contextmanager
 from typing import Optional, Any
 
@@ -13,6 +15,35 @@ import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 
 logger = logging.getLogger(__name__)
+
+# Global counter to dedupe identical call sites — log each unique
+# file:line at most once per process. Otherwise a hot loop floods logs.
+_sync_in_async_seen: set[tuple[str, int]] = set()
+
+
+def _warn_if_async_context(helper_name: str) -> None:
+    """If called from a running event loop, log a deduped warning with the caller's file:line.
+
+    Does NOT raise — Phase 1 is observation only. Phase 3 will promote
+    this to RuntimeError.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # No running loop — sync caller, fine.
+
+    stack = traceback.extract_stack()
+    if len(stack) < 3:
+        return
+    caller = stack[-3]
+    key = (caller.filename, caller.lineno)
+    if key in _sync_in_async_seen:
+        return
+    _sync_in_async_seen.add(key)
+    logger.error(
+        f"[sync-in-async] {helper_name} called from async context at "
+        f"{caller.filename}:{caller.lineno} ({caller.name})"
+    )
 
 _pool: Optional[ThreadedConnectionPool] = None
 
@@ -146,6 +177,7 @@ def get_conn():
 @contextmanager
 def get_cursor(dict_cursor: bool = False):
     """Get a cursor with auto-commit/rollback. Most common usage pattern."""
+    _warn_if_async_context("get_cursor")
     with get_conn() as conn:
         cursor_factory = psycopg2.extras.RealDictCursor if dict_cursor else None
         cur = conn.cursor(cursor_factory=cursor_factory)
@@ -157,12 +189,14 @@ def get_cursor(dict_cursor: bool = False):
 
 def execute(sql: str, params: tuple = None) -> None:
     """Execute a single statement (INSERT, UPDATE, DELETE)."""
+    _warn_if_async_context("execute")
     with get_cursor() as cur:
         cur.execute(sql, params)
 
 
 def fetch_one(sql: str, params: tuple = None) -> Optional[dict]:
     """Fetch a single row as a dict."""
+    _warn_if_async_context("fetch_one")
     with get_cursor(dict_cursor=True) as cur:
         cur.execute(sql, params)
         return cur.fetchone()
@@ -170,6 +204,7 @@ def fetch_one(sql: str, params: tuple = None) -> Optional[dict]:
 
 def fetch_all(sql: str, params: tuple = None) -> list[dict]:
     """Fetch all rows as a list of dicts."""
+    _warn_if_async_context("fetch_all")
     with get_cursor(dict_cursor=True) as cur:
         cur.execute(sql, params)
         return cur.fetchall()
@@ -179,8 +214,6 @@ def fetch_all(sql: str, params: tuple = None) -> list[dict]:
 # Async wrappers — run sync psycopg2 calls in thread pool so they don't
 # block the asyncio event loop. Use these from async functions.
 # =============================================================================
-
-import asyncio
 
 async def fetch_one_async(sql: str, params: tuple = None) -> Optional[dict]:
     loop = asyncio.get_event_loop()
