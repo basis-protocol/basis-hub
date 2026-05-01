@@ -349,7 +349,7 @@ async def batch_scan_all_holdings(
         scored_contracts: dict = {}
         all_contracts = contract_override
     else:
-        scored_contracts, all_contracts = get_all_known_contracts()
+        scored_contracts, all_contracts = await asyncio.to_thread(get_all_known_contracts)
 
     effective_wallets = wallet_override if wallet_override is not None else wallet_addresses
     wallet_list = [addr.lower() for addr in effective_wallets]
@@ -667,7 +667,7 @@ async def scan_wallet_holdings(
     holdings = []
 
     # Build contract registry from DB at runtime — picks up promoted coins
-    scored_contracts, all_contracts = get_all_known_contracts()
+    scored_contracts, all_contracts = await asyncio.to_thread(get_all_known_contracts)
 
     for contract_lower, info in all_contracts.items():
         balance_raw = await fetch_token_balance(

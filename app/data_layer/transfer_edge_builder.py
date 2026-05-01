@@ -16,7 +16,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg2
 
-from app.database import fetch_all, fetch_one, execute, get_cursor
+from app.database import (
+    fetch_all, fetch_one, execute, get_cursor,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -32,9 +35,9 @@ _client = httpx.AsyncClient(
 )
 
 
-def _get_etherscan_24h_usage() -> int:
+async def _get_etherscan_24h_usage() -> int:
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT SUM(total_calls) AS total FROM api_usage_hourly
             WHERE provider = 'etherscan' AND hour > NOW() - INTERVAL '24 hours'
         """)
@@ -43,8 +46,8 @@ def _get_etherscan_24h_usage() -> int:
         return 0
 
 
-def _get_wallets_for_scan(limit: int) -> list[str]:
-    rows = fetch_all(f"""
+async def _get_wallets_for_scan(limit: int) -> list[str]:
+    rows = await fetch_all_async(f"""
         SELECT w.address
         FROM wallet_graph.wallets w
         INNER JOIN (
@@ -147,7 +150,7 @@ async def _process_wallet(wallet: str, api_key: str) -> dict:
     edges_written = 0
     for (from_addr, to_addr), e in edge_map.items():
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO wallet_graph.wallet_edges
                     (from_address, to_address, chain, transfer_count, total_value_usd,
                      first_transfer_at, last_transfer_at, weight, tokens_transferred, edge_type)
@@ -171,7 +174,7 @@ async def _process_wallet(wallet: str, api_key: str) -> dict:
 
     # Update scan state
     try:
-        execute("""
+        await execute_async("""
             INSERT INTO wallet_graph.edge_build_status
                 (wallet_address, chain, last_built_at, transfers_processed, edges_created, pages_fetched, status)
             VALUES (%s, 'ethereum', NOW(), %s, %s, 1, 'complete')
@@ -201,13 +204,13 @@ async def transfer_edge_builder_background_loop():
 
     while True:
         try:
-            usage = _get_etherscan_24h_usage()
+            usage = await _get_etherscan_24h_usage()
             if usage > ETHERSCAN_DAILY_CAP:
                 logger.error(f"[transfer_edge_bg] PAUSED: Etherscan 24h {usage:,}/{ETHERSCAN_DAILY_CAP:,}")
                 await asyncio.sleep(3600)
                 continue
 
-            wallets = _get_wallets_for_scan(BATCH_SIZE)
+            wallets = await _get_wallets_for_scan(BATCH_SIZE)
             if not wallets:
                 logger.error("[transfer_edge_bg] no wallets need scanning, sleeping 1h")
                 await asyncio.sleep(3600)

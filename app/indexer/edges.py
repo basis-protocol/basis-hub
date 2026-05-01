@@ -18,7 +18,10 @@ from datetime import datetime, timezone
 import httpx
 import psycopg2
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import (
+    fetch_all, fetch_one, execute,
+    fetch_one_async, fetch_all_async, execute_async,
+)
 from app.indexer.config import (
     BLOCK_EXPLORER_PROVIDER,
     EXPLORER_RATE_LIMIT_DELAY,
@@ -183,7 +186,7 @@ async def build_edges_for_wallet(
         weight = _compute_weight(edge["total_value"], edge["count"], edge["last_ts"])
         tokens_json = json.dumps(edge["tokens"])
 
-        execute(
+        await execute_async(
             """
             INSERT INTO wallet_graph.wallet_edges
                 (from_address, to_address, chain, transfer_count, total_value_usd,
@@ -204,7 +207,7 @@ async def build_edges_for_wallet(
         edges_upserted += 1
 
     # Update build status
-    execute(
+    await execute_async(
         """
         INSERT INTO wallet_graph.edge_build_status
             (wallet_address, chain, last_built_at, transfers_processed, edges_created, pages_fetched, status)
@@ -249,7 +252,7 @@ async def run_edge_builder(
         order_clause = "w.created_at ASC"
 
     # Include wallets that haven't been built in 7+ days (re-scan for new transfers)
-    wallets = fetch_all(
+    wallets = await fetch_all_async(
         f"""
         SELECT w.address, w.total_stablecoin_value
         FROM wallet_graph.wallets w
@@ -265,12 +268,12 @@ async def run_edge_builder(
     )
 
     # Count how many are fresh vs stale
-    unbuilt = fetch_one(
+    unbuilt = await fetch_one_async(
         "SELECT COUNT(*) as cnt FROM wallet_graph.wallets w "
         "LEFT JOIN wallet_graph.edge_build_status e ON w.address = e.wallet_address AND e.chain = %s "
         "WHERE e.wallet_address IS NULL", (chain,)
     )
-    stale = fetch_one(
+    stale = await fetch_one_async(
         "SELECT COUNT(*) as cnt FROM wallet_graph.edge_build_status "
         "WHERE chain = %s AND last_built_at < NOW() - INTERVAL '7 days'", (chain,)
     )
@@ -447,9 +450,9 @@ EDGE_BUILDER_BATCH_SIZE = 2000
 EDGE_BUILDER_ETHERSCAN_CAP = 120_000
 
 
-def _get_etherscan_24h_usage() -> int:
+async def _get_etherscan_24h_usage() -> int:
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT SUM(total_calls) AS total FROM api_usage_hourly
             WHERE provider = 'etherscan' AND hour > NOW() - INTERVAL '24 hours'
         """)
@@ -468,14 +471,14 @@ async def edge_builder_background_loop():
         try:
             logger.error("[edge_builder_bg] loop tick")
 
-            usage = _get_etherscan_24h_usage()
+            usage = await _get_etherscan_24h_usage()
             if usage > EDGE_BUILDER_ETHERSCAN_CAP:
                 logger.error(f"[edge_builder_bg] PAUSED: Etherscan 24h usage {usage:,}/{EDGE_BUILDER_ETHERSCAN_CAP:,}")
                 await asyncio.sleep(3600)
                 continue
 
             # Check how many wallets are scannable
-            scannable = fetch_one("""
+            scannable = await fetch_one_async("""
                 SELECT COUNT(*) AS cnt FROM wallet_graph.wallets w
                 LEFT JOIN wallet_graph.edge_build_status e
                     ON w.address = e.wallet_address AND e.chain = 'ethereum'
