@@ -5,6 +5,7 @@ One module that every surface queries before rendering.
 Answers two questions per domain: "Is the data fresh?" and "Does the data make sense?"
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -517,6 +518,8 @@ async def check_domain(domain: str) -> dict:
     for rule_fn in cfg["coherence_rules"]:
         try:
             result = rule_fn()
+            if asyncio.iscoroutine(result):
+                result = await result
             if result is None:
                 pass
             elif isinstance(result, list):

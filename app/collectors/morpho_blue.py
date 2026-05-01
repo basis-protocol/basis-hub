@@ -270,7 +270,7 @@ def _batch_upsert_markets(rows: list[dict[str, Any]]) -> int:
         return 0
 
 
-async def _write_exposure_row(
+def _write_exposure_row(
     chain: str, token_symbol: str, tvl_usd: float, is_stable: bool
 ) -> bool:
     """Write one aggregated exposure row per (chain, token).
@@ -280,10 +280,16 @@ async def _write_exposure_row(
     one row per chain, then the outer SUM aggregates across chains.
     _get_stablecoin_exposure's DISTINCT ON (token_symbol, chain, pool_id)
     is already unique per row (one pool_id per (chain, symbol)).
+
+    Sync because run_morpho_blue_collection is sync def called bare from
+    worker async context (worker.py:1058) — asyncio.run from there fails
+    with "cannot run from running event loop". Same trade-off as _track
+    and store_attestation: accept the [sync-in-async] warning until
+    Phase 3 rather than cascade async through more callers.
     """
     pool_id = f"{PROTOCOL_SLUG}:{chain}:{token_symbol.upper()}:agg"
     try:
-        await execute_async(
+        execute(
             """
             INSERT INTO protocol_collateral_exposure
                 (protocol_slug, pool_id, token_symbol, chain, tvl_usd,
@@ -349,7 +355,7 @@ def run_morpho_blue_collection() -> dict[str, Any]:
     stable_usd_total = 0.0
     for (chain, sym), tvl in agg.items():
         is_stable = _is_stablecoin_token(None, sym)
-        if asyncio.run(_write_exposure_row(chain, sym, tvl, is_stable)):
+        if _write_exposure_row(chain, sym, tvl, is_stable):
             rows_written += 1
             if is_stable:
                 stable_rows += 1
