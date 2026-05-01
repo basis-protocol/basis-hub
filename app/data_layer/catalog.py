@@ -203,14 +203,24 @@ def update_catalog():
                 "entity_snapshots_hourly": "snapshot_at",
                 "contract_surveillance": "scanned_at",
                 "wallet_behavior_tags": "computed_at",
+                "dex_pool_ohlcv": "timestamp",
+                "market_chart_history": "timestamp",
             }
-            time_col = time_cols.get(table, "created_at")
+            time_col = time_cols.get(table)
 
-            range_row = fetch_one(
-                f"SELECT MIN({time_col}) as earliest, MAX({time_col}) as latest FROM {table}"
-            )
-            earliest = range_row["earliest"] if range_row else None
-            latest = range_row["latest"] if range_row else None
+            if time_col:
+                range_row = fetch_one(
+                    f"SELECT MIN({time_col}) as earliest, MAX({time_col}) as latest FROM {table}"
+                )
+                earliest = range_row["earliest"] if range_row else None
+                latest = range_row["latest"] if range_row else None
+            else:
+                logger.warning(
+                    f"[catalog] no timestamp column mapped for table {table!r}; "
+                    f"earliest/latest will be NULL"
+                )
+                earliest = None
+                latest = None
 
             execute(
                 """INSERT INTO data_catalog
