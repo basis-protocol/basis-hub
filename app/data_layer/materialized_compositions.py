@@ -46,11 +46,15 @@ async def _compute_cqi_scores() -> list[dict]:
         return []
     psi_scores = {r["protocol_slug"]: float(r["overall_score"]) for r in psi_rows}
 
-    # Get collateral exposure pairs
+    # Get collateral exposure pairs.
+    # protocol_collateral_exposure has token_symbol (e.g. 'USDC'), not
+    # stablecoin_id; join to stablecoins to map symbol -> id.
     pairs = await fetch_all_async(
-        """SELECT DISTINCT protocol_slug, stablecoin_id
-           FROM protocol_collateral_exposure
-           WHERE snapshot_date >= CURRENT_DATE - 7"""
+        """SELECT DISTINCT pce.protocol_slug, s.id AS stablecoin_id
+           FROM protocol_collateral_exposure pce
+           JOIN stablecoins s ON UPPER(s.symbol) = UPPER(pce.token_symbol)
+           WHERE pce.snapshot_date >= CURRENT_DATE - 7
+             AND pce.is_stablecoin = TRUE"""
     )
     if not pairs:
         # Fall back to all combinations
