@@ -277,12 +277,12 @@ def _make_async_collectors():
 
     async def _solana(client, _cg_id, sid):
         return await _with_inner_timeout(
-            "solana", await collect_solana_components(client, sid),
+            "solana", collect_solana_components(client, sid),
         )
 
     async def _actor(client, _cg_id, sid):
         return await _with_inner_timeout(
-            "actor_metrics", await collect_actor_metrics(client, sid),
+            "actor_metrics", collect_actor_metrics(client, sid),
         )
 
     _all = [
