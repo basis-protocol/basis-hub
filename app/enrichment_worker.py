@@ -268,7 +268,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_dohi():
         from app.collectors.dao_collector import run_dohi_scoring
-        return await run_dohi_scoring()
+        return await asyncio.to_thread(run_dohi_scoring)
 
     pipeline.add(EnrichmentTask(
         name="lsti_scoring", func=_run_lsti,
@@ -324,7 +324,7 @@ async def run_enrichment_pipeline() -> dict:
 
         try:
             from app.rpi.incident_detector import run_incident_detection
-            await run_incident_detection()
+            run_incident_detection()
         except Exception as e:
             logger.warning(f"RPI incident detection failed: {e}")
 
@@ -344,7 +344,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_dex_pools():
         from app.collectors.dex_pools import run_dex_pool_collection
-        return await run_dex_pool_collection()
+        return run_dex_pool_collection()
 
     pipeline.add(EnrichmentTask(
         name="dex_pool_collection", func=_run_dex_pools,
@@ -387,7 +387,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_gov_events():
         from app.collectors.governance_events import run_governance_event_collection
-        return await run_governance_event_collection()
+        return run_governance_event_collection()
 
     pipeline.add(EnrichmentTask(
         name="governance_events", func=_run_gov_events,
@@ -645,7 +645,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_correlation():
         from app.data_layer.correlation_engine import run_correlation_computation
-        return await run_correlation_computation()
+        return run_correlation_computation()
 
     pipeline.add(EnrichmentTask(
         name="correlation_matrices", func=_run_correlation,
@@ -784,7 +784,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_wallet_behavior():
         from app.data_layer.wallet_behavior import run_behavioral_classification
-        return await run_behavioral_classification(batch_size=2000)
+        return run_behavioral_classification(batch_size=2000)
 
     pipeline.add(EnrichmentTask(
         name="wallet_behavior", func=_run_wallet_behavior,
@@ -856,7 +856,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_incident_detection():
         from app.data_layer.incident_detector import run_incident_detection
-        return await run_incident_detection()
+        return run_incident_detection()
 
     pipeline.add(EnrichmentTask(
         name="incident_detection", func=_run_incident_detection,

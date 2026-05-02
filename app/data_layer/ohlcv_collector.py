@@ -114,7 +114,7 @@ def _store_ohlcv_records(records: list[dict]):
     if not records:
         return
 
-    from app.database import get_cursor, fetch_one_async, fetch_all_async, execute_async
+    from app.database import get_cursor
 
     stored = 0
     errors = 0
@@ -150,7 +150,7 @@ def _store_ohlcv_records(records: list[dict]):
         logger.info(f"Stored {stored} OHLCV records")
 
 
-async def _get_tracked_pools_tiered() -> tuple[list[dict], list[dict]]:
+def _get_tracked_pools_tiered() -> tuple[list[dict], list[dict]]:
     """
     Get tracked pools split into two tiers:
     - top_pools: highest TVL stablecoin pairs → 15-min resolution
@@ -158,7 +158,7 @@ async def _get_tracked_pools_tiered() -> tuple[list[dict], list[dict]]:
     """
     from app.database import fetch_all
 
-    rows = await fetch_all_async(
+    rows = fetch_all(
         """SELECT DISTINCT ON (pool_address)
                   asset_id, venue, chain, pool_address, volume_24h
            FROM liquidity_depth
@@ -200,7 +200,7 @@ async def run_ohlcv_collection() -> dict:
     - Top 10 by TVL: 15-minute candles (96 per day)
     - All others: hourly candles (24 per day)
     """
-    top_pools, other_pools = await _get_tracked_pools_tiered()
+    top_pools, other_pools = _get_tracked_pools_tiered()
     all_pools = len(top_pools) + len(other_pools)
 
     logger.error(

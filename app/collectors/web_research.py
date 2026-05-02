@@ -20,7 +20,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
+from app.database import execute, fetch_one
 from app.services import parallel_client
 
 logger = logging.getLogger(__name__)
@@ -393,11 +393,11 @@ async def research_por_method(exchange_name: str) -> dict:
 # Storage
 # =============================================================================
 
-async def _store_research_component(entity_type: str, entity_slug: str, component_id: str,
+def _store_research_component(entity_type: str, entity_slug: str, component_id: str,
                               category: str, score: float, raw_data: dict):
     """Store a web research component result."""
     try:
-        await execute_async(
+        execute(
             """
             INSERT INTO generic_index_scores (index_id, entity_slug, entity_name,
                 overall_score, category_scores, component_scores, raw_values,
@@ -447,7 +447,7 @@ async def run_web_research_collection() -> list[dict]:
         try:
             audit_data = await research_bridge_audits(name)
             if audit_data and audit_data.get("score") is not None:
-                await _store_research_component(
+                _store_research_component(
                     "bridge", slug, "bridge_audit_research",
                     "smart_contract_risk", audit_data["score"], audit_data,
                 )
@@ -468,7 +468,7 @@ async def run_web_research_collection() -> list[dict]:
         try:
             por_freq = await research_por_frequency(name)
             if por_freq and por_freq.get("score") is not None:
-                await _store_research_component(
+                _store_research_component(
                     "exchange", slug, "por_frequency_research",
                     "reserve_proof_quality", por_freq["score"], por_freq,
                 )
@@ -484,7 +484,7 @@ async def run_web_research_collection() -> list[dict]:
         try:
             por_method = await research_por_method(name)
             if por_method and por_method.get("score") is not None:
-                await _store_research_component(
+                _store_research_component(
                     "exchange", slug, "por_method_research",
                     "reserve_proof_quality", por_method["score"], por_method,
                 )
@@ -504,7 +504,7 @@ async def run_web_research_collection() -> list[dict]:
         try:
             comp_data = await research_compensation_transparency(name)
             if comp_data and comp_data.get("score") is not None:
-                await _store_research_component(
+                _store_research_component(
                     "protocol", slug, "compensation_transparency",
                     "governance", comp_data["score"], comp_data,
                 )
@@ -520,7 +520,7 @@ async def run_web_research_collection() -> list[dict]:
         try:
             meeting_data = await research_meeting_cadence(name)
             if meeting_data and meeting_data.get("score") is not None:
-                await _store_research_component(
+                _store_research_component(
                     "protocol", slug, "meeting_cadence",
                     "governance", meeting_data["score"], meeting_data,
                 )

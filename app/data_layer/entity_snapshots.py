@@ -151,13 +151,13 @@ async def run_entity_snapshots() -> dict:
     Full hourly entity snapshot cycle.
     Fetch full CoinGecko data for all scored entities.
     """
-    from app.database import fetch_all, fetch_all_async
+    from app.database import fetch_all
 
     # Collect all entities to snapshot
     entities = []
 
     # SII stablecoins
-    stablecoins = await fetch_all_async(
+    stablecoins = fetch_all(
         "SELECT id, coingecko_id FROM stablecoins WHERE scoring_enabled = TRUE"
     )
     if stablecoins:
@@ -184,7 +184,7 @@ async def run_entity_snapshots() -> dict:
         "raydium": "raydium",
     }
     try:
-        psi_rows = await fetch_all_async(
+        psi_rows = fetch_all(
             "SELECT DISTINCT protocol_slug FROM psi_scores ORDER BY protocol_slug"
         )
         if psi_rows:

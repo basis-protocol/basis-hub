@@ -25,7 +25,7 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
+from app.database import execute, fetch_all, fetch_one
 from app.index_definitions.dohi_v01 import DOHI_V01_DEFINITION, DAO_ENTITIES
 from app.scoring_engine import score_entity
 from app.api_usage_tracker import track_api_call
@@ -261,14 +261,14 @@ def fetch_dao_treasury(protocol_slug: str) -> dict:
 # PSI governance component import
 # =============================================================================
 
-async def import_psi_governance_components(protocol_slug: str) -> dict:
+def import_psi_governance_components(protocol_slug: str) -> dict:
     """Import existing PSI governance component values for this entity."""
     raw = {}
     if not protocol_slug:
         return raw
 
     try:
-        row = await fetch_one_async("""
+        row = fetch_one("""
             SELECT raw_values FROM psi_scores
             WHERE protocol_slug = %s
             ORDER BY computed_at DESC LIMIT 1
@@ -516,7 +516,7 @@ def _automate_dao_timelock(entity: dict, static: dict) -> dict:
     return automated
 
 
-async def _automate_dao_transparency(entity: dict, static: dict) -> dict:
+def _automate_dao_transparency(entity: dict, static: dict) -> dict:
     """Automate financial_disclosure and public_reporting_frequency from forum data.
 
     Uses existing governance_forum_posts table data (populated by RPI forum scraper).
@@ -533,7 +533,7 @@ async def _automate_dao_transparency(entity: dict, static: dict) -> dict:
                            'spending report', 'treasury update']
 
         # Check governance_forum_posts table for report-like posts
-        row = await fetch_one_async("""
+        row = fetch_one("""
             SELECT COUNT(*) AS report_count
             FROM governance_forum_posts
             WHERE protocol_slug = %s
@@ -772,7 +772,7 @@ def _automate_dao_audit_cadence(entity: dict, static: dict) -> dict:
 # Score and store
 # =============================================================================
 
-async def score_dao(entity: dict) -> dict | None:
+def score_dao(entity: dict) -> dict | None:
     """Score a single DAO entity."""
     slug = entity["slug"]
     logger.info(f"Scoring DAO: {slug}")
@@ -782,7 +782,7 @@ async def score_dao(entity: dict) -> dict | None:
     # Import PSI governance components first
     protocol_slug = entity.get("protocol_slug")
     if protocol_slug:
-        psi_data = await import_psi_governance_components(protocol_slug)
+        psi_data = import_psi_governance_components(protocol_slug)
         raw_values.update(psi_data)
 
     # Snapshot governance data
@@ -819,7 +819,7 @@ async def score_dao(entity: dict) -> dict | None:
     raw_values.update(timelock_automated)
 
     # Financial disclosure + reporting frequency from forum data
-    transparency_automated = await _automate_dao_transparency(entity, static)
+    transparency_automated = _automate_dao_transparency(entity, static)
     raw_values.update(transparency_automated)
 
     # --- Phase 3D: Audit cadence from aggregator scraping ---
@@ -838,14 +838,14 @@ async def score_dao(entity: dict) -> dict | None:
     return result
 
 
-async def store_dao_score(result: dict) -> None:
+def store_dao_score(result: dict) -> None:
     """Store a DAO score in the generic_index_scores table."""
     slug = result["entity_slug"]
     raw_for_storage = {k: v for k, v in result["raw_values"].items() if not k.startswith("_")}
     raw_canonical = json.dumps(raw_for_storage, sort_keys=True, default=str)
     inputs_hash = "0x" + hashlib.sha256(raw_canonical.encode()).hexdigest()
 
-    await execute_async("""
+    execute("""
         INSERT INTO generic_index_scores
             (index_id, entity_slug, entity_name, overall_score,
              category_scores, component_scores, raw_values,
@@ -882,14 +882,14 @@ async def store_dao_score(result: dict) -> None:
     ))
 
 
-async def run_dohi_scoring() -> list[dict]:
+def run_dohi_scoring() -> list[dict]:
     """Score all DAO entities. Called from worker."""
     results = []
     for entity in DAO_ENTITIES:
         try:
-            result = await score_dao(entity)
+            result = score_dao(entity)
             if result:
-                await store_dao_score(result)
+                store_dao_score(result)
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

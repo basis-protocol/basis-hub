@@ -41,15 +41,15 @@ def _pearson_correlation(x: list[float], y: list[float]) -> Optional[float]:
     return round(cov / (std_x * std_y), 4)
 
 
-async def compute_sii_correlation_matrix(window_days: int = 30) -> dict:
+def compute_sii_correlation_matrix(window_days: int = 30) -> dict:
     """
     Compute correlation matrix of SII score changes across stablecoins.
     Uses daily score history.
     """
-    from app.database import fetch_all, fetch_one_async, fetch_all_async, execute_async
+    from app.database import fetch_all
 
     # Get all stablecoins with history
-    rows = await fetch_all_async(
+    rows = fetch_all(
         """SELECT DISTINCT stablecoin FROM score_history
            WHERE score_date >= CURRENT_DATE - %s
            ORDER BY stablecoin""",
@@ -63,7 +63,7 @@ async def compute_sii_correlation_matrix(window_days: int = 30) -> dict:
     # Build score time series per entity
     series: dict[str, list[float]] = {}
     for entity_id in entity_ids:
-        history = await fetch_all_async(
+        history = fetch_all(
             """SELECT score_date, overall_score FROM score_history
                WHERE stablecoin = %s AND score_date >= CURRENT_DATE - %s
                ORDER BY score_date""",
@@ -93,14 +93,14 @@ async def compute_sii_correlation_matrix(window_days: int = 30) -> dict:
     }
 
 
-async def compute_cross_index_correlation(window_days: int = 30) -> dict:
+def compute_cross_index_correlation(window_days: int = 30) -> dict:
     """
     Compute cross-index correlation (SII vs PSI vs RPI scores over time).
     """
     from app.database import fetch_all
 
     # SII daily scores
-    sii_scores = await fetch_all_async(
+    sii_scores = fetch_all(
         """SELECT score_date, AVG(overall_score) as avg_score
            FROM score_history
            WHERE score_date >= CURRENT_DATE - %s
@@ -109,7 +109,7 @@ async def compute_cross_index_correlation(window_days: int = 30) -> dict:
     )
 
     # PSI daily scores
-    psi_scores = await fetch_all_async(
+    psi_scores = fetch_all(
         """SELECT DATE(scored_at) as score_date, AVG(overall_score) as avg_score
            FROM psi_scores
            WHERE scored_at >= NOW() - INTERVAL '%s days'
@@ -182,7 +182,7 @@ def _store_matrix(matrix_type: str, window_days: int, entity_ids: list, matrix_d
         )
 
 
-async def run_correlation_computation() -> dict:
+def run_correlation_computation() -> dict:
     """
     Compute and store all correlation matrices.
     Daily schedule, no API calls needed.
@@ -191,7 +191,7 @@ async def run_correlation_computation() -> dict:
 
     # SII 30-day correlation
     try:
-        sii_30 = await compute_sii_correlation_matrix(30)
+        sii_30 = compute_sii_correlation_matrix(30)
         if "entity_ids" in sii_30:
             _store_matrix("sii_30d", 30, sii_30["entity_ids"], sii_30["matrix"])
             results["sii_30d"] = {
@@ -206,7 +206,7 @@ async def run_correlation_computation() -> dict:
 
     # SII 90-day correlation
     try:
-        sii_90 = await compute_sii_correlation_matrix(90)
+        sii_90 = compute_sii_correlation_matrix(90)
         if "entity_ids" in sii_90:
             _store_matrix("sii_90d", 90, sii_90["entity_ids"], sii_90["matrix"])
             results["sii_90d"] = {
@@ -221,7 +221,7 @@ async def run_correlation_computation() -> dict:
 
     # Cross-index correlation
     try:
-        cross = await compute_cross_index_correlation(30)
+        cross = compute_cross_index_correlation(30)
         results["cross_index_30d"] = cross
     except Exception as e:
         logger.warning(f"Cross-index correlation failed: {e}")
