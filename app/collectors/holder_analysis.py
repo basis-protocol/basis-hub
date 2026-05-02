@@ -302,7 +302,7 @@ def get_cached_holders(contract_address: str) -> dict | None:
     return None
 
 
-def analyze_holders_sync(
+async def analyze_holders_sync(
     contract_address: str,
     decimals: int = 18,
     market_cap: float | None = None,
@@ -328,4 +328,4 @@ def analyze_holders_sync(
             )
             return future.result(timeout=120)
     else:
-        return asyncio.run(analyze_holders(contract_address, decimals, market_cap))
+        return await analyze_holders(contract_address, decimals, market_cap)

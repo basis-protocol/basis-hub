@@ -1742,7 +1742,7 @@ async def run_slow_cycle():
 
             # Score all protocols
             from app.rpi.scorer import run_rpi_scoring
-            rpi_results = run_rpi_scoring()
+            rpi_results = await run_rpi_scoring()
             logger.info(f"RPI scoring complete: {len(rpi_results)} protocols scored")
 
             # Attest RPI scores (14th domain)
@@ -1768,7 +1768,7 @@ async def run_slow_cycle():
     try:
         from app.collectors.lst_collector import run_lsti_scoring
         logger.info("Running LSTI scoring cycle...")
-        lsti_results = await asyncio.to_thread(run_lsti_scoring)
+        lsti_results = await run_lsti_scoring()
         logger.info(f"LSTI scoring complete: {len(lsti_results)} LSTs scored")
     except Exception as e:
         logger.warning(f"LSTI scoring failed: {e}")
@@ -1776,7 +1776,7 @@ async def run_slow_cycle():
     try:
         from app.collectors.bridge_collector import run_bri_scoring
         logger.info("Running BRI scoring cycle...")
-        bri_results = await asyncio.to_thread(run_bri_scoring)
+        bri_results = await run_bri_scoring()
         logger.info(f"BRI scoring complete: {len(bri_results)} bridges scored")
     except Exception as e:
         logger.warning(f"BRI scoring failed: {e}")
@@ -1800,7 +1800,7 @@ async def run_slow_cycle():
     try:
         from app.collectors.tti_collector import run_tti_scoring
         logger.info("Running TTI scoring cycle...")
-        tti_results = await asyncio.to_thread(run_tti_scoring)
+        tti_results = await run_tti_scoring()
         logger.info(f"TTI scoring complete: {len(tti_results)} treasury products scored")
     except Exception as e:
         logger.warning(f"TTI scoring failed: {e}")
@@ -2500,7 +2500,7 @@ async def run_slow_cycle_parallel():
         async def _health_sweep():
             from app.ops.tools.health_checker import run_all_checks
             logger.info("Running health sweep...")
-            health_results = await asyncio.to_thread(run_all_checks)
+            health_results = await run_all_checks()
             healthy_count = sum(1 for r in health_results if r.get("status") == "healthy")
             logger.info(f"Health sweep: {healthy_count}/{len(health_results)} healthy")
             failures = [r for r in health_results if r.get("status") in ("degraded", "down")]
@@ -2520,7 +2520,7 @@ async def run_slow_cycle_parallel():
     try:
         async def _integrity():
             from app.integrity import check_all_and_store
-            result = await asyncio.to_thread(check_all_and_store)
+            result = await check_all_and_store()
             logger.info(f"Integrity: {result['status']} across {len(result['domains'])} domains")
         await asyncio.wait_for(_integrity(), timeout=POST_TASK_TIMEOUT)
     except asyncio.TimeoutError:

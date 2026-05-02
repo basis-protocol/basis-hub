@@ -539,7 +539,7 @@ async def store_bridge_score(result: dict) -> None:
     ))
 
 
-def run_bri_scoring() -> list[dict]:
+async def run_bri_scoring() -> list[dict]:
     """Score all bridge entities. Called from worker."""
     bridges_data = fetch_bridge_data()
     time.sleep(1)
@@ -563,7 +563,7 @@ def run_bri_scoring() -> list[dict]:
                 if cached:
                     holder_cache[tc.lower()] = cached
                 else:
-                    hdata = analyze_holders_sync(tc, decimals=18)
+                    hdata = await analyze_holders_sync(tc, decimals=18)
                     if hdata.get("balances_found", 0) > 0:
                         holder_cache[tc.lower()] = hdata
     except Exception as e:
@@ -575,7 +575,7 @@ def run_bri_scoring() -> list[dict]:
             result = score_bridge(entity, bridges_data, holder_cache=holder_cache,
                                   hacks_cache=hacks_cache)
             if result:
-                asyncio.run(store_bridge_score(result))
+                await store_bridge_score(result)
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

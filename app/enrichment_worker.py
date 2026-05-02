@@ -248,11 +248,11 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_lsti():
         from app.collectors.lst_collector import run_lsti_scoring
-        return await asyncio.to_thread(run_lsti_scoring)
+        return await run_lsti_scoring()
 
     async def _run_bri():
         from app.collectors.bridge_collector import run_bri_scoring
-        return await asyncio.to_thread(run_bri_scoring)
+        return await run_bri_scoring()
 
     async def _run_vsri():
         from app.collectors.vault_collector import run_vsri_scoring
@@ -264,7 +264,7 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_tti():
         from app.collectors.tti_collector import run_tti_scoring
-        return await asyncio.to_thread(run_tti_scoring)
+        return await run_tti_scoring()
 
     async def _run_dohi():
         from app.collectors.dao_collector import run_dohi_scoring
@@ -329,7 +329,7 @@ async def run_enrichment_pipeline() -> dict:
             logger.warning(f"RPI incident detection failed: {e}")
 
         from app.rpi.scorer import run_rpi_scoring
-        return run_rpi_scoring()
+        return await run_rpi_scoring()
 
     pipeline.add(EnrichmentTask(
         name="rpi_scoring", func=_run_rpi,

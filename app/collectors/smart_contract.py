@@ -1034,7 +1034,7 @@ async def analyze_contract_for_index(contract_address: str, chain: str = "ethere
     return result
 
 
-def analyze_contract_for_index_sync(contract_address: str, chain: str = "ethereum") -> dict:
+async def analyze_contract_for_index_sync(contract_address: str, chain: str = "ethereum") -> dict:
     """Synchronous wrapper around analyze_contract_for_index().
 
     Safe to call from synchronous collector code (runs in thread if needed).
@@ -1053,7 +1053,7 @@ def analyze_contract_for_index_sync(contract_address: str, chain: str = "ethereu
             )
             return future.result(timeout=60)
     else:
-        return asyncio.run(analyze_contract_for_index(contract_address, chain))
+        return await analyze_contract_for_index(contract_address, chain)
 
 
 def fetch_immunefi_bounty(slug: str) -> dict:

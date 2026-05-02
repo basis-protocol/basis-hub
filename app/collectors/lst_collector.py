@@ -307,7 +307,7 @@ def fetch_rated_data(protocol_slug: str) -> dict:
 # Score and store
 # =============================================================================
 
-def _automate_lst_smart_contract(entity: dict, static: dict) -> dict:
+async def _automate_lst_smart_contract(entity: dict, static: dict) -> dict:
     """Automate smart contract components using live Etherscan analysis.
 
     Replaces static values for: audit_status, admin_key_risk, upgradeability_risk.
@@ -320,7 +320,7 @@ def _automate_lst_smart_contract(entity: dict, static: dict) -> dict:
 
     try:
         from app.collectors.smart_contract import analyze_contract_for_index_sync
-        analysis = analyze_contract_for_index_sync(contract)
+        analysis = await analyze_contract_for_index_sync(contract)
 
         # audit_status: Etherscan verification check
         # LSTI uses log normalization with thresholds {1:30, 2:50, 3:70, 5:85, 10:100}
@@ -446,7 +446,7 @@ def _automate_lst_withdrawal_queue(entity: dict, static: dict) -> dict:
     return automated
 
 
-def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
+async def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
               holder_cache: dict = None, hacks_cache: list = None) -> dict | None:
     """Score a single LST entity. Returns scoring result dict.
 
@@ -488,7 +488,7 @@ def score_lst(entity: dict, eth_price: float = None, pool_cache: list = None,
 
     # --- Phase 1 automation: replace static with live data ---
     # Smart contract analysis (audit_status, admin_key_risk, upgradeability_risk)
-    sc_automated = _automate_lst_smart_contract(entity, static)
+    sc_automated = await _automate_lst_smart_contract(entity, static)
     raw_values.update(sc_automated)
 
     # Exploit history from DeFiLlama hacks
@@ -571,7 +571,7 @@ async def store_lst_score(result: dict) -> None:
     ))
 
 
-def run_lsti_scoring() -> list[dict]:
+async def run_lsti_scoring() -> list[dict]:
     """Score all LST entities. Called from worker."""
     # Pre-fetch shared data once (saves ~20 redundant API calls)
     eth_price = fetch_eth_price() or 3000.0
@@ -597,7 +597,7 @@ def run_lsti_scoring() -> list[dict]:
                     holder_cache[contract.lower()] = cached
                 else:
                     # Fetch fresh — only runs once per 24h due to cache
-                    hdata = analyze_holders_sync(contract, decimals=18, market_cap=None)
+                    hdata = await analyze_holders_sync(contract, decimals=18, market_cap=None)
                     if hdata.get("balances_found", 0) > 0:
                         holder_cache[contract.lower()] = hdata
     except Exception as e:
@@ -606,10 +606,10 @@ def run_lsti_scoring() -> list[dict]:
     results = []
     for entity in LST_ENTITIES:
         try:
-            result = score_lst(entity, eth_price=eth_price, pool_cache=pool_cache,
+            result = await score_lst(entity, eth_price=eth_price, pool_cache=pool_cache,
                                holder_cache=holder_cache, hacks_cache=hacks_cache)
             if result:
-                asyncio.run(store_lst_score(result))
+                await store_lst_score(result)
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

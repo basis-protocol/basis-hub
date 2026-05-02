@@ -264,7 +264,7 @@ def _extract_from_markdown(markdown: str) -> dict:
     return data
 
 
-def _try_scrape_page(url: str, entity_slug: str = "") -> str | None:
+async def _try_scrape_page(url: str, entity_slug: str = "") -> str | None:
     """Scrape a page using Parallel Extract (primary) or Firecrawl (fallback).
 
     Parallel Extract is preferred because it does objective-guided extraction —
@@ -298,7 +298,7 @@ def _try_scrape_page(url: str, entity_slug: str = "") -> str | None:
                 future = pool.submit(asyncio.run, _extract())
                 result = future.result(timeout=130)
         else:
-            result = asyncio.run(_extract())
+            result = await _extract()
 
         if result and "error" not in result:
             results_list = result.get("results", [])
@@ -348,7 +348,7 @@ def _try_scrape_page(url: str, entity_slug: str = "") -> str | None:
     return None
 
 
-def _try_parallel_task_research(entity_slug: str, entity_name: str, issuer: str) -> dict | None:
+async def _try_parallel_task_research(entity_slug: str, entity_name: str, issuer: str) -> dict | None:
     """Use Parallel Task deep research to find issuer disclosure facts.
 
     This is the most powerful tool — it searches the web and synthesizes
@@ -399,7 +399,7 @@ def _try_parallel_task_research(entity_slug: str, entity_name: str, issuer: str)
                 future = pool.submit(asyncio.run, _run())
                 result = future.result(timeout=330)
         else:
-            result = asyncio.run(_run())
+            result = await _run()
 
         if result and "error" not in result:
             fields = result.get("fields", result.get("data", {}))
@@ -473,7 +473,7 @@ def _is_yes(value) -> bool:
     return False
 
 
-def _try_parse_pdf(entity_slug: str, pdf_url: str) -> dict | None:
+async def _try_parse_pdf(entity_slug: str, pdf_url: str) -> dict | None:
     """Try to parse a PDF with Reducto using TTI_DISCLOSURE_SCHEMA."""
     try:
         import asyncio
@@ -493,7 +493,7 @@ def _try_parse_pdf(entity_slug: str, pdf_url: str) -> dict | None:
                 future = pool.submit(asyncio.run, _parse())
                 result = future.result(timeout=200)
         else:
-            result = asyncio.run(_parse())
+            result = await _parse()
 
         if result and not result.get("error"):
             return result
@@ -548,7 +548,7 @@ async def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict
         logger.info(f"TTI disclosure scraping {entity_slug}: {url}")
         time.sleep(2)  # Rate limit between sources
 
-        markdown = _try_scrape_page(url, entity_slug=entity_slug)
+        markdown = await _try_scrape_page(url, entity_slug=entity_slug)
         if not markdown:
             continue
 
@@ -568,7 +568,7 @@ async def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict
             # Try Reducto on the most promising PDF
             best_pdf = attestation_pdfs[0]
             time.sleep(2)
-            pdf_result = _try_parse_pdf(entity_slug, best_pdf)
+            pdf_result = await _try_parse_pdf(entity_slug, best_pdf)
             if pdf_result:
                 result_data = pdf_result.get("result", pdf_result)
                 unwrapped = _unwrap_citations(result_data)
@@ -612,7 +612,7 @@ async def collect_entity_disclosures(entity_slug: str, entity_name: str) -> dict
             f"TTI disclosure {entity_slug}: only {len(combined_data)} fields from pages, "
             f"supplementing with Parallel Task research"
         )
-        task_data = _try_parallel_task_research(entity_slug, entity_name, issuer)
+        task_data = await _try_parallel_task_research(entity_slug, entity_name, issuer)
         if task_data:
             # Task data fills gaps — don't overwrite existing page extractions
             for k, v in task_data.items():

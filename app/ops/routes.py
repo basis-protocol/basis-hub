@@ -338,7 +338,7 @@ async def get_health(request: Request):
 async def run_health_check(request: Request, background_tasks: BackgroundTasks):
     _check_admin_key(request)
     try:
-        def _run_health_checks():
+        async def _run_health_checks():
             import importlib
             import app.ops.tools.health_checker as _hc_mod
             importlib.reload(_hc_mod)
@@ -349,8 +349,8 @@ async def run_health_check(request: Request, background_tasks: BackgroundTasks):
                 try:
                     from app.ops.tools.alerter import check_and_alert_health, check_and_alert_engagement
                     loop = asyncio.new_event_loop()
-                    loop.run_until_complete(check_and_alert_health(results))
-                    loop.run_until_complete(check_and_alert_engagement())
+                    loop.run_until_complete(await check_and_alert_health(results))
+                    loop.run_until_complete(await check_and_alert_engagement())
                     loop.close()
                 except Exception as alert_err:
                     logger.warning(f"Alert dispatch failed (non-fatal): {alert_err}")

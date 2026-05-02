@@ -628,7 +628,7 @@ _audit_cache: dict[str, tuple[float, dict]] = {}
 _AUDIT_CACHE_TTL = 2592000  # 30 days
 
 
-def _automate_dao_audit_cadence(entity: dict, static: dict) -> dict:
+async def _automate_dao_audit_cadence(entity: dict, static: dict) -> dict:
     """Score dao_audit_cadence from audit aggregator page scraping.
 
     Fetches protocol security/audit docs pages, counts unique audit mentions,
@@ -681,7 +681,7 @@ def _automate_dao_audit_cadence(entity: dict, static: dict) -> dict:
                 future = pool.submit(asyncio.run, _search())
                 search_result = future.result(timeout=40)
         else:
-            search_result = asyncio.run(_search())
+            search_result = await _search()
 
         if search_result and "error" not in search_result:
             results_list = search_result.get("results", [])
@@ -823,7 +823,7 @@ async def score_dao(entity: dict) -> dict | None:
     raw_values.update(transparency_automated)
 
     # --- Phase 3D: Audit cadence from aggregator scraping ---
-    audit_automated = _automate_dao_audit_cadence(entity, static)
+    audit_automated = await _automate_dao_audit_cadence(entity, static)
     raw_values.update(audit_automated)
 
     if not raw_values:
