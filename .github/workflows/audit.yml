@@ -1,0 +1,11 @@
+name: audit
+on: [push, pull_request]
+jobs:
+  audit-async:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Audit await-in-args bug pattern
+        run: python3 scripts/audit_await_in_args.py --quiet
