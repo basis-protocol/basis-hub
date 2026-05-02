@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.api_usage_tracker import track_api_call
 
 logger = logging.getLogger(__name__)
@@ -272,18 +272,18 @@ def _map_tally_outcome(status_changes: list) -> str:
 # Storage
 # =============================================================================
 
-def store_governance_event(event: dict) -> bool:
+async def store_governance_event(event: dict) -> bool:
     """Store a single governance event. Returns True if new row inserted."""
     try:
         # Check for duplicate via source + source_id
-        existing = fetch_one(
+        existing = await fetch_one_async(
             "SELECT id FROM governance_events WHERE source = %s AND source_id = %s",
             (event["source"], event["source_id"]),
         )
         if existing:
             return False
 
-        execute("""
+        await execute_async("""
             INSERT INTO governance_events
                 (protocol_slug, event_type, event_timestamp, title, description,
                  outcome, contributor_tag, source, source_id, metadata)
@@ -375,7 +375,7 @@ def collect_tally_events(protocol_slug: str, org_slug: str, since_days: int = 90
     return events
 
 
-def run_governance_event_collection() -> dict:
+async def run_governance_event_collection() -> dict:
     """
     Collect governance events from all configured protocols.
     Returns summary dict.
@@ -395,7 +395,7 @@ def run_governance_event_collection() -> dict:
             events = collect_snapshot_events(slug, space_id)
             new = 0
             for ev in events:
-                if store_governance_event(ev):
+                if await store_governance_event(ev):
                     new += 1
             total_new += new
             total_skipped += len(events) - new
@@ -411,7 +411,7 @@ def run_governance_event_collection() -> dict:
             events = collect_tally_events(slug, org_slug)
             new = 0
             for ev in events:
-                if store_governance_event(ev):
+                if await store_governance_event(ev):
                     new += 1
             total_new += new
             total_skipped += len(events) - new
@@ -448,13 +448,13 @@ def run_governance_event_collection() -> dict:
 # Attribution query helpers
 # =============================================================================
 
-def get_attribution_by_protocol(protocol_slug: str, period_days: int = 90) -> dict:
+async def get_attribution_by_protocol(protocol_slug: str, period_days: int = 90) -> dict:
     """
     Get PSI score trajectory overlaid with governance events for a protocol.
     Returns timeline of scores + events for the period.
     """
     # PSI score trajectory
-    scores = fetch_all("""
+    scores = await fetch_all_async("""
         SELECT overall_score, scored_date, computed_at
         FROM psi_scores
         WHERE protocol_slug = %s AND scored_date >= CURRENT_DATE - %s
@@ -462,7 +462,7 @@ def get_attribution_by_protocol(protocol_slug: str, period_days: int = 90) -> di
     """, (protocol_slug, period_days))
 
     # Governance events in the period
-    events = fetch_all("""
+    events = await fetch_all_async("""
         SELECT event_type, event_timestamp, title, outcome, contributor_tag, source
         FROM governance_events
         WHERE protocol_slug = %s
@@ -479,14 +479,14 @@ def get_attribution_by_protocol(protocol_slug: str, period_days: int = 90) -> di
 
         ev_time = ev["event_timestamp"]
         # Find PSI score closest to event time
-        score_at_event = fetch_one("""
+        score_at_event = await fetch_one_async("""
             SELECT overall_score FROM psi_scores
             WHERE protocol_slug = %s AND scored_date <= %s::date
             ORDER BY scored_date DESC LIMIT 1
         """, (protocol_slug, ev_time))
 
         # Find PSI score 30 days after event
-        score_after = fetch_one("""
+        score_after = await fetch_one_async("""
             SELECT overall_score FROM psi_scores
             WHERE protocol_slug = %s AND scored_date <= (%s::date + 30)
             ORDER BY scored_date DESC LIMIT 1
@@ -524,12 +524,12 @@ def get_attribution_by_protocol(protocol_slug: str, period_days: int = 90) -> di
     }
 
 
-def get_attribution_by_contributor(contributor_tag: str) -> dict:
+async def get_attribution_by_contributor(contributor_tag: str) -> dict:
     """
     Get all protocols a contributor has been involved with and
     average PSI trajectories after their engagement/departure events.
     """
-    events = fetch_all("""
+    events = await fetch_all_async("""
         SELECT protocol_slug, event_type, event_timestamp, title, outcome
         FROM governance_events
         WHERE contributor_tag = %s
@@ -554,13 +554,13 @@ def get_attribution_by_contributor(contributor_tag: str) -> dict:
         slug = ev["protocol_slug"]
         ev_time = ev["event_timestamp"]
 
-        score_at = fetch_one("""
+        score_at = await fetch_one_async("""
             SELECT overall_score FROM psi_scores
             WHERE protocol_slug = %s AND scored_date <= %s::date
             ORDER BY scored_date DESC LIMIT 1
         """, (slug, ev_time))
 
-        score_after = fetch_one("""
+        score_after = await fetch_one_async("""
             SELECT overall_score FROM psi_scores
             WHERE protocol_slug = %s AND scored_date <= (%s::date + 30)
             ORDER BY scored_date DESC LIMIT 1

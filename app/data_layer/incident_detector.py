@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ INCIDENT_RULES = [
 ]
 
 
-def run_incident_detection() -> dict:
+async def run_incident_detection() -> dict:
     """
     Run all incident detection rules.
     For each detected incident, store in incident_events table.
@@ -135,7 +135,7 @@ def run_incident_detection() -> dict:
 
     for rule in INCIDENT_RULES:
         try:
-            rows = fetch_all(rule["query"])
+            rows = await fetch_all_async(rule["query"])
             if not rows:
                 results[rule["name"]] = 0
                 continue
@@ -147,7 +147,7 @@ def run_incident_detection() -> dict:
                 description = rule["description_fn"](row)
 
                 # Check if already recorded recently
-                existing = fetch_one(
+                existing = await fetch_one_async(
                     """SELECT id FROM incident_events
                        WHERE entity_id = %s AND incident_type = %s
                          AND created_at >= NOW() - INTERVAL '24 hours'""",
@@ -156,7 +156,7 @@ def run_incident_detection() -> dict:
                 if existing:
                     continue
 
-                execute(
+                await execute_async(
                     """INSERT INTO incident_events
                        (entity_id, entity_type, incident_type, severity,
                         title, description, started_at,

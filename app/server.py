@@ -6383,10 +6383,10 @@ async def attribution_query(
 
     if protocol:
         from app.collectors.governance_events import get_attribution_by_protocol
-        return get_attribution_by_protocol(protocol, period)
+        return await get_attribution_by_protocol(protocol, period)
     else:
         from app.collectors.governance_events import get_attribution_by_contributor
-        return get_attribution_by_contributor(contributor)
+        return await get_attribution_by_contributor(contributor)
 
 
 # =============================================================================

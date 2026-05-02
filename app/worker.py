@@ -1719,7 +1719,7 @@ async def run_slow_cycle():
 
             try:
                 from app.rpi.incident_detector import run_incident_detection
-                run_incident_detection()
+                await run_incident_detection()
             except Exception as id_err:
                 logger.warning(f"RPI incident detection failed: {id_err}")
 
@@ -1835,7 +1835,7 @@ async def run_slow_cycle():
         if dex_age_hours >= 3:
             from app.collectors.dex_pools import run_dex_pool_collection
             logger.info("Running DEX pool data collection...")
-            dex_results = run_dex_pool_collection()
+            dex_results = await run_dex_pool_collection()
             scored = sum(1 for r in dex_results if "score" in r)
             logger.info(f"DEX pool collection complete: {scored} components across {len(dex_results)} entries")
         else:
@@ -1887,7 +1887,7 @@ async def run_slow_cycle():
             _gov_daily_gate_open = True
             from app.collectors.governance_events import run_governance_event_collection
             logger.info("Running governance event collection...")
-            gov_result = run_governance_event_collection()
+            gov_result = await run_governance_event_collection()
             logger.info(f"Governance events: {gov_result.get('new_events', 0)} new across {gov_result.get('protocols_processed', 0)} protocols")
         else:
             logger.info(f"Governance events skipped — last ran {gov_age_hours:.1f}h ago")
@@ -1901,7 +1901,7 @@ async def run_slow_cycle():
         try:
             from app.collectors.dao_collector import run_dohi_scoring
             logger.info("Running DOHI scoring cycle...")
-            dohi_results = await asyncio.to_thread(run_dohi_scoring)
+            dohi_results = await run_dohi_scoring()
             logger.info(f"DOHI scoring complete: {len(dohi_results)} DAOs scored")
         except Exception as e:
             logger.warning(f"DOHI scoring failed: {e}")
@@ -2041,7 +2041,7 @@ async def run_slow_cycle():
     try:
         from app.data_layer.correlation_engine import run_correlation_computation
         logger.info("Running correlation computation...")
-        corr_result = run_correlation_computation()
+        corr_result = await run_correlation_computation()
         logger.info(f"Correlation computation: {corr_result}")
     except Exception as e:
         logger.warning(f"Correlation computation failed: {e}")
@@ -2052,7 +2052,7 @@ async def run_slow_cycle():
     try:
         from app.data_layer.incident_detector import run_incident_detection
         logger.info("Running incident detection...")
-        incident_result = run_incident_detection()
+        incident_result = await run_incident_detection()
         total_incidents = sum(v for v in incident_result.values() if isinstance(v, int))
         logger.info(f"Incident detection: {total_incidents} incidents detected")
     except Exception as e:
@@ -2089,7 +2089,7 @@ async def run_slow_cycle():
     try:
         from app.data_layer.wallet_behavior import run_behavioral_classification
         logger.info("Running wallet behavior classification...")
-        behavior_result = run_behavioral_classification(batch_size=2000)
+        behavior_result = await run_behavioral_classification(batch_size=2000)
         tagged = behavior_result.get("wallets_classified", 0)
         skipped = behavior_result.get("skipped", 0)
         logger.error(

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.index_definitions.psi_v01 import TARGET_PROTOCOLS
 from app.api_usage_tracker import track_api_call
 
@@ -220,7 +220,7 @@ def compute_position_liquidity(protocol_slug: str) -> dict:
         return {}
 
 
-def compute_collateral_diversity(protocol_slug: str) -> dict:
+async def compute_collateral_diversity(protocol_slug: str) -> dict:
     """
     Compute collateral diversity for a protocol.
     Returns {"unique_tokens": N, "concentration_top3": pct, "has_stablecoin_exposure": bool, "score": S}.
@@ -259,7 +259,7 @@ def compute_collateral_diversity(protocol_slug: str) -> dict:
         # Check stablecoin exposure from existing DB data
         has_stablecoin = False
         try:
-            row = fetch_one(
+            row = await fetch_one_async(
                 "SELECT COUNT(*) as cnt FROM protocol_collateral_exposure WHERE protocol_slug = %s AND stablecoin_id IS NOT NULL",
                 (protocol_slug,),
             )
@@ -287,11 +287,11 @@ def compute_collateral_diversity(protocol_slug: str) -> dict:
 # Store helper
 # =============================================================================
 
-def _store_dex_component(entity_slug: str, component_id: str, category: str,
+async def _store_dex_component(entity_slug: str, component_id: str, category: str,
                          raw_value: float, normalized_score: float, raw_data: dict):
     """Store a DEX pool component reading."""
     try:
-        execute(
+        await execute_async(
             """
             INSERT INTO generic_index_scores (index_id, entity_slug, entity_name,
                 overall_score, category_scores, component_scores, raw_values,
@@ -321,7 +321,7 @@ def _store_dex_component(entity_slug: str, component_id: str, category: str,
 # Main runner
 # =============================================================================
 
-def run_dex_pool_collection() -> list[dict]:
+async def run_dex_pool_collection() -> list[dict]:
     """
     Run DEX pool data collection for all PSI-scored protocols.
     Called from worker slow cycle (every 3 hours).
@@ -337,7 +337,7 @@ def run_dex_pool_collection() -> list[dict]:
             # Position liquidity
             pl_data = compute_position_liquidity(slug)
             if pl_data and pl_data.get("score") is not None:
-                _store_dex_component(
+                await _store_dex_component(
                     slug, "position_liquidity", "liquidity",
                     pl_data["score"], pl_data["score"], pl_data,
                 )
@@ -348,9 +348,9 @@ def run_dex_pool_collection() -> list[dict]:
                 })
 
             # Collateral diversity
-            cd_data = compute_collateral_diversity(slug)
+            cd_data = await compute_collateral_diversity(slug)
             if cd_data and cd_data.get("score") is not None:
-                _store_dex_component(
+                await _store_dex_component(
                     slug, "collateral_diversity", "liquidity",
                     cd_data["score"], cd_data["score"], cd_data,
                 )

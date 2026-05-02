@@ -18,7 +18,7 @@ import logging
 import time
 from datetime import datetime, timezone, date
 
-from app.database import fetch_all, fetch_one, execute
+from app.database import fetch_all, fetch_one, execute, fetch_one_async, fetch_all_async, execute_async
 from app.services import parallel_client, reducto_client, firecrawl_client
 from app.api_usage_tracker import track_api_call
 
@@ -390,7 +390,7 @@ async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str, disclosure_ty
     try:
         from urllib.parse import urlparse
         _issuer_domain = urlparse(pdf_url).netloc or "unknown"
-        execute("""
+        await execute_async("""
             INSERT INTO cda_source_urls (asset_symbol, issuer, source_url)
             VALUES (%s, %s, %s)
             ON CONFLICT (asset_symbol, source_url) DO UPDATE SET discovered_at = NOW(), active = TRUE
@@ -401,7 +401,7 @@ async def _try_reducto_pdf(symbol: str, pdf_url: str, prefix: str, disclosure_ty
     # Run validation
     try:
         from app.services.cda_validator import validate_extraction
-        last_ext = fetch_one(
+        last_ext = await fetch_one_async(
             "SELECT id FROM cda_vendor_extractions WHERE asset_symbol = %s ORDER BY extracted_at DESC LIMIT 1",
             (symbol,)
         )
@@ -668,7 +668,7 @@ async def _step_firecrawl_json(issuer: dict, prefix: str) -> dict | None:
             # Run validation
             try:
                 from app.services.cda_validator import validate_extraction
-                last_ext = fetch_one(
+                last_ext = await fetch_one_async(
                     "SELECT id FROM cda_vendor_extractions WHERE asset_symbol = %s ORDER BY extracted_at DESC LIMIT 1",
                     (symbol,)
                 )
@@ -957,7 +957,7 @@ async def _collect_dashboard(symbol: str, url: str, disc_type: str, prefix: str)
             # Run validation
             try:
                 from app.services.cda_validator import validate_extraction
-                last_ext = fetch_one(
+                last_ext = await fetch_one_async(
                     "SELECT id FROM cda_vendor_extractions WHERE asset_symbol = %s ORDER BY extracted_at DESC LIMIT 1",
                     (symbol,)
                 )
@@ -1171,7 +1171,7 @@ async def run_collection():
     """Run the full CDA collection pipeline across all active issuers."""
     logger.info("=== CDA Collection Pipeline Starting (Adaptive Waterfall) ===")
 
-    issuers = fetch_all(
+    issuers = await fetch_all_async(
         """
         SELECT asset_symbol, issuer_name, transparency_url,
                collection_method, asset_category, consecutive_failures,
@@ -1228,7 +1228,7 @@ async def run_collection():
     # Attest CDA extractions from this run
     try:
         from app.state_attestation import attest_state
-        recent = fetch_all(
+        recent = await fetch_all_async(
             "SELECT asset_symbol, field_name, extracted_value, source_url FROM cda_vendor_extractions WHERE extracted_at > NOW() - INTERVAL '2 hours'"
         )
         if recent:
@@ -1239,7 +1239,7 @@ async def run_collection():
 
 async def collect_single_issuer(asset_symbol: str):
     """Run collection for a single issuer by symbol. Used by monitor webhooks."""
-    issuer = fetch_one(
+    issuer = await fetch_one_async(
         """
         SELECT asset_symbol, issuer_name, transparency_url,
                collection_method, asset_category, consecutive_failures,
@@ -1265,7 +1265,7 @@ async def setup_monitors():
     Create Parallel Monitor watches for all active web_extract issuers.
     Requires Monitor API access (higher Parallel.ai tier).
     """
-    issuers = fetch_all(
+    issuers = await fetch_all_async(
         """
         SELECT asset_symbol, issuer_name, transparency_url
         FROM cda_issuer_registry
@@ -1294,7 +1294,7 @@ async def setup_monitors():
         monitor_id = result.get("monitor_id") or result.get("id") or ""
         logger.info(f"Monitor created for {symbol}: {monitor_id}")
 
-        execute(
+        await execute_async(
             """
             INSERT INTO cda_monitors (asset_symbol, parallel_monitor_id, query, url, frequency)
             VALUES (%s, %s, %s, %s, 'daily')
@@ -1304,7 +1304,7 @@ async def setup_monitors():
             (symbol, monitor_id, query, iss["transparency_url"]),
         )
 
-        execute(
+        await execute_async(
             "UPDATE cda_issuer_registry SET parallel_monitor_id = %s WHERE asset_symbol = %s",
             (monitor_id, symbol),
         )
@@ -1339,7 +1339,7 @@ async def discover_new_issuer(asset_symbol: str, coingecko_id: str):
 
     if "error" in result:
         logger.warning(f"CDA: Parallel task failed for {asset_symbol}: {result['error']}")
-        execute(
+        await execute_async(
             """
             INSERT INTO cda_issuer_registry
                 (asset_symbol, issuer_name, coingecko_id, collection_method, asset_category)
@@ -1361,7 +1361,7 @@ async def discover_new_issuer(asset_symbol: str, coingecko_id: str):
     if asset_category in ON_CHAIN_CATEGORIES:
         collection_method = "nav_oracle"
 
-    execute(
+    await execute_async(
         """
         INSERT INTO cda_issuer_registry
             (asset_symbol, issuer_name, coingecko_id, transparency_url,
@@ -1430,7 +1430,7 @@ async def discover_new_issuer(asset_symbol: str, coingecko_id: str):
             })
 
         if sources:
-            execute(
+            await execute_async(
                 """
                 UPDATE cda_issuer_registry
                 SET source_urls = %s, updated_at = NOW()

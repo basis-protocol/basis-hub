@@ -15,7 +15,7 @@ import logging
 import math
 from datetime import datetime, timezone
 
-from app.database import fetch_all, fetch_one, get_cursor
+from app.database import fetch_all, fetch_one, get_cursor, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ BEHAVIOR_RULES = [
 ]
 
 
-def _compute_wallet_metrics(address: str) -> dict:
+async def _compute_wallet_metrics(address: str) -> dict:
     """
     Compute behavioral metrics for a wallet from existing data.
     No new API calls — uses wallet_holdings, wallet_risk_scores, wallet_edges.
@@ -87,7 +87,7 @@ def _compute_wallet_metrics(address: str) -> dict:
     metrics = {"address": address}
 
     # Current holdings value
-    holdings = fetch_all(
+    holdings = await fetch_all_async(
         """SELECT symbol, value_usd
            FROM wallet_graph.wallet_holdings
            WHERE wallet_address = %s AND value_usd > 0""",
@@ -114,7 +114,7 @@ def _compute_wallet_metrics(address: str) -> dict:
     metrics["defi_share"] = defi_value / total_value if total_value > 0 else 0
 
     # Risk score data
-    risk = fetch_one(
+    risk = await fetch_one_async(
         """SELECT
                risk_score,
                concentration_hhi,
@@ -154,7 +154,7 @@ def _compute_wallet_metrics(address: str) -> dict:
         metrics["days_since_first_seen"] = 999
 
     # Edge count (counterparties)
-    edge_count = fetch_one(
+    edge_count = await fetch_one_async(
         """SELECT COUNT(*) as cnt FROM wallet_graph.wallet_edges
            WHERE from_address = %s OR to_address = %s""",
         (address, address),
@@ -162,12 +162,12 @@ def _compute_wallet_metrics(address: str) -> dict:
     metrics["edge_count"] = edge_count["cnt"] if edge_count else 0
 
     # Inflow/outflow ratio from edges
-    inflow = fetch_one(
+    inflow = await fetch_one_async(
         """SELECT COALESCE(SUM(total_value_usd), 0) as total
            FROM wallet_graph.wallet_edges WHERE to_address = %s""",
         (address,),
     )
-    outflow = fetch_one(
+    outflow = await fetch_one_async(
         """SELECT COALESCE(SUM(total_value_usd), 0) as total
            FROM wallet_graph.wallet_edges WHERE from_address = %s""",
         (address,),
@@ -261,7 +261,7 @@ def _store_behavior_tags(address: str, tags: list[dict]):
         )
 
 
-def run_behavioral_classification(batch_size: int = 2000) -> dict:
+async def run_behavioral_classification(batch_size: int = 2000) -> dict:
     """
     Classify wallets by behavioral pattern.
     Processes batch_size wallets per cycle, prioritizing by value.
@@ -269,7 +269,7 @@ def run_behavioral_classification(batch_size: int = 2000) -> dict:
     No new API calls — computed from existing data.
     """
     # Get wallets to classify, prioritized by value
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT w.address
            FROM wallet_graph.wallets w
            LEFT JOIN wallet_graph.wallet_risk_scores r ON w.address = r.wallet_address
@@ -288,7 +288,7 @@ def run_behavioral_classification(batch_size: int = 2000) -> dict:
     for row in rows:
         address = row["address"]
         try:
-            metrics = _compute_wallet_metrics(address)
+            metrics = await _compute_wallet_metrics(address)
             tags = _classify_wallet(metrics)
 
             if tags:

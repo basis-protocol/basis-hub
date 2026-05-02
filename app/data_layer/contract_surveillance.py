@@ -222,7 +222,7 @@ async def run_contract_surveillance() -> dict:
 
     Returns summary + any change signals.
     """
-    from app.database import fetch_all
+    from app.database import fetch_all, fetch_all_async
 
     # Get contracts to scan — stablecoins (all chains)
     from app.data_layer.liquidity_collector import STABLECOIN_CONTRACTS_BY_CHAIN
@@ -230,7 +230,7 @@ async def run_contract_surveillance() -> dict:
     contracts_to_scan = []
 
     # Stablecoin contracts on all chains
-    stablecoins = fetch_all(
+    stablecoins = await fetch_all_async(
         """SELECT id, symbol, contract FROM stablecoins
            WHERE scoring_enabled = TRUE AND contract IS NOT NULL"""
     )

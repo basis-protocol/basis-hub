@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.database import fetch_all, execute, get_cursor
+from app.database import fetch_all, execute, get_cursor, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ async def run_holder_discovery() -> dict:
     Returns summary of discovery.
     """
     # Pre-load existing addresses for dedup
-    existing_rows = fetch_all("SELECT address FROM wallet_graph.wallets")
+    existing_rows = await fetch_all_async("SELECT address FROM wallet_graph.wallets")
     existing_set = set(r["address"].lower() for r in existing_rows) if existing_rows else set()
 
     total_discovered = 0
@@ -208,14 +208,13 @@ async def run_holder_discovery() -> dict:
                         row_errors = 0
                         for addr in new_addrs:
                             try:
-                                with get_cursor() as cur:
-                                    cur.execute(
-                                        """INSERT INTO wallet_graph.wallets
-                                           (address, source, label, created_at, updated_at)
-                                           VALUES (%s, 'holder_discovery', %s, NOW(), NOW())
-                                           ON CONFLICT (address) DO NOTHING""",
-                                        (addr, f"holder:{symbol}:{chain}"),
-                                    )
+                                await execute_async(
+                                    """INSERT INTO wallet_graph.wallets
+                                       (address, source, label, created_at, updated_at)
+                                       VALUES (%s, 'holder_discovery', %s, NOW(), NOW())
+                                       ON CONFLICT (address) DO NOTHING""",
+                                    (addr, f"holder:{symbol}:{chain}"),
+                                )
                                 chain_seeded += 1
                             except Exception as e:
                                 row_errors += 1
