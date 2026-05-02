@@ -221,13 +221,20 @@ async def check_and_alert_health(health_results: list):
         if prev and prev["status"] == f["status"]:
             continue  # Same status as before, don't re-alert
 
-        severity = "DOWN" if f["status"] == "down" else "DEGRADED"
-        msg = f"*{severity}*: {f['system'].replace('_', ' ')}\n"
+        severity_label = "DOWN" if f["status"] == "down" else "DEGRADED"
+        msg = f"*{severity_label}*: {f['system'].replace('_', ' ')}\n"
         details = f.get("details", {})
         for k, v in list(details.items())[:3]:
             msg += f"  {k}: {v}\n"
 
-        await send_alert("health_failure", msg, {"system": f["system"], "status": f["status"], "details": details})
+        # Honor explicit alert_level (e.g. check_score_freshness uses
+        # 'critical' to bypass dedup and use the higher daily cap).
+        send_severity = f.get("alert_level") or ("info" if f["status"] != "down" else "warning")
+        await send_alert(
+            "health_failure", msg,
+            {"system": f["system"], "status": f["status"], "details": details},
+            severity=send_severity,
+        )
 
 
 async def check_and_alert_engagement():

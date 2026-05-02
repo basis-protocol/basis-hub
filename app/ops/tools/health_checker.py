@@ -52,6 +52,37 @@ def _safe_fetch_one(sql, params=None):
     return None
 
 
+SCORE_FRESHNESS_THRESHOLD_HOURS = 1.0
+
+
+async def check_score_freshness():
+    """Critical staleness check on scores.MAX(computed_at).
+
+    Stricter than check_sii_freshness (which marks down at >=4h) — this
+    pages on-call at >1h. Operational protection against silent worker
+    hangs (April 26 outage: scoring froze for 69h undetected).
+    """
+    row = await fetch_one_async(
+        "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(computed_at))) AS age_seconds FROM scores"
+    )
+    age_hours = ((row or {}).get("age_seconds") or 999_999) / 3600
+    if age_hours > SCORE_FRESHNESS_THRESHOLD_HOURS:
+        return {
+            "system": "scoring",
+            "status": "down",
+            "details": {
+                "age_hours": round(age_hours, 2),
+                "threshold_hours": SCORE_FRESHNESS_THRESHOLD_HOURS,
+            },
+            "alert_level": "critical",
+        }
+    return {
+        "system": "scoring",
+        "status": "healthy",
+        "details": {"age_hours": round(age_hours, 2)},
+    }
+
+
 def check_sii_freshness():
     """Check if SII scores are updating hourly."""
     row = _safe_fetch_one("SELECT MAX(computed_at) as last_scored FROM scores")
@@ -510,6 +541,7 @@ def check_divergence_freshness():
 
 
 ALL_CHECKS = [
+    check_score_freshness,
     check_sii_freshness,
     check_psi_freshness,
     check_generic_index_freshness,
