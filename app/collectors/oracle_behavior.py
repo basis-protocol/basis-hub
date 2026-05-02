@@ -687,7 +687,7 @@ async def collect_oracle_readings() -> dict:
                 return None
 
         # Run all oracle reads concurrently
-        tasks = [await _process_oracle(o) for o in oracles]
+        tasks = [_process_oracle(o) for o in oracles]
         oracle_results = await asyncio.gather(*tasks)
 
         for i, res in enumerate(oracle_results):

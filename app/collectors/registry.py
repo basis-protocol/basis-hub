@@ -417,7 +417,7 @@ async def run_all_collectors(
                 pass
 
     tasks = [
-        await _instrumented(name, fn(client, cg_id, stablecoin_id))
+        _instrumented(name, fn(client, cg_id, stablecoin_id))
         for name, fn in async_collectors
     ]
     results = await asyncio.gather(*tasks)
