@@ -223,7 +223,7 @@ def render_basel_sco60_preview(portfolio: list[dict], cqi: dict) -> str:
     return "\n".join(lines)
 
 
-async def render_basel_sco60_full(portfolio: list[dict], cqi: dict) -> str:
+def render_basel_sco60_full(portfolio: list[dict], cqi: dict) -> str:
     """Render full Basel SCO60 report using the existing compliance template."""
     from app.report import assemble_report_data
     from app.lenses import load_lens, apply_lens
@@ -253,7 +253,7 @@ async def render_basel_sco60_full(portfolio: list[dict], cqi: dict) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     content_hash = hashlib.sha256(json.dumps(cqi, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
-    return await render(data, lens_result, report_hash=content_hash, timestamp=ts)
+    return render(data, lens_result, report_hash=content_hash, timestamp=ts)
 
 
 def compute_content_hash(portfolio: list[dict], submitted_at: str) -> str:

@@ -187,31 +187,31 @@ async def _get_risk_spend_ratio(slug: str, annualized_revenue: float | None) -> 
     return None
 
 
-async def collect_raw_values(slug: str, revenue_cache: dict[str, float] | None = None) -> dict:
+def collect_raw_values(slug: str, revenue_cache: dict[str, float] | None = None) -> dict:
     """Collect all raw component values for a protocol's RPI base score."""
     raw = {}
 
     # spend_ratio
     annualized_revenue = (revenue_cache or {}).get(slug)
-    spend = await _get_risk_spend_ratio(slug, annualized_revenue)
+    spend = _get_risk_spend_ratio(slug, annualized_revenue)
     if spend is not None:
         raw["spend_ratio"] = spend
 
     # parameter_velocity (changes per month in last 30 days)
     from app.rpi.parameter_collector import get_parameter_velocity, get_parameter_recency
-    velocity = await get_parameter_velocity(slug, days=30)
+    velocity = get_parameter_velocity(slug, days=30)
     raw["parameter_velocity"] = velocity
 
     # parameter_recency (days since last change)
-    recency = await get_parameter_recency(slug)
+    recency = get_parameter_recency(slug)
     if recency is not None:
         raw["parameter_recency"] = recency
 
     # incident_severity (computed directly from DB)
-    raw["incident_severity"] = await _normalize_incident_severity(slug)
+    raw["incident_severity"] = _normalize_incident_severity(slug)
 
     # governance_health (average participation rate)
-    participation = await _get_governance_participation(slug)
+    participation = _get_governance_participation(slug)
     if participation is not None:
         raw["governance_health"] = participation
 
@@ -597,7 +597,7 @@ async def _sync_lens_documentation_depth(slug: str) -> float | None:
     return None
 
 
-async def sync_all_lens_components(protocols: list[str]) -> dict:
+def sync_all_lens_components(protocols: list[str]) -> dict:
     """Sync all auto-derived lens components for all RPI protocols.
 
     Called during RPI scoring to ensure lens data is fresh.
@@ -607,11 +607,11 @@ async def sync_all_lens_components(protocols: list[str]) -> dict:
     for slug in protocols:
         slug_results = {}
 
-        vd = await _sync_lens_vendor_diversity(slug)
+        vd = _sync_lens_vendor_diversity(slug)
         if vd is not None:
             slug_results["vendor_diversity"] = vd
 
-        dd = await _sync_lens_documentation_depth(slug)
+        dd = _sync_lens_documentation_depth(slug)
         if dd is not None:
             slug_results["documentation_depth"] = dd
 
@@ -625,7 +625,7 @@ async def sync_all_lens_components(protocols: list[str]) -> dict:
 # Orchestrator
 # =============================================================================
 
-async def run_rpi_scoring() -> list[dict]:
+def run_rpi_scoring() -> list[dict]:
     """Score all RPI target protocols. Returns list of result dicts."""
     from app.rpi.revenue_collector import get_all_revenues
 
@@ -634,7 +634,7 @@ async def run_rpi_scoring() -> list[dict]:
 
     # Phase 1: Sync auto-derived lens components from existing data sources
     try:
-        lens_results = await sync_all_lens_components(list(RPI_TARGET_PROTOCOLS))
+        lens_results = sync_all_lens_components(list(RPI_TARGET_PROTOCOLS))
         if lens_results:
             logger.info(f"RPI lens sync: updated {len(lens_results)} protocols")
     except Exception as e:
@@ -643,11 +643,11 @@ async def run_rpi_scoring() -> list[dict]:
     results = []
     for slug in RPI_TARGET_PROTOCOLS:
         try:
-            raw_values = await collect_raw_values(slug, revenue_cache)
+            raw_values = collect_raw_values(slug, revenue_cache)
             result = score_rpi_base(slug, raw_values)
-            result["protocol_name"] = await _get_protocol_name(slug)
+            result["protocol_name"] = _get_protocol_name(slug)
 
-            inputs_hash = await store_rpi_score(slug, result)
+            inputs_hash = store_rpi_score(slug, result)
             result["inputs_hash"] = inputs_hash
 
             results.append(result)

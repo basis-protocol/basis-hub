@@ -127,7 +127,7 @@ def _check_sec_edgar(exchange_names: list[str]) -> dict:
     return result
 
 
-async def _fetch_page_content(url: str) -> str | None:
+def _fetch_page_content(url: str) -> str | None:
     """Fetch page content using Parallel Extract (primary) or requests (fallback).
 
     Exchange about/legal pages are often JS-heavy — Parallel Extract handles
@@ -156,7 +156,7 @@ async def _fetch_page_content(url: str) -> str | None:
                 future = pool.submit(asyncio.run, _extract())
                 result = future.result(timeout=130)
         else:
-            result = await _extract()
+            result = asyncio.run(_extract())
 
         if result and "error" not in result:
             results_list = result.get("results", [])
@@ -179,7 +179,7 @@ async def _fetch_page_content(url: str) -> str | None:
     return None
 
 
-async def _check_corporate_disclosure(about_url: str, legal_url: str) -> dict:
+def _check_corporate_disclosure(about_url: str, legal_url: str) -> dict:
     """Score corporate disclosure by checking about and legal pages.
 
     Uses Parallel Extract for JS-heavy exchange pages (primary),
@@ -201,7 +201,7 @@ async def _check_corporate_disclosure(about_url: str, legal_url: str) -> dict:
         if not url:
             continue
         try:
-            text = await _fetch_page_content(url)
+            text = _fetch_page_content(url)
             if not text:
                 continue
 
@@ -350,7 +350,7 @@ async def check_exchange_regulatory(entity_slug: str, exchange_names: list[str] 
     # 4. Corporate disclosure rubric
     about_url = EXCHANGE_ABOUT_URLS.get(entity_slug)
     legal_url = EXCHANGE_LEGAL_URLS.get(entity_slug)
-    disclosure = await _check_corporate_disclosure(about_url, legal_url)
+    disclosure = _check_corporate_disclosure(about_url, legal_url)
     results["corporate_disclosure"] = disclosure["score"]
 
     # 5. Enforcement history

@@ -329,7 +329,7 @@ def _automate_tti_bug_bounty(entity: dict, static: dict) -> dict:
     return automated
 
 
-async def _automate_tti_smart_contract(entity: dict, static: dict) -> dict:
+def _automate_tti_smart_contract(entity: dict, static: dict) -> dict:
     """Automate tti_contract_audit, tti_upgradeability, tti_admin_key_risk from live analysis.
 
     Only runs if entity has a contract address.
@@ -341,7 +341,7 @@ async def _automate_tti_smart_contract(entity: dict, static: dict) -> dict:
 
     try:
         from app.collectors.smart_contract import analyze_contract_for_index_sync
-        analysis = await analyze_contract_for_index_sync(contract)
+        analysis = analyze_contract_for_index_sync(contract)
 
         # tti_contract_audit: log normalization {1:30, 2:50, 3:70, 5:85, 10:100}
         static_audit = static.get("tti_contract_audit", 1)
@@ -447,7 +447,7 @@ def _automate_tti_oracle_dependency(entity: dict, static: dict) -> dict:
     return automated
 
 
-async def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
+def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict:
     """Extract raw values from all sources."""
     slug = entity["slug"]
     raw = {}
@@ -518,7 +518,7 @@ async def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict
     raw.update(_automate_tti_bug_bounty(entity, static))
 
     # Smart contract checks (audit, upgradeability, admin key) — only if contract exists
-    raw.update(await _automate_tti_smart_contract(entity, static))
+    raw.update(_automate_tti_smart_contract(entity, static))
 
     # NAV update frequency from CoinGecko ticker data
     raw.update(_automate_tti_nav_update_frequency(entity, static, cg_data))
@@ -531,7 +531,7 @@ async def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict
         from app.services.tti_disclosure_collector import (
             collect_entity_disclosures, map_disclosure_to_components,
         )
-        disclosure_data = await collect_entity_disclosures(slug, entity.get("name", slug))
+        disclosure_data = asyncio.run(collect_entity_disclosures(slug, entity.get("name", slug)))
         if disclosure_data:
             disclosure_components = map_disclosure_to_components(disclosure_data, static)
             raw.update(disclosure_components)
@@ -545,7 +545,7 @@ async def extract_tti_raw_values(entity: dict, holder_data: dict = None) -> dict
 # Score and store
 # =============================================================================
 
-async def score_tti(entity: dict, holder_cache: dict = None) -> dict | None:
+def score_tti(entity: dict, holder_cache: dict = None) -> dict | None:
     """Score a single TTI entity."""
     slug = entity["slug"]
     logger.info(f"Scoring TTI: {slug}")
@@ -556,7 +556,7 @@ async def score_tti(entity: dict, holder_cache: dict = None) -> dict | None:
     if contract and holder_cache:
         holder_data = holder_cache.get(contract.lower())
 
-    raw_values = await extract_tti_raw_values(entity, holder_data=holder_data)
+    raw_values = extract_tti_raw_values(entity, holder_data=holder_data)
     if not raw_values:
         logger.warning(f"No data collected for TTI {slug}")
         return None
@@ -613,7 +613,7 @@ async def store_tti_score(result: dict) -> None:
     ))
 
 
-async def run_tti_scoring() -> list[dict]:
+def run_tti_scoring() -> list[dict]:
     """Score all TTI entities. Called from worker."""
     # Pre-fetch holder data for entities with contracts (cached 24h)
     holder_cache = {}
@@ -626,7 +626,7 @@ async def run_tti_scoring() -> list[dict]:
                 if cached:
                     holder_cache[contract.lower()] = cached
                 else:
-                    hdata = await analyze_holders_sync(contract, decimals=18)
+                    hdata = analyze_holders_sync(contract, decimals=18)
                     if hdata.get("balances_found", 0) > 0:
                         holder_cache[contract.lower()] = hdata
     except Exception as e:
@@ -635,9 +635,9 @@ async def run_tti_scoring() -> list[dict]:
     results = []
     for entity in TTI_ENTITIES:
         try:
-            result = await score_tti(entity, holder_cache=holder_cache)
+            result = score_tti(entity, holder_cache=holder_cache)
             if result:
-                await store_tti_score(result)
+                asyncio.run(store_tti_score(result))
                 results.append(result)
                 logger.info(
                     f"  {result['entity_name']}: {result['overall_score']} "

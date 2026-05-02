@@ -274,12 +274,12 @@ async def update_recovery_ratio_lens():
     return updated
 
 
-async def run_incident_detection() -> dict:
+def run_incident_detection() -> dict:
     """Run all incident detection sources. Returns summary."""
-    tvl = await detect_tvl_drops()
-    forum = await detect_forum_incidents()
-    emergency = await detect_emergency_actions()
-    recovery = await update_recovery_ratio_lens()
+    tvl = detect_tvl_drops()
+    forum = detect_forum_incidents()
+    emergency = detect_emergency_actions()
+    recovery = update_recovery_ratio_lens()
 
     summary = {
         "tvl_drops": tvl,

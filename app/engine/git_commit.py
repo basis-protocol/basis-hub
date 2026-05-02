@@ -132,7 +132,7 @@ def _run(
     return proc
 
 
-async def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
+def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
     """The full clone-write-commit-push dance, blocking. Caller wraps
     this in asyncio.to_thread so the event loop stays free.
     """
@@ -175,7 +175,7 @@ async def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
     try:
         clone_dir = workdir / "repo"
         try:
-            await _run(
+            _run(
                 ["git", "clone", "--depth", "1", "--branch", _DEFAULT_BRANCH,
                  remote_url, str(clone_dir)],
                 cwd=workdir,
@@ -201,7 +201,7 @@ async def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
             ["git", "config", "user.email", _DEFAULT_AUTHOR_EMAIL],
         ):
             try:
-                await _run(cfg, cwd=clone_dir, secret=pat)
+                _run(cfg, cwd=clone_dir, secret=pat)
             except subprocess.CalledProcessError as exc:
                 return CommitResult(
                     status="failed",
@@ -209,7 +209,7 @@ async def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
                 )
 
         try:
-            await _run(
+            _run(
                 ["git", "add", artifact.suggested_path],
                 cwd=clone_dir,
                 secret=pat,
@@ -248,7 +248,7 @@ async def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
             f"{artifact.analysis_id}"
         )
         try:
-            await _run(
+            _run(
                 ["git", "commit", "-m", commit_subject],
                 cwd=clone_dir,
                 secret=pat,
@@ -260,7 +260,7 @@ async def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
             )
 
         try:
-            await _run(
+            _run(
                 ["git", "push", "origin", _DEFAULT_BRANCH],
                 cwd=clone_dir,
                 secret=pat,
@@ -272,7 +272,7 @@ async def _commit_artifact_sync(artifact: ArtifactResponse) -> CommitResult:
             )
 
         try:
-            sha_proc = await _run(
+            sha_proc = _run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=clone_dir,
                 secret=pat,
@@ -306,4 +306,4 @@ async def commit_artifact(artifact: ArtifactResponse) -> CommitResult:
     approvals don't race a non-fast-forward push.
     """
     async with _COMMIT_LOCK:
-        return await _commit_artifact_sync(artifact)
+        return await asyncio.to_thread(_commit_artifact_sync, artifact)

@@ -404,14 +404,14 @@ async def reconstruct_rpi_score(slug: str, target_date: date) -> dict:
     return result
 
 
-async def reconstruct_rpi_range(slug: str, start: date, end: date,
+def reconstruct_rpi_range(slug: str, start: date, end: date,
                           interval_days: int = 30) -> list[dict]:
     """Reconstruct RPI scores over a date range at regular intervals."""
     scores = []
     current = start
     while current <= end:
         try:
-            result = await reconstruct_rpi_score(slug, current)
+            result = reconstruct_rpi_score(slug, current)
             scores.append(result)
         except Exception as e:
             logger.debug(f"Reconstruction failed for {slug} @ {current}: {e}")
@@ -472,7 +472,7 @@ async def store_historical_scores(slug: str, scores: list[dict]):
     return stored
 
 
-async def run_historical_backfill(protocols: list[str] = None,
+def run_historical_backfill(protocols: list[str] = None,
                             since_years: int = 2,
                             interval_days: int = 30) -> dict:
     """Run the full historical reconstruction pipeline.
@@ -490,11 +490,11 @@ async def run_historical_backfill(protocols: list[str] = None,
     for slug in protocols:
         space_id = HISTORICAL_SNAPSHOT_SPACES.get(slug)
         if space_id:
-            count = await backfill_snapshot_proposals(slug, space_id, since_days=since_years * 365)
+            count = backfill_snapshot_proposals(slug, space_id, since_days=since_years * 365)
             total_proposals += count
 
     # Step 2: Backfill incidents
-    incidents = await backfill_incidents()
+    incidents = backfill_incidents()
 
     # Step 3: Reconstruct scores
     end_date = date.today()
@@ -502,8 +502,8 @@ async def run_historical_backfill(protocols: list[str] = None,
 
     total_scores = 0
     for slug in protocols:
-        scores = await reconstruct_rpi_range(slug, start_date, end_date, interval_days)
-        stored = await store_historical_scores(slug, scores)
+        scores = reconstruct_rpi_range(slug, start_date, end_date, interval_days)
+        stored = store_historical_scores(slug, scores)
         total_scores += stored
         logger.info(f"RPI backfill: {slug} — {stored} historical scores reconstructed")
 

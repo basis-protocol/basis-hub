@@ -391,7 +391,7 @@ def _automate_vault_contract_age(entity: dict, static: dict) -> dict:
     return automated
 
 
-async def _automate_vault_smart_contract(entity: dict, static: dict) -> dict:
+def _automate_vault_smart_contract(entity: dict, static: dict) -> dict:
     """Automate vault_audit_status and vault_upgrade_mechanism using smart contract analysis."""
     automated = {}
     contract = entity.get("contract")
@@ -400,7 +400,7 @@ async def _automate_vault_smart_contract(entity: dict, static: dict) -> dict:
 
     try:
         from app.collectors.smart_contract import analyze_contract_for_index_sync
-        analysis = await analyze_contract_for_index_sync(contract)
+        analysis = analyze_contract_for_index_sync(contract)
 
         # vault_audit_status: log normalization {1:30, 2:50, 3:70, 5:85, 10:100}
         # Raw value is audit count. Verification = base of 3.
@@ -571,7 +571,7 @@ async def score_vault(entity: dict, all_pools: list[dict], hacks_cache: list = N
     raw_values.update(age_automated)
 
     # Audit status and upgrade mechanism from smart contract analysis
-    sc_automated = await _automate_vault_smart_contract(entity, static)
+    sc_automated = _automate_vault_smart_contract(entity, static)
     raw_values.update(sc_automated)
 
     # Dependency chain depth from DeFiLlama yields metadata

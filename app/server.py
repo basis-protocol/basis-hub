@@ -1321,7 +1321,7 @@ async def playground_report(token: str):
     from starlette.concurrency import run_in_threadpool
     from fastapi.responses import HTMLResponse
 
-    async def _get_and_render():
+    def _get_and_render():
         sub = fetch_one(
             "SELECT * FROM playground_submissions WHERE report_link_token = %s",
             (token,),
@@ -1346,7 +1346,7 @@ async def playground_report(token: str):
         cqi = sub.get("computed_cqi") or {}
 
         from app.playground import render_basel_sco60_full
-        return await render_basel_sco60_full(portfolio, cqi), None
+        return render_basel_sco60_full(portfolio, cqi), None
 
     result = await run_in_threadpool(_get_and_render)
     html, error = result
@@ -5280,9 +5280,9 @@ async def admin_rpi_backfill(request: Request, background_tasks: BackgroundTasks
     since_years = body.get("since_years", 2)
     interval_days = body.get("interval_days", 30)
 
-    async def _run_backfill():
+    def _run_backfill():
         from app.rpi.historical import run_historical_backfill
-        await run_historical_backfill(protocols, since_years, interval_days)
+        run_historical_backfill(protocols, since_years, interval_days)
 
     background_tasks.add_task(_run_backfill)
     return {"status": "backfill_started", "protocols": protocols or "all", "since_years": since_years}
