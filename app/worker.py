@@ -170,8 +170,8 @@ async def collect_all_components(
         if await is_comparison_active():
             contract = cfg.get("contract", "")
             if contract:
-                await safe_collect("blockscout_abi_compare", await compare_contract_abi(client, contract))
-                await safe_collect("blockscout_holder_compare", await compare_token_holder_count(client, contract))
+                await safe_collect("blockscout_abi_compare", compare_contract_abi(client, contract))
+                await safe_collect("blockscout_holder_compare", compare_token_holder_count(client, contract))
     except Exception:
         pass  # Shadow comparison is non-critical
 
