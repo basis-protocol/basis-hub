@@ -248,11 +248,11 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_lsti():
         from app.collectors.lst_collector import run_lsti_scoring
-        return run_lsti_scoring()
+        return await asyncio.to_thread(run_lsti_scoring)
 
     async def _run_bri():
         from app.collectors.bridge_collector import run_bri_scoring
-        return run_bri_scoring()
+        return await asyncio.to_thread(run_bri_scoring)
 
     async def _run_vsri():
         from app.collectors.vault_collector import run_vsri_scoring
@@ -260,15 +260,15 @@ async def run_enrichment_pipeline() -> dict:
 
     async def _run_cxri():
         from app.collectors.cex_collector import run_cxri_scoring
-        return run_cxri_scoring()
+        return await asyncio.to_thread(run_cxri_scoring)
 
     async def _run_tti():
         from app.collectors.tti_collector import run_tti_scoring
-        return run_tti_scoring()
+        return await asyncio.to_thread(run_tti_scoring)
 
     async def _run_dohi():
         from app.collectors.dao_collector import run_dohi_scoring
-        return run_dohi_scoring()
+        return await asyncio.to_thread(run_dohi_scoring)
 
     pipeline.add(EnrichmentTask(
         name="lsti_scoring", func=_run_lsti,

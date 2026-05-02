@@ -1054,7 +1054,7 @@ async def run_fast_cycle():
     # -------------------------------------------------------------------------
     try:
         from app.collectors.morpho_blue import run_morpho_blue_collection
-        morpho_result = run_morpho_blue_collection()
+        morpho_result = await asyncio.to_thread(run_morpho_blue_collection)
         if morpho_result.get("enabled"):
             logger.info(
                 f"Morpho Blue exposure: {morpho_result.get('exposure_rows', 0)} rows "
@@ -1841,7 +1841,7 @@ async def run_slow_cycle():
     try:
         from app.collectors.lst_collector import run_lsti_scoring
         logger.info("Running LSTI scoring cycle...")
-        lsti_results = run_lsti_scoring()
+        lsti_results = await asyncio.to_thread(run_lsti_scoring)
         logger.info(f"LSTI scoring complete: {len(lsti_results)} LSTs scored")
     except Exception as e:
         logger.warning(f"LSTI scoring failed: {e}")
@@ -1849,7 +1849,7 @@ async def run_slow_cycle():
     try:
         from app.collectors.bridge_collector import run_bri_scoring
         logger.info("Running BRI scoring cycle...")
-        bri_results = run_bri_scoring()
+        bri_results = await asyncio.to_thread(run_bri_scoring)
         logger.info(f"BRI scoring complete: {len(bri_results)} bridges scored")
     except Exception as e:
         logger.warning(f"BRI scoring failed: {e}")
@@ -1865,7 +1865,7 @@ async def run_slow_cycle():
     try:
         from app.collectors.cex_collector import run_cxri_scoring
         logger.info("Running CXRI scoring cycle...")
-        cxri_results = run_cxri_scoring()
+        cxri_results = await asyncio.to_thread(run_cxri_scoring)
         logger.info(f"CXRI scoring complete: {len(cxri_results)} exchanges scored")
     except Exception as e:
         logger.warning(f"CXRI scoring failed: {e}")
@@ -1873,7 +1873,7 @@ async def run_slow_cycle():
     try:
         from app.collectors.tti_collector import run_tti_scoring
         logger.info("Running TTI scoring cycle...")
-        tti_results = run_tti_scoring()
+        tti_results = await asyncio.to_thread(run_tti_scoring)
         logger.info(f"TTI scoring complete: {len(tti_results)} treasury products scored")
     except Exception as e:
         logger.warning(f"TTI scoring failed: {e}")
@@ -1974,7 +1974,7 @@ async def run_slow_cycle():
         try:
             from app.collectors.dao_collector import run_dohi_scoring
             logger.info("Running DOHI scoring cycle...")
-            dohi_results = run_dohi_scoring()
+            dohi_results = await asyncio.to_thread(run_dohi_scoring)
             logger.info(f"DOHI scoring complete: {len(dohi_results)} DAOs scored")
         except Exception as e:
             logger.warning(f"DOHI scoring failed: {e}")
