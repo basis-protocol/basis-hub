@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ def _match_function(input_data: str, function_names: list[str]) -> str | None:
     return "unknown_function"
 
 
-def collect_parameter_changes():
+async def collect_parameter_changes():
     """Collect on-chain parameter changes for all configured protocols."""
     total_stored = 0
 
@@ -161,7 +161,7 @@ def collect_parameter_changes():
             functions = contract_cfg["functions"]
 
             # Get the latest block we've seen for this contract
-            last_row = fetch_one("""
+            last_row = await fetch_one_async("""
                 SELECT MAX(block_number) AS latest_block
                 FROM parameter_changes
                 WHERE protocol_slug = %s AND contract_address = %s
@@ -191,7 +191,7 @@ def collect_parameter_changes():
                 detected_at = datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
 
                 try:
-                    execute("""
+                    await execute_async("""
                         INSERT INTO parameter_changes
                             (protocol_slug, tx_hash, block_number, parameter_type,
                              function_signature, contract_address, chain, detected_at)
@@ -209,9 +209,9 @@ def collect_parameter_changes():
     return total_stored
 
 
-def get_parameter_velocity(protocol_slug: str, days: int = 30) -> int:
+async def get_parameter_velocity(protocol_slug: str, days: int = 30) -> int:
     """Get count of parameter changes in the last N days for a protocol."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT COUNT(*) AS cnt
         FROM parameter_changes
         WHERE protocol_slug = %s
@@ -220,9 +220,9 @@ def get_parameter_velocity(protocol_slug: str, days: int = 30) -> int:
     return row["cnt"] if row else 0
 
 
-def get_parameter_recency(protocol_slug: str) -> int | None:
+async def get_parameter_recency(protocol_slug: str) -> int | None:
     """Get days since the most recent parameter change."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT EXTRACT(DAY FROM NOW() - MAX(detected_at))::INT AS days_since
         FROM parameter_changes
         WHERE protocol_slug = %s

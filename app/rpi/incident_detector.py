@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-from app.database import execute, fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all, fetch_one_async, fetch_all_async, execute_async
 from app.index_definitions.rpi_v2 import RPI_TARGET_PROTOCOLS
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ TVL_DROP_THRESHOLDS = {
 }
 
 
-def detect_tvl_drops() -> int:
+async def detect_tvl_drops() -> int:
     """Detect large TVL drops by comparing current vs recent DeFiLlama data.
 
     Only flags incidents when TVL drops significantly in a short window.
@@ -88,7 +88,7 @@ def detect_tvl_drops() -> int:
         title = f"TVL drop detected: {drop_pct * 100:.1f}% decline over 7 days"
 
         # Check if we already flagged this recently
-        existing = fetch_one("""
+        existing = await fetch_one_async("""
             SELECT id FROM risk_incidents
             WHERE protocol_slug = %s
               AND title LIKE 'TVL drop detected%%'
@@ -98,7 +98,7 @@ def detect_tvl_drops() -> int:
             continue
 
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO risk_incidents
                     (protocol_slug, incident_date, title, description,
                      severity, funds_at_risk_usd, reviewed, source_url)
@@ -118,7 +118,7 @@ def detect_tvl_drops() -> int:
     return detected
 
 
-def detect_forum_incidents() -> int:
+async def detect_forum_incidents() -> int:
     """Detect incidents mentioned in governance forum posts.
 
     Looks for posts flagged as mentioning incidents by the forum scraper.
@@ -126,7 +126,7 @@ def detect_forum_incidents() -> int:
     """
     detected = 0
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT protocol_slug, title, body_excerpt, posted_at, forum_url, topic_id
         FROM governance_forum_posts
         WHERE mentions_incident = TRUE
@@ -139,7 +139,7 @@ def detect_forum_incidents() -> int:
         title = row.get("title", "Unknown incident")
 
         # Check if we already have this incident
-        existing = fetch_one("""
+        existing = await fetch_one_async("""
             SELECT id FROM risk_incidents
             WHERE protocol_slug = %s
               AND title = %s
@@ -149,7 +149,7 @@ def detect_forum_incidents() -> int:
 
         try:
             source_url = f"{row.get('forum_url', '')}/t/{row.get('topic_id', '')}"
-            execute("""
+            await execute_async("""
                 INSERT INTO risk_incidents
                     (protocol_slug, incident_date, title, description,
                      severity, reviewed, source_url)
@@ -169,7 +169,7 @@ def detect_forum_incidents() -> int:
     return detected
 
 
-def detect_emergency_actions() -> int:
+async def detect_emergency_actions() -> int:
     """Detect emergency governance actions from parameter changes.
 
     Emergency actions are identified by function signatures containing
@@ -178,7 +178,7 @@ def detect_emergency_actions() -> int:
     detected = 0
     emergency_keywords = ['pause', 'freeze', 'emergency', 'kill', 'shutdown']
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT protocol_slug, tx_hash, parameter_type, function_signature, detected_at
         FROM parameter_changes
         WHERE detected_at >= NOW() - INTERVAL '7 days'
@@ -193,7 +193,7 @@ def detect_emergency_actions() -> int:
         slug = row["protocol_slug"]
         tx_hash = row.get("tx_hash", "")
 
-        existing = fetch_one("""
+        existing = await fetch_one_async("""
             SELECT id FROM risk_incidents
             WHERE protocol_slug = %s AND metadata->>'tx_hash' = %s
         """, (slug, tx_hash))
@@ -201,7 +201,7 @@ def detect_emergency_actions() -> int:
             continue
 
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO risk_incidents
                     (protocol_slug, incident_date, title, description,
                      severity, reviewed, source_url, metadata)
@@ -222,14 +222,14 @@ def detect_emergency_actions() -> int:
     return detected
 
 
-def update_recovery_ratio_lens():
+async def update_recovery_ratio_lens():
     """Update the recovery_ratio lens component from incident data.
 
     Uses ALL incidents (including unreviewed) but tags confidence.
     """
     updated = 0
     for slug in RPI_TARGET_PROTOCOLS:
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT funds_at_risk_usd, funds_recovered_usd, reviewed
             FROM risk_incidents
             WHERE protocol_slug = %s
@@ -259,7 +259,7 @@ def update_recovery_ratio_lens():
             raw_val = round(ratio, 2)
 
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source,

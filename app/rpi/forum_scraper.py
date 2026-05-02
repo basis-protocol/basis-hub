@@ -18,7 +18,7 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 
-from app.database import execute, fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +185,7 @@ def _fetch_topic_posts(base_url: str, topic_id: int) -> list[dict]:
     return []
 
 
-def scrape_forum(protocol_slug: str, config: dict = None,
+async def scrape_forum(protocol_slug: str, config: dict = None,
                  since_days: int = 90) -> int:
     """Scrape a single protocol's governance forum. Returns count of posts stored."""
     if config is None:
@@ -224,7 +224,7 @@ def scrape_forum(protocol_slug: str, config: dict = None,
             posted_at = op.get("created_at") or topic.get("created_at")
 
             try:
-                execute("""
+                await execute_async("""
                     INSERT INTO governance_forum_posts
                         (protocol_slug, forum_url, post_id, topic_id, title,
                          body_excerpt, author, category,
@@ -256,12 +256,12 @@ def scrape_forum(protocol_slug: str, config: dict = None,
     return stored
 
 
-def scrape_all_forums(since_days: int = 90) -> dict[str, int]:
+async def scrape_all_forums(since_days: int = 90) -> dict[str, int]:
     """Scrape all configured governance forums. Returns dict of slug -> post count."""
     # Also load from rpi_protocol_config for expanded protocols
     db_configs = {}
     try:
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT protocol_slug, governance_forum_url
             FROM rpi_protocol_config
             WHERE governance_forum_url IS NOT NULL AND enabled = TRUE
@@ -279,7 +279,7 @@ def scrape_all_forums(since_days: int = 90) -> dict[str, int]:
     results = {}
     for slug, config in all_configs.items():
         try:
-            count = scrape_forum(slug, config, since_days)
+            count = await scrape_forum(slug, config, since_days)
             results[slug] = count
             logger.info(f"RPI forum scraper: {slug} — {count} posts stored")
         except Exception as e:
@@ -289,7 +289,7 @@ def scrape_all_forums(since_days: int = 90) -> dict[str, int]:
     return results
 
 
-def update_vendor_diversity_lens():
+async def update_vendor_diversity_lens():
     """Update the vendor_diversity lens component from forum data.
 
     Counts distinct risk vendors mentioned in recent forum posts
@@ -301,7 +301,7 @@ def update_vendor_diversity_lens():
     for slug in RPI_TARGET_PROTOCOLS:
         # Collect vendors from forum posts (last 180 days)
         forum_vendors = set()
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT mentioned_vendors
             FROM governance_forum_posts
             WHERE protocol_slug = %s
@@ -315,7 +315,7 @@ def update_vendor_diversity_lens():
                     forum_vendors.update(v.lower() for v in vendors)
 
         # Also check governance_proposals for vendor keywords
-        prop_rows = fetch_all("""
+        prop_rows = await fetch_all_async("""
             SELECT risk_keywords
             FROM governance_proposals
             WHERE protocol_slug = %s
@@ -340,7 +340,7 @@ def update_vendor_diversity_lens():
             else:
                 score = 80.0
 
-            execute("""
+            await execute_async("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source,

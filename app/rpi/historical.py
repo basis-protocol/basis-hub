@@ -27,7 +27,7 @@ from datetime import datetime, timezone, timedelta, date
 
 import requests
 
-from app.database import execute, fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all, fetch_one_async, fetch_all_async, execute_async
 from app.rpi.scorer import (
     score_rpi_base,
     _normalize_spend_ratio,
@@ -108,7 +108,7 @@ HISTORICAL_INCIDENTS = [
 ]
 
 
-def backfill_snapshot_proposals(slug: str, space_id: str,
+async def backfill_snapshot_proposals(slug: str, space_id: str,
                                 since_days: int = 730) -> int:
     """Backfill historical governance proposals from Snapshot.
 
@@ -178,7 +178,7 @@ def backfill_snapshot_proposals(slug: str, space_id: str,
             end_ts = prop.get("end")
 
             try:
-                execute("""
+                await execute_async("""
                     INSERT INTO governance_proposals
                         (protocol_slug, proposal_id, source, title, body_excerpt,
                          is_risk_related, risk_keywords, budget_amount_usd,
@@ -215,12 +215,12 @@ def backfill_snapshot_proposals(slug: str, space_id: str,
     return total_stored
 
 
-def backfill_incidents():
+async def backfill_incidents():
     """Insert known historical incidents with reviewed=true."""
     stored = 0
     for incident in HISTORICAL_INCIDENTS:
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO risk_incidents
                     (protocol_slug, incident_date, title, severity,
                      funds_at_risk_usd, funds_recovered_usd, reviewed)
@@ -252,9 +252,9 @@ def _get_historical_risk_budget(slug: str, target_date: date) -> float | None:
     return None
 
 
-def _get_revenue_at_date(slug: str, target_date: date) -> float | None:
+async def _get_revenue_at_date(slug: str, target_date: date) -> float | None:
     """Get approximate annualized revenue from historical protocol data."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT fees_24h FROM historical_protocol_data
         WHERE protocol_slug = %s AND record_date <= %s AND fees_24h IS NOT NULL
         ORDER BY record_date DESC LIMIT 1
@@ -264,10 +264,10 @@ def _get_revenue_at_date(slug: str, target_date: date) -> float | None:
     return None
 
 
-def _get_proposal_stats_at_date(slug: str, target_date: date) -> dict:
+async def _get_proposal_stats_at_date(slug: str, target_date: date) -> dict:
     """Get governance proposal statistics for the 90-day window ending at target_date."""
     start_date = target_date - timedelta(days=90)
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT participation_rate, is_risk_related, budget_amount_usd
         FROM governance_proposals
         WHERE protocol_slug = %s
@@ -293,13 +293,13 @@ def _get_proposal_stats_at_date(slug: str, target_date: date) -> dict:
     }
 
 
-def _get_incident_severity_at_date(slug: str, target_date: date) -> float:
+async def _get_incident_severity_at_date(slug: str, target_date: date) -> float:
     """Compute incident severity score at a historical date.
 
     Only uses incidents with reviewed=true and within 12 months of target_date.
     """
     start_date = target_date - timedelta(days=365)
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT severity, funds_at_risk_usd, incident_date
         FROM risk_incidents
         WHERE protocol_slug = %s AND reviewed = TRUE
@@ -321,7 +321,7 @@ def _get_incident_severity_at_date(slug: str, target_date: date) -> float:
     return max(0.0, round(100.0 - weighted_sum, 2))
 
 
-def reconstruct_rpi_score(slug: str, target_date: date) -> dict:
+async def reconstruct_rpi_score(slug: str, target_date: date) -> dict:
     """Reconstruct the BASE RPI score for a protocol at a historical date.
 
     Assembles raw values from historical data, normalizes, and scores.
@@ -333,14 +333,14 @@ def reconstruct_rpi_score(slug: str, target_date: date) -> dict:
 
     # 1. spend_ratio
     risk_budget = _get_historical_risk_budget(slug, target_date)
-    revenue = _get_revenue_at_date(slug, target_date)
+    revenue = await _get_revenue_at_date(slug, target_date)
     if risk_budget and revenue and revenue > 0:
         raw_values["spend_ratio"] = (risk_budget / revenue) * 100
         sources["spend_ratio"] = "historical_budget"
         components_available += 1
     else:
         # Try from proposal data
-        stats = _get_proposal_stats_at_date(slug, target_date)
+        stats = await _get_proposal_stats_at_date(slug, target_date)
         if stats.get("risk_budget_total") and revenue and revenue > 0:
             raw_values["spend_ratio"] = (stats["risk_budget_total"] / revenue) * 100
             sources["spend_ratio"] = "proposal_extraction"
@@ -348,7 +348,7 @@ def reconstruct_rpi_score(slug: str, target_date: date) -> dict:
 
     # 2. parameter_velocity — from parameter_changes table
     start_30d = target_date - timedelta(days=30)
-    param_row = fetch_one("""
+    param_row = await fetch_one_async("""
         SELECT COUNT(*) AS cnt
         FROM parameter_changes
         WHERE protocol_slug = %s
@@ -360,7 +360,7 @@ def reconstruct_rpi_score(slug: str, target_date: date) -> dict:
         components_available += 1
 
     # 3. parameter_recency
-    recency_row = fetch_one("""
+    recency_row = await fetch_one_async("""
         SELECT detected_at
         FROM parameter_changes
         WHERE protocol_slug = %s AND detected_at <= %s
@@ -373,14 +373,14 @@ def reconstruct_rpi_score(slug: str, target_date: date) -> dict:
         components_available += 1
 
     # 4. incident_severity
-    raw_values["incident_severity"] = _get_incident_severity_at_date(slug, target_date)
+    raw_values["incident_severity"] = await _get_incident_severity_at_date(slug, target_date)
     sources["incident_severity"] = "risk_incidents"
     components_available += 1
 
     # 5. governance_health
-    stats = _get_proposal_stats_at_date(slug, target_date) if "stats" not in dir() else stats
+    stats = await _get_proposal_stats_at_date(slug, target_date) if "stats" not in dir() else stats
     if not stats:
-        stats = _get_proposal_stats_at_date(slug, target_date)
+        stats = await _get_proposal_stats_at_date(slug, target_date)
     if stats.get("avg_participation") is not None:
         raw_values["governance_health"] = stats["avg_participation"]
         sources["governance_health"] = "governance_proposals"
@@ -419,7 +419,7 @@ def reconstruct_rpi_range(slug: str, start: date, end: date,
     return scores
 
 
-def store_historical_scores(slug: str, scores: list[dict]):
+async def store_historical_scores(slug: str, scores: list[dict]):
     """Store reconstructed historical scores in rpi_score_history."""
     stored = 0
     for score in scores:
@@ -427,7 +427,7 @@ def store_historical_scores(slug: str, scores: list[dict]):
         if not target_date:
             continue
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO rpi_score_history
                     (protocol_slug, score_date, overall_score,
                      component_scores, methodology_version)
@@ -442,7 +442,7 @@ def store_historical_scores(slug: str, scores: list[dict]):
             ))
 
             # Also store in historical_rpi_data for reference
-            execute("""
+            await execute_async("""
                 INSERT INTO historical_rpi_data
                     (protocol_slug, record_date,
                      spend_ratio, parameter_velocity, parameter_recency,

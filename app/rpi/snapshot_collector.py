@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_one
+from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.index_definitions.rpi_v2 import RPI_TARGET_PROTOCOLS
 
 logger = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ def fetch_snapshot_proposals(space_id: str, since_days: int = 90) -> list[dict]:
     return []
 
 
-def collect_snapshot_proposals():
+async def collect_snapshot_proposals():
     """Collect governance proposals from Snapshot for all RPI protocols."""
     total_stored = 0
 
@@ -174,7 +174,7 @@ def collect_snapshot_proposals():
             end_ts = prop.get("end")
 
             try:
-                execute("""
+                await execute_async("""
                     INSERT INTO governance_proposals
                         (protocol_slug, proposal_id, source, title, body_excerpt,
                          is_risk_related, risk_keywords, budget_amount_usd,

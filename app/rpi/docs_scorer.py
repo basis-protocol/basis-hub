@@ -16,7 +16,7 @@ import time
 
 import httpx
 
-from app.database import execute, fetch_all
+from app.database import execute, fetch_all, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def _score_criterion(docs_url: str, criterion_id: str, config: dict) -> tuple[in
     return 0, None, None
 
 
-def score_protocol_docs(protocol_slug: str, docs_url: str = None) -> dict:
+async def score_protocol_docs(protocol_slug: str, docs_url: str = None) -> dict:
     """Score a protocol's documentation against the 5-criterion rubric.
 
     Returns dict with total_score, per-criterion scores, and evidence.
@@ -143,7 +143,7 @@ def score_protocol_docs(protocol_slug: str, docs_url: str = None) -> dict:
         if not docs_url:
             try:
                 from app.database import fetch_one
-                row = fetch_one(
+                row = await fetch_one_async(
                     "SELECT docs_url FROM rpi_protocol_config WHERE protocol_slug = %s",
                     (protocol_slug,)
                 )
@@ -172,7 +172,7 @@ def score_protocol_docs(protocol_slug: str, docs_url: str = None) -> dict:
 
         # Store evidence in DB
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO rpi_doc_scores
                     (protocol_slug, criterion, score, evidence_url, evidence_snippet)
                 VALUES (%s, %s, %s, %s, %s)
@@ -194,19 +194,19 @@ def score_protocol_docs(protocol_slug: str, docs_url: str = None) -> dict:
     }
 
 
-def score_all_docs() -> list[dict]:
+async def score_all_docs() -> list[dict]:
     """Score documentation for all protocols and update the lens component."""
     from app.index_definitions.rpi_v2 import RPI_TARGET_PROTOCOLS
 
     results = []
     for slug in RPI_TARGET_PROTOCOLS:
         try:
-            result = score_protocol_docs(slug)
+            result = await score_protocol_docs(slug)
             results.append(result)
 
             # Update the documentation_depth lens component
             if result["total_score"] > 0:
-                execute("""
+                await execute_async("""
                     INSERT INTO rpi_components
                         (protocol_slug, component_id, component_type, lens_id,
                          raw_value, normalized_score, source_type, data_source,

@@ -12,7 +12,7 @@ import time
 
 import requests
 
-from app.database import execute, fetch_one, fetch_all
+from app.database import execute, fetch_one, fetch_all, fetch_one_async, fetch_all_async, execute_async
 from app.index_definitions.rpi_v2 import RPI_TARGET_PROTOCOLS
 from app.rpi.snapshot_collector import SNAPSHOT_SPACES
 from app.rpi.tally_collector import TALLY_ORGS
@@ -29,7 +29,7 @@ SNAPSHOT_API = "https://hub.snapshot.org/graphql"
 MIN_TVL_USD = 50_000_000
 
 
-def seed_initial_config():
+async def seed_initial_config():
     """Populate rpi_protocol_config from the hardcoded Phase 1 dicts.
 
     Idempotent — uses ON CONFLICT to avoid duplicates.
@@ -47,14 +47,14 @@ def seed_initial_config():
             admin_contracts = json.dumps({"ethereum": PROTOCOL_CONFIGS[slug]["contracts"]})
 
         # Get name from PSI scores
-        row = fetch_one(
+        row = await fetch_one_async(
             "SELECT protocol_name FROM psi_scores WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1",
             (slug,),
         )
         name = row["protocol_name"] if row and row.get("protocol_name") else slug.replace("-", " ").title()
 
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO rpi_protocol_config
                     (protocol_slug, protocol_name, snapshot_space, tally_org_id,
                      governance_forum_url, docs_url, admin_contracts,
@@ -103,7 +103,7 @@ def _search_snapshot_space(protocol_name: str) -> str | None:
     return None
 
 
-def discover_new_protocols() -> int:
+async def discover_new_protocols() -> int:
     """Discover new protocols from DeFiLlama that qualify for RPI coverage.
 
     Criteria:
@@ -114,14 +114,14 @@ def discover_new_protocols() -> int:
     # Get existing slugs
     existing = set()
     try:
-        rows = fetch_all("SELECT protocol_slug FROM rpi_protocol_config")
+        rows = await fetch_all_async("SELECT protocol_slug FROM rpi_protocol_config")
         existing = {r["protocol_slug"] for r in rows}
     except Exception:
         existing = set(RPI_TARGET_PROTOCOLS)
 
     # Also include PSI backlog promoted protocols
     try:
-        backlog_rows = fetch_all("""
+        backlog_rows = await fetch_all_async("""
             SELECT slug, name, gecko_id, snapshot_space, main_contract
             FROM protocol_backlog
             WHERE enrichment_status IN ('promoted', 'scored', 'ready')
@@ -145,7 +145,7 @@ def discover_new_protocols() -> int:
             snapshot_space = _search_snapshot_space(name)
 
         try:
-            execute("""
+            await execute_async("""
                 INSERT INTO rpi_protocol_config
                     (protocol_slug, protocol_name, snapshot_space,
                      discovery_source, coverage_level, enabled)
@@ -192,7 +192,7 @@ def discover_new_protocols() -> int:
                     continue
 
                 try:
-                    execute("""
+                    await execute_async("""
                         INSERT INTO rpi_protocol_config
                             (protocol_slug, protocol_name, snapshot_space,
                              discovery_source, coverage_level, enabled)
@@ -212,10 +212,10 @@ def discover_new_protocols() -> int:
     return discovered
 
 
-def get_enabled_protocols() -> list[dict]:
+async def get_enabled_protocols() -> list[dict]:
     """Get all enabled protocols from rpi_protocol_config."""
     try:
-        return fetch_all("""
+        return await fetch_all_async("""
             SELECT protocol_slug, protocol_name, snapshot_space, tally_org_id,
                    governance_forum_url, docs_url, admin_contracts,
                    coverage_level
@@ -228,12 +228,12 @@ def get_enabled_protocols() -> list[dict]:
         return [{"protocol_slug": s} for s in RPI_TARGET_PROTOCOLS]
 
 
-def run_expansion_pipeline() -> dict:
+async def run_expansion_pipeline() -> dict:
     """Run the full expansion pipeline: seed → discover → report."""
-    seeded = seed_initial_config()
-    discovered = discover_new_protocols()
+    seeded = await seed_initial_config()
+    discovered = await discover_new_protocols()
 
-    total = fetch_one("SELECT COUNT(*) AS cnt FROM rpi_protocol_config WHERE enabled = TRUE")
+    total = await fetch_one_async("SELECT COUNT(*) AS cnt FROM rpi_protocol_config WHERE enabled = TRUE")
     total_count = total["cnt"] if total else 0
 
     summary = {
