@@ -17,7 +17,8 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from scripts.backfill.base import init_db, log_run_start, log_run_complete, parse_args
-from app.index_definitions.bri_v01 import BRIDGE_ENTITIES
+from app.index_definitions.bri_v01 import BRIDGE_ENTITIES, BRI_V01_DEFINITION
+from app.scoring_engine import score_entity
 from app.api_usage_tracker import track_api_call
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -211,21 +212,54 @@ async def backfill_entity(entity: dict, days_back: int = 365):
 
         raw_json = json.dumps(raw_values)
 
+        # Dispatch through V9.9 aggregation registry. Mirrors live scoring
+        # path (bridge_collector.score_bridge → score_entity → aggregate()).
+        result = score_entity(BRI_V01_DEFINITION, raw_values)
+
         try:
             execute(
                 """
                 INSERT INTO generic_index_scores
                     (index_id, entity_slug, entity_name, overall_score,
-                     raw_values, formula_version, scored_date,
-                     backfilled, backfill_source)
-                VALUES (%s, %s, %s, NULL, %s, %s, %s, TRUE, %s)
+                     raw_values, component_scores, category_scores,
+                     formula_version, scored_date,
+                     backfilled, backfill_source,
+                     coverage, component_coverage, components_populated, components_total,
+                     missing_categories, aggregation_method, aggregation_formula_version,
+                     effective_category_weights, withheld,
+                     confidence, confidence_tag)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (index_id, entity_slug, scored_date) DO UPDATE
-                SET raw_values = EXCLUDED.raw_values,
+                SET overall_score = EXCLUDED.overall_score,
+                    raw_values = EXCLUDED.raw_values,
+                    component_scores = EXCLUDED.component_scores,
+                    category_scores = EXCLUDED.category_scores,
                     formula_version = EXCLUDED.formula_version,
-                    backfill_source = EXCLUDED.backfill_source
+                    backfill_source = EXCLUDED.backfill_source,
+                    coverage = EXCLUDED.coverage,
+                    component_coverage = EXCLUDED.component_coverage,
+                    components_populated = EXCLUDED.components_populated,
+                    components_total = EXCLUDED.components_total,
+                    missing_categories = EXCLUDED.missing_categories,
+                    aggregation_method = EXCLUDED.aggregation_method,
+                    aggregation_formula_version = EXCLUDED.aggregation_formula_version,
+                    effective_category_weights = EXCLUDED.effective_category_weights,
+                    withheld = EXCLUDED.withheld,
+                    confidence = EXCLUDED.confidence,
+                    confidence_tag = EXCLUDED.confidence_tag
                 """,
-                (INDEX_ID, slug, name, raw_json, FORMULA_VERSION,
-                 score_date, BACKFILL_SOURCE),
+                (INDEX_ID, slug, name, result["overall_score"], raw_json,
+                 json.dumps(result["component_scores"]),
+                 json.dumps(result["category_scores"]),
+                 FORMULA_VERSION, score_date, BACKFILL_SOURCE,
+                 result["coverage"], result["component_coverage"],
+                 result["components_populated"], result["components_total"],
+                 json.dumps(result["missing_categories"]),
+                 result["aggregation_method"], result["aggregation_formula_version"],
+                 json.dumps(result["effective_category_weights"]),
+                 result["withheld"],
+                 result["confidence"], result["confidence_tag"]),
             )
             rows_written += 1
         except Exception as e:
