@@ -558,12 +558,12 @@ async def startup():
         if hasattr(mcp_server, "streamable_http_app"):
             mcp_asgi = mcp_server.streamable_http_app()
             app.state.mcp_task = asyncio.get_event_loop().create_task(
-                await _run_mcp_session_manager(mcp_server.session_manager)
+                _run_mcp_session_manager(mcp_server.session_manager)
             )
         elif hasattr(mcp_server, "asgi_app"):
             mcp_asgi = mcp_server.asgi_app()
             app.state.mcp_task = asyncio.get_event_loop().create_task(
-                await _run_mcp_session_manager(mcp_server.session_manager)
+                _run_mcp_session_manager(mcp_server.session_manager)
             )
         else:
             mcp_asgi = None
@@ -681,7 +681,7 @@ async def _delegate_to_asgi(asgi_app, request: Request):
                     break
 
     return StreamingResponse(
-        await body_generator(),
+        body_generator(),
         status_code=status_code,
         headers=headers,
     )
