@@ -205,10 +205,10 @@ async def backfill_entity(entity: dict, days_back: int = 365):
                      formula_version, scored_date, backfilled, backfill_source,
                      coverage, component_coverage, components_populated, components_total,
                      missing_categories, aggregation_method, aggregation_formula_version,
-                     effective_category_weights, withheld,
+                     aggregation_params, effective_category_weights, withheld,
                      confidence, confidence_tag)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (index_id, entity_slug, scored_date) DO UPDATE SET
                     overall_score = EXCLUDED.overall_score,
                     raw_values = EXCLUDED.raw_values,
@@ -222,6 +222,7 @@ async def backfill_entity(entity: dict, days_back: int = 365):
                     missing_categories = EXCLUDED.missing_categories,
                     aggregation_method = EXCLUDED.aggregation_method,
                     aggregation_formula_version = EXCLUDED.aggregation_formula_version,
+                    aggregation_params = EXCLUDED.aggregation_params,
                     effective_category_weights = EXCLUDED.effective_category_weights,
                     withheld = EXCLUDED.withheld,
                     confidence = EXCLUDED.confidence,
@@ -236,6 +237,7 @@ async def backfill_entity(entity: dict, days_back: int = 365):
                  result["components_populated"], result["components_total"],
                  json.dumps(result["missing_categories"]),
                  result["aggregation_method"], result["aggregation_formula_version"],
+                 json.dumps(CXRI_V01_DEFINITION.get("aggregation", {}).get("params", {})),
                  json.dumps(result["effective_category_weights"]),
                  result["withheld"],
                  result["confidence"], result["confidence_tag"]),
