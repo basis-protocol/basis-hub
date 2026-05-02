@@ -27,14 +27,13 @@ CREATE TABLE IF NOT EXISTS regulatory_registry_checks (
     checked_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Original expression-index unique constraint from migration 055
--- (kept for backward compatibility — does not enable ON CONFLICT).
-CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_check_entity_registry
-    ON regulatory_registry_checks(entity_slug, registry_name, checked_at::date);
-
 -- Simple unique index required for ON CONFLICT (entity_slug, registry_name)
 -- in regulatory_scraper.py:394. Same as the runtime-created index at
 -- regulatory_scraper.py:382 (idx_reg_check_entity_registry_simple).
+-- Note: migration 055 originally also defined an expression-based unique
+-- index `idx_reg_check_entity_registry ON (entity_slug, registry_name,
+-- checked_at::date)`. That index cannot satisfy ON CONFLICT (which the
+-- application actually needs) so it is dead; not duplicated here.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_check_entity_registry_simple
     ON regulatory_registry_checks(entity_slug, registry_name);
 
