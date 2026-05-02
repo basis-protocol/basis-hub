@@ -1698,22 +1698,22 @@ async def run_slow_cycle():
             from app.rpi.snapshot_collector import collect_snapshot_proposals
             from app.rpi.tally_collector import collect_tally_proposals
             from app.rpi.parameter_collector import collect_parameter_changes
-            await collect_snapshot_proposals()
-            await collect_tally_proposals()
-            await collect_parameter_changes()
+            collect_snapshot_proposals()
+            collect_tally_proposals()
+            collect_parameter_changes()
 
             # Phase 2A: Automate lens components
             try:
                 from app.rpi.forum_scraper import scrape_all_forums, update_vendor_diversity_lens
-                forum_results = await scrape_all_forums(since_days=90)
+                forum_results = scrape_all_forums(since_days=90)
                 logger.info(f"RPI forum scraper: {sum(forum_results.values())} posts across {len(forum_results)} protocols")
-                await update_vendor_diversity_lens()
+                update_vendor_diversity_lens()
             except Exception as fa_err:
                 logger.warning(f"RPI forum scraper failed: {fa_err}")
 
             try:
                 from app.rpi.docs_scorer import score_all_docs
-                await score_all_docs()
+                score_all_docs()
             except Exception as ds_err:
                 logger.warning(f"RPI docs scorer failed: {ds_err}")
 
@@ -1736,7 +1736,7 @@ async def run_slow_cycle():
                     expansion_age = (datetime.now(timezone.utc) - exp_ts).total_seconds() / 3600
                 if expansion_age >= 168:  # weekly
                     from app.rpi.expansion import run_expansion_pipeline
-                    await run_expansion_pipeline()
+                    run_expansion_pipeline()
             except Exception as exp_err:
                 logger.warning(f"RPI expansion failed: {exp_err}")
 

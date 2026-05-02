@@ -5154,7 +5154,7 @@ async def rpi_rankings(lens: Optional[str] = Query(default=None)):
         if lens and entry["rpi_base"] is not None:
             from app.rpi.scorer import _load_lens_components, compute_lensed_score
             lens_ids = [l.strip() for l in lens.split(",") if l.strip()]
-            lens_components = await _load_lens_components(row["protocol_slug"], lens_ids)
+            lens_components = _load_lens_components(row["protocol_slug"], lens_ids)
             lensed = compute_lensed_score(entry["rpi_base"], lens_ids, lens_components)
             entry["rpi_lensed"] = lensed["rpi_lensed"]
             entry["lens_blend_used"] = lensed["lens_blend_used"]
@@ -5261,7 +5261,7 @@ async def rpi_history_at_date(slug: str, date_str: str):
         from datetime import date as date_type
         from app.rpi.historical import reconstruct_rpi_score
         target = date_type.fromisoformat(date_str)
-        return await reconstruct_rpi_score(slug, target)
+        return reconstruct_rpi_score(slug, target)
     except Exception as e:
         import traceback
         return {"error": str(e), "traceback": traceback.format_exc()}
@@ -5389,7 +5389,7 @@ async def rpi_score_detail(slug: str, lens: Optional[str] = Query(default=None))
     if lens and result["rpi_base"] is not None:
         from app.rpi.scorer import _load_lens_components, compute_lensed_score
         lens_ids = [l.strip() for l in lens.split(",") if l.strip()]
-        lens_components = await _load_lens_components(slug, lens_ids)
+        lens_components = _load_lens_components(slug, lens_ids)
         lensed = compute_lensed_score(result["rpi_base"], lens_ids, lens_components)
         result["rpi_lensed"] = lensed["rpi_lensed"]
         result["lens_scores"] = lensed["lens_scores"]

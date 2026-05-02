@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from app.database import execute, fetch_one_async, fetch_all_async, execute_async
+from app.database import execute
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def fetch_tally_proposals(org_slug: str, since_days: int = 90) -> list[dict]:
     return []
 
 
-async def collect_tally_proposals():
+def collect_tally_proposals():
     """Collect on-chain governance proposals from Tally for RPI protocols."""
     total_stored = 0
 
@@ -154,7 +154,7 @@ async def collect_tally_proposals():
             proposal_id = str(prop.get("id", ""))
 
             try:
-                await execute_async("""
+                execute("""
                     INSERT INTO governance_proposals
                         (protocol_slug, proposal_id, source, title, body_excerpt,
                          is_risk_related, risk_keywords, budget_amount_usd,

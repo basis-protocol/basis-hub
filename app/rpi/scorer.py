@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import execute, fetch_one, fetch_all, fetch_one_async, fetch_all_async, execute_async
+from app.database import execute, fetch_one, fetch_all
 from app.index_definitions.rpi_v2 import (
     RPI_V2_DEFINITION, RPI_LENSES, LENS_BLEND, RPI_TARGET_PROTOCOLS,
 )
@@ -67,11 +67,11 @@ def _normalize_parameter_recency(days: int | None) -> float:
     return 0.0
 
 
-async def _normalize_incident_severity(slug: str) -> float:
+def _normalize_incident_severity(slug: str) -> float:
     """100 (0 weighted incidents), scale down by weighted count with 12-month decay.
     Only incidents with reviewed=true are included.
     """
-    rows = await fetch_all_async("""
+    rows = fetch_all("""
         SELECT severity, funds_at_risk_usd,
                EXTRACT(EPOCH FROM (NOW() - incident_date)) / 86400 AS days_ago
         FROM risk_incidents
@@ -154,9 +154,9 @@ def _normalize_recovery_ratio(pct: float | None) -> float:
 # Raw value assembly
 # =============================================================================
 
-async def _get_governance_participation(slug: str) -> float | None:
+def _get_governance_participation(slug: str) -> float | None:
     """Get average participation rate from recent governance proposals."""
-    row = await fetch_one_async("""
+    row = fetch_one("""
         SELECT AVG(participation_rate) AS avg_participation
         FROM governance_proposals
         WHERE protocol_slug = %s
@@ -168,12 +168,12 @@ async def _get_governance_participation(slug: str) -> float | None:
     return None
 
 
-async def _get_risk_spend_ratio(slug: str, annualized_revenue: float | None) -> float | None:
+def _get_risk_spend_ratio(slug: str, annualized_revenue: float | None) -> float | None:
     """Compute risk spend as % of revenue from budget proposals."""
     if not annualized_revenue or annualized_revenue <= 0:
         return None
 
-    row = await fetch_one_async("""
+    row = fetch_one("""
         SELECT SUM(budget_amount_usd) AS total_budget
         FROM governance_proposals
         WHERE protocol_slug = %s
@@ -318,7 +318,7 @@ def score_rpi_base(slug: str, raw_values: dict) -> dict:
 # Lens scoring (computed on-the-fly)
 # =============================================================================
 
-async def _load_lens_components(slug: str, lens_ids: list[str]) -> dict[str, dict]:
+def _load_lens_components(slug: str, lens_ids: list[str]) -> dict[str, dict]:
     """Load lens component values from the rpi_components table.
 
     Returns dict of lens_id -> {component_id -> normalized_score}.
@@ -335,7 +335,7 @@ async def _load_lens_components(slug: str, lens_ids: list[str]) -> dict[str, dic
         comp_scores = {}
 
         for comp_id in lens_def["components"]:
-            row = await fetch_one_async("""
+            row = fetch_one("""
                 SELECT normalized_score
                 FROM rpi_components
                 WHERE protocol_slug = %s
@@ -435,14 +435,14 @@ def compute_lensed_score(base_score: float, lens_ids: list[str],
 # Store results
 # =============================================================================
 
-async def store_rpi_score(slug: str, result: dict):
+def store_rpi_score(slug: str, result: dict):
     """Store the base RPI score in the database."""
     raw_canonical = json.dumps(result["raw_values"], sort_keys=True, default=str)
     inputs_hash = "0x" + hashlib.sha256(raw_canonical.encode()).hexdigest()
 
-    protocol_name = await _get_protocol_name(slug)
+    protocol_name = _get_protocol_name(slug)
 
-    await execute_async("""
+    execute("""
         INSERT INTO rpi_scores
             (protocol_slug, protocol_name, overall_score, grade,
              component_scores, raw_values, inputs_hash, methodology_version,
@@ -478,7 +478,7 @@ async def store_rpi_score(slug: str, result: dict):
     ))
 
     # Store history
-    await execute_async("""
+    execute("""
         INSERT INTO rpi_score_history
             (protocol_slug, overall_score, component_scores, methodology_version)
         VALUES (%s, %s, %s, %s)
@@ -494,7 +494,7 @@ async def store_rpi_score(slug: str, result: dict):
     # Store individual component readings
     for comp_id, score in result["component_scores"].items():
         raw_val = result["raw_values"].get(comp_id)
-        await execute_async("""
+        execute("""
             INSERT INTO rpi_components
                 (protocol_slug, component_id, component_type, raw_value,
                  normalized_score, source_type, data_source, collected_at)
@@ -507,9 +507,9 @@ async def store_rpi_score(slug: str, result: dict):
     return inputs_hash
 
 
-async def _get_protocol_name(slug: str) -> str:
+def _get_protocol_name(slug: str) -> str:
     """Get protocol display name from PSI scores or slug."""
-    row = await fetch_one_async(
+    row = fetch_one(
         "SELECT protocol_name FROM psi_scores WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1",
         (slug,),
     )
@@ -522,7 +522,7 @@ async def _get_protocol_name(slug: str) -> str:
 # Phase 1: Auto-write lens components from existing data sources
 # =============================================================================
 
-async def _sync_lens_vendor_diversity(slug: str) -> float | None:
+def _sync_lens_vendor_diversity(slug: str) -> float | None:
     """Write vendor_diversity lens component from governance_forum_posts data.
 
     Counts distinct risk vendors mentioned in forum posts for this protocol.
@@ -530,7 +530,7 @@ async def _sync_lens_vendor_diversity(slug: str) -> float | None:
     read the count and write the normalized score to rpi_components.
     """
     try:
-        row = await fetch_one_async("""
+        row = fetch_one("""
             SELECT COUNT(DISTINCT vendor_name) AS vendor_count
             FROM (
                 SELECT UNNEST(vendor_mentions) AS vendor_name
@@ -547,7 +547,7 @@ async def _sync_lens_vendor_diversity(slug: str) -> float | None:
             normalized = _normalize_vendor_diversity(count)
 
             # Write to rpi_components for the lens system to pick up
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source, collected_at)
@@ -562,7 +562,7 @@ async def _sync_lens_vendor_diversity(slug: str) -> float | None:
     return None
 
 
-async def _sync_lens_documentation_depth(slug: str) -> float | None:
+def _sync_lens_documentation_depth(slug: str) -> float | None:
     """Write documentation_depth lens component from rpi_doc_scores data.
 
     The docs_scorer already scores protocols on a 5-criterion rubric and stores
@@ -570,7 +570,7 @@ async def _sync_lens_documentation_depth(slug: str) -> float | None:
     as a lens component.
     """
     try:
-        row = await fetch_one_async("""
+        row = fetch_one("""
             SELECT SUM(score) AS total_score
             FROM rpi_doc_scores
             WHERE protocol_slug = %s
@@ -582,7 +582,7 @@ async def _sync_lens_documentation_depth(slug: str) -> float | None:
             # rpi_doc_scores is 0-100 (5 criteria × 20 pts each)
             normalized = min(100, max(0, total_score))
 
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source, collected_at)

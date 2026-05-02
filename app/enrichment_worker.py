@@ -305,20 +305,20 @@ async def run_enrichment_pipeline() -> dict:
         from app.rpi.snapshot_collector import collect_snapshot_proposals
         from app.rpi.tally_collector import collect_tally_proposals
         from app.rpi.parameter_collector import collect_parameter_changes
-        await collect_snapshot_proposals()
-        await collect_tally_proposals()
-        await collect_parameter_changes()
+        collect_snapshot_proposals()
+        collect_tally_proposals()
+        collect_parameter_changes()
 
         try:
             from app.rpi.forum_scraper import scrape_all_forums, update_vendor_diversity_lens
-            await scrape_all_forums(since_days=90)
-            await update_vendor_diversity_lens()
+            scrape_all_forums(since_days=90)
+            update_vendor_diversity_lens()
         except Exception as e:
             logger.warning(f"RPI forum scraper failed: {e}")
 
         try:
             from app.rpi.docs_scorer import score_all_docs
-            await score_all_docs()
+            score_all_docs()
         except Exception as e:
             logger.warning(f"RPI docs scorer failed: {e}")
 

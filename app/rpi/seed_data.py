@@ -18,7 +18,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from app.database import execute, fetch_one, fetch_one_async, fetch_all_async, execute_async
+from app.database import execute, fetch_one
 from app.index_definitions.rpi_v2 import RPI_TARGET_PROTOCOLS
 
 logger = logging.getLogger(__name__)
@@ -258,7 +258,7 @@ def _normalize_recovery_ratio(pct: float | None) -> float:
     return 0.0
 
 
-async def seed_rpi_data():
+def seed_rpi_data():
     """Insert seed data for RPI components and incidents."""
     seeded = 0
 
@@ -266,7 +266,7 @@ async def seed_rpi_data():
     for slug in RPI_TARGET_PROTOCOLS:
         # spend_ratio
         if slug in BASE_SPEND_RATIO:
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, raw_value,
                      normalized_score, source_type, data_source, collected_at)
@@ -278,7 +278,7 @@ async def seed_rpi_data():
         if slug in BASE_PARAMETER_VELOCITY:
             vel = BASE_PARAMETER_VELOCITY[slug]
             score = 0 if vel <= 0 else (50 if vel <= 3 else (80 if vel <= 8 else 100))
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, raw_value,
                      normalized_score, source_type, data_source, collected_at)
@@ -301,7 +301,7 @@ async def seed_rpi_data():
                 score = 20
             else:
                 score = 0
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, raw_value,
                      normalized_score, source_type, data_source, collected_at)
@@ -322,7 +322,7 @@ async def seed_rpi_data():
                 score = 40
             else:
                 score = 0
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, raw_value,
                      normalized_score, source_type, data_source, collected_at)
@@ -333,7 +333,7 @@ async def seed_rpi_data():
     # Seed risk incidents
     for incident in RISK_INCIDENTS:
         try:
-            await execute_async("""
+            execute("""
                 INSERT INTO risk_incidents
                     (protocol_slug, incident_date, title, description,
                      severity, funds_at_risk_usd, funds_recovered_usd,
@@ -361,7 +361,7 @@ async def seed_rpi_data():
         if slug in LENS_VENDOR_DIVERSITY:
             count = LENS_VENDOR_DIVERSITY[slug]
             score = _normalize_vendor_diversity(count)
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source, collected_at)
@@ -374,7 +374,7 @@ async def seed_rpi_data():
         if slug in LENS_RECOVERY_RATIO:
             pct = LENS_RECOVERY_RATIO[slug]
             score = _normalize_recovery_ratio(pct)
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source, collected_at)
@@ -386,7 +386,7 @@ async def seed_rpi_data():
         # external_scoring (risk_infrastructure lens)
         if slug in LENS_EXTERNAL_SCORING:
             val = LENS_EXTERNAL_SCORING[slug]
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source, collected_at)
@@ -398,7 +398,7 @@ async def seed_rpi_data():
         # documentation_depth (risk_transparency lens)
         if slug in LENS_DOCUMENTATION_DEPTH:
             val = LENS_DOCUMENTATION_DEPTH[slug]
-            await execute_async("""
+            execute("""
                 INSERT INTO rpi_components
                     (protocol_slug, component_id, component_type, lens_id,
                      raw_value, normalized_score, source_type, data_source, collected_at)
