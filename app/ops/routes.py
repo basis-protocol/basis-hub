@@ -95,7 +95,7 @@ async def list_targets(
             params.append(stage)
 
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        rows = fetch_all(f"SELECT * FROM ops_targets{where} ORDER BY tier, name", params or None)
+        rows = await fetch_all_async(f"SELECT * FROM ops_targets{where} ORDER BY tier, name", params or None)
         return {"targets": rows}
     except HTTPException:
         raise
@@ -107,22 +107,22 @@ async def list_targets(
 async def get_target(request: Request, target_id: int):
     _check_admin_key(request)
     try:
-        target = fetch_one("SELECT * FROM ops_targets WHERE id = %s", (target_id,))
+        target = await fetch_one_async("SELECT * FROM ops_targets WHERE id = %s", (target_id,))
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
 
-        contacts = fetch_all(
+        contacts = await fetch_all_async(
             "SELECT * FROM ops_target_contacts WHERE target_id = %s", (target_id,)
         )
-        content = fetch_all(
+        content = await fetch_all_async(
             "SELECT * FROM ops_target_content WHERE target_id = %s ORDER BY scraped_at DESC LIMIT 20",
             (target_id,),
         )
-        engagement = fetch_all(
+        engagement = await fetch_all_async(
             "SELECT * FROM ops_target_engagement_log WHERE target_id = %s ORDER BY created_at DESC LIMIT 20",
             (target_id,),
         )
-        exposure = fetch_one(
+        exposure = await fetch_one_async(
             "SELECT * FROM ops_target_exposure_reports WHERE target_id = %s ORDER BY generated_at DESC LIMIT 1",
             (target_id,),
         )
@@ -156,7 +156,7 @@ async def update_target_stage(request: Request, target_id: int):
         if new_stage not in valid_stages:
             raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
 
-        execute(
+        await execute_async(
             "UPDATE ops_targets SET pipeline_stage = %s, last_action_at = NOW(), updated_at = NOW() WHERE id = %s",
             (new_stage, target_id),
         )
@@ -177,11 +177,11 @@ async def log_engagement(request: Request, target_id: int):
             raise HTTPException(status_code=400, detail="action_type required")
 
         # Verify target exists
-        target = fetch_one("SELECT id FROM ops_targets WHERE id = %s", (target_id,))
+        target = await fetch_one_async("SELECT id FROM ops_targets WHERE id = %s", (target_id,))
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
 
-        execute(
+        await execute_async(
             """INSERT INTO ops_target_engagement_log (target_id, contact_id, action_type, content, channel, next_action)
                VALUES (%s, %s, %s, %s, %s, %s)""",
             (
@@ -193,7 +193,7 @@ async def log_engagement(request: Request, target_id: int):
                 body.get("next_action"),
             ),
         )
-        execute(
+        await execute_async(
             "UPDATE ops_targets SET last_action_at = NOW(), updated_at = NOW() WHERE id = %s",
             (target_id,),
         )
@@ -212,7 +212,7 @@ async def append_notes(request: Request, target_id: int):
         body = await request.json()
         note_text = body.get("text", "")
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        execute(
+        await execute_async(
             "UPDATE ops_targets SET notes = COALESCE(notes, '') || %s, updated_at = NOW() WHERE id = %s",
             (f"\n[{timestamp}] {note_text}", target_id),
         )
@@ -231,7 +231,7 @@ async def append_notes(request: Request, target_id: int):
 async def get_action_queue(request: Request):
     _check_admin_key(request)
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT c.*, t.name as target_name, t.tier, t.pipeline_stage
                FROM ops_target_content c
                JOIN ops_targets t ON c.target_id = t.id
@@ -259,17 +259,17 @@ async def decide_content(request: Request, content_id: int):
 
         if decision == "edited":
             edited_text = body.get("edited_text", "")
-            execute(
+            await execute_async(
                 "UPDATE ops_target_content SET founder_decision = %s, founder_edited_text = %s WHERE id = %s",
                 (decision, edited_text, content_id),
             )
         elif decision == "posted":
-            execute(
+            await execute_async(
                 "UPDATE ops_target_content SET founder_decision = %s, posted_at = NOW() WHERE id = %s",
                 (decision, content_id),
             )
         else:
-            execute(
+            await execute_async(
                 "UPDATE ops_target_content SET founder_decision = %s WHERE id = %s",
                 (decision, content_id),
             )
@@ -294,7 +294,7 @@ async def content_feed(
     _check_admin_key(request)
     try:
         if target_id:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT c.*, t.name as target_name
                    FROM ops_target_content c
                    JOIN ops_targets t ON c.target_id = t.id
@@ -303,7 +303,7 @@ async def content_feed(
                 (target_id, limit),
             )
         else:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT c.*, t.name as target_name
                    FROM ops_target_content c
                    JOIN ops_targets t ON c.target_id = t.id
@@ -387,7 +387,7 @@ async def list_investors(
             params.append(stage)
 
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        rows = fetch_all(f"SELECT * FROM ops_investors{where} ORDER BY tier, name", params or None)
+        rows = await fetch_all_async(f"SELECT * FROM ops_investors{where} ORDER BY tier, name", params or None)
         return {"investors": rows}
     except HTTPException:
         raise
@@ -412,7 +412,7 @@ async def update_investor_stage(request: Request, investor_id: int):
         if new_stage not in valid_stages:
             raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
 
-        execute(
+        await execute_async(
             "UPDATE ops_investors SET stage = %s, last_action_at = NOW(), updated_at = NOW() WHERE id = %s",
             (new_stage, investor_id),
         )
@@ -433,16 +433,16 @@ async def log_investor_interaction(request: Request, investor_id: int):
             raise HTTPException(status_code=400, detail="action_type required")
 
         # Verify investor exists
-        investor = fetch_one("SELECT id FROM ops_investors WHERE id = %s", (investor_id,))
+        investor = await fetch_one_async("SELECT id FROM ops_investors WHERE id = %s", (investor_id,))
         if not investor:
             raise HTTPException(status_code=404, detail="Investor not found")
 
-        execute(
+        await execute_async(
             """INSERT INTO ops_investor_interactions (investor_id, action_type, content, response, next_step)
                VALUES (%s, %s, %s, %s, %s)""",
             (investor_id, action_type, body.get("content"), body.get("response"), body.get("next_step")),
         )
-        execute(
+        await execute_async(
             "UPDATE ops_investors SET last_action_at = NOW(), updated_at = NOW() WHERE id = %s",
             (investor_id,),
         )
@@ -458,10 +458,10 @@ async def log_investor_interaction(request: Request, investor_id: int):
 async def get_investor(request: Request, investor_id: int):
     _check_admin_key(request)
     try:
-        investor = fetch_one("SELECT * FROM ops_investors WHERE id = %s", (investor_id,))
+        investor = await fetch_one_async("SELECT * FROM ops_investors WHERE id = %s", (investor_id,))
         if not investor:
             raise HTTPException(status_code=404, detail="Investor not found")
-        interactions = fetch_all(
+        interactions = await fetch_all_async(
             "SELECT * FROM ops_investor_interactions WHERE investor_id = %s ORDER BY occurred_at DESC LIMIT 20",
             (investor_id,),
         )
@@ -476,7 +476,7 @@ async def get_investor(request: Request, investor_id: int):
 async def fundraise_dashboard(request: Request):
     _check_admin_key(request)
     try:
-        investors = fetch_all("SELECT * FROM ops_investors ORDER BY tier, name")
+        investors = await fetch_all_async("SELECT * FROM ops_investors ORDER BY tier, name")
 
         # Compute seed trigger milestones from live data
         from app.ops.tools.milestone_checker import check_all_milestones
@@ -612,7 +612,7 @@ async def generate_exposure_report(request: Request):
 async def get_latest_exposure(request: Request, target_id: int):
     _check_admin_key(request)
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             "SELECT * FROM ops_target_exposure_reports WHERE target_id = %s ORDER BY generated_at DESC LIMIT 1",
             (target_id,),
         )
@@ -786,7 +786,7 @@ async def list_content_items(
             params.append(type)
 
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        rows = fetch_all(
+        rows = await fetch_all_async(
             f"SELECT * FROM ops_content_items{where} ORDER BY scheduled_for ASC NULLS LAST, created_at DESC",
             params or None,
         )
@@ -802,7 +802,7 @@ async def create_content_item(request: Request):
     _check_admin_key(request)
     try:
         body = await request.json()
-        execute(
+        await execute_async(
             """INSERT INTO ops_content_items (type, title, content, target_channel, related_target_id, status, scheduled_for)
                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (
@@ -1024,14 +1024,14 @@ async def configure_alerts(request: Request):
             raise HTTPException(status_code=400, detail="channel must be 'telegram' or 'email'")
 
         # Upsert
-        existing = fetch_one("SELECT id FROM ops_alert_config WHERE channel = %s", (channel,))
+        existing = await fetch_one_async("SELECT id FROM ops_alert_config WHERE channel = %s", (channel,))
         if existing:
-            execute(
+            await execute_async(
                 "UPDATE ops_alert_config SET config = %s, alert_types = %s, enabled = TRUE WHERE id = %s",
                 (json.dumps(config), alert_types, existing["id"]),
             )
         else:
-            execute(
+            await execute_async(
                 "INSERT INTO ops_alert_config (channel, config, alert_types) VALUES (%s, %s, %s)",
                 (channel, json.dumps(config), alert_types),
             )
@@ -1147,7 +1147,7 @@ async def update_target_surfaces(request: Request, target_id: int):
     try:
         body = await request.json()
         surfaces = body.get("surfaces", [])
-        execute(
+        await execute_async(
             "UPDATE ops_targets SET surface_urls = %s, updated_at = NOW() WHERE id = %s",
             (json.dumps(surfaces), target_id),
         )
@@ -1274,8 +1274,7 @@ async def get_snapshot_space(request: Request, space_id: str):
     """Get proposals for a specific Snapshot space."""
     _check_admin_key(request)
     try:
-        from app.database import fetch_all as fa
-        proposals = fa(
+        proposals = await fetch_all_async(
             """SELECT * FROM ops_governance_proposals
                WHERE platform = 'snapshot' AND space_or_org = %s
                ORDER BY fetched_at DESC LIMIT 20""",
@@ -1455,7 +1454,7 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
     """Day-over-day state accumulation from daily pulses."""
     _check_admin_key(request)
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT pulse_date, summary
                FROM daily_pulses
                ORDER BY pulse_date DESC
@@ -1548,16 +1547,16 @@ async def state_growth(request: Request, days: int = Query(default=14, ge=1, le=
         # Treasury status
         treasury_status = {}
         try:
-            reg_count = fetch_one(
+            reg_count = await fetch_one_async(
                 "SELECT COUNT(*) as cnt FROM wallet_graph.treasury_registry WHERE monitoring_enabled = TRUE"
             )
-            total_events = fetch_one(
+            total_events = await fetch_one_async(
                 "SELECT COUNT(*) as cnt FROM wallet_graph.treasury_events"
             )
-            events_24h = fetch_one(
+            events_24h = await fetch_one_async(
                 "SELECT COUNT(*) as cnt FROM wallet_graph.treasury_events WHERE detected_at > NOW() - INTERVAL '24 hours'"
             )
-            severity_breakdown = fetch_all(
+            severity_breakdown = await fetch_all_async(
                 "SELECT severity, COUNT(*) as cnt FROM wallet_graph.treasury_events GROUP BY severity ORDER BY severity"
             ) or []
             treasury_status = {
@@ -1685,13 +1684,13 @@ async def coverage_report(request: Request):
         from datetime import timezone
 
         # SII coverage
-        sii_discovered = fetch_one(
+        sii_discovered = await fetch_one_async(
             "SELECT COUNT(*) as c FROM wallet_graph.unscored_assets WHERE token_type = 'stablecoin' AND coingecko_id IS NOT NULL"
         )
-        sii_scored = fetch_one(
+        sii_scored = await fetch_one_async(
             "SELECT COUNT(*) as c FROM stablecoins WHERE scoring_enabled = TRUE"
         )
-        sii_scores = fetch_all(
+        sii_scores = await fetch_all_async(
             "SELECT s.component_count FROM scores s"
         ) or []
 
@@ -1712,7 +1711,7 @@ async def coverage_report(request: Request):
         sii_category_gaps = {}
         try:
             # Check recent component_readings for non-scored stablecoins
-            gap_rows = fetch_all("""
+            gap_rows = await fetch_all_async("""
                 SELECT cr.stablecoin_id, cr.category, COUNT(*) as cnt
                 FROM component_readings cr
                 LEFT JOIN scores s ON s.stablecoin_id = cr.stablecoin_id
@@ -1726,16 +1725,16 @@ async def coverage_report(request: Request):
             pass
 
         # PSI coverage
-        psi_discovered = fetch_one(
+        psi_discovered = await fetch_one_async(
             "SELECT COUNT(*) as c FROM protocol_backlog"
         )
-        psi_scored_count = fetch_one(
+        psi_scored_count = await fetch_one_async(
             "SELECT COUNT(DISTINCT protocol_slug) as c FROM psi_scores"
         )
-        psi_category_complete = fetch_one(
+        psi_category_complete = await fetch_one_async(
             "SELECT COUNT(*) as c FROM protocol_backlog WHERE enrichment_status IN ('ready', 'promoted')"
         )
-        psi_scores = fetch_all(
+        psi_scores = await fetch_all_async(
             "SELECT DISTINCT ON (protocol_slug) component_scores FROM psi_scores ORDER BY protocol_slug, computed_at DESC"
         ) or []
 
@@ -1754,7 +1753,7 @@ async def coverage_report(request: Request):
         # PSI blocked — which categories are most commonly missing
         psi_blocked = {}
         try:
-            blocked_rows = fetch_all("""
+            blocked_rows = await fetch_all_async("""
                 SELECT slug, name, coverage_pct, components_available, components_total
                 FROM protocol_backlog
                 WHERE enrichment_status IN ('discovered', 'enriching')
@@ -1805,7 +1804,7 @@ async def protocol_deep_dive(slug: str, request: Request):
         from app.scoring_engine import compute_confidence_tag
 
         # PSI score
-        psi_row = fetch_one("""
+        psi_row = await fetch_one_async("""
             SELECT id, protocol_slug, protocol_name, overall_score, grade,
                    category_scores, component_scores, raw_values,
                    formula_version, computed_at
@@ -1858,7 +1857,7 @@ async def protocol_deep_dive(slug: str, request: Request):
             }
 
         # Score history (last 30 days)
-        score_history = fetch_all("""
+        score_history = await fetch_all_async("""
             SELECT overall_score, grade, category_scores, computed_at, scored_date
             FROM psi_scores
             WHERE protocol_slug = %s
@@ -1868,7 +1867,7 @@ async def protocol_deep_dive(slug: str, request: Request):
         # Stablecoin exposure (treasury + collateral)
         treasury = []
         try:
-            treasury = fetch_all("""
+            treasury = await fetch_all_async("""
                 SELECT token_symbol, token_address, usd_value, is_stablecoin,
                        sii_score, sii_grade
                 FROM protocol_treasury_holdings
@@ -1880,7 +1879,7 @@ async def protocol_deep_dive(slug: str, request: Request):
 
         collateral = []
         try:
-            collateral = fetch_all("""
+            collateral = await fetch_all_async("""
                 SELECT stablecoin_symbol, tvl_usd, pool_count
                 FROM protocol_collateral_exposure
                 WHERE protocol_slug = %s
@@ -1895,7 +1894,7 @@ async def protocol_deep_dive(slug: str, request: Request):
             from app.composition import compose_geometric_mean, _sii_confidence, _psi_confidence, _lower_confidence
             psi_score_val = float(psi_row["overall_score"]) if psi_row.get("overall_score") else None
             psi_c = _psi_confidence(comp_scores)
-            stablecoins = fetch_all("""
+            stablecoins = await fetch_all_async("""
                 SELECT st.symbol, s.overall_score, s.grade, s.component_count
                 FROM scores s JOIN stablecoins st ON st.id = s.stablecoin_id
                 WHERE s.overall_score IS NOT NULL
@@ -1922,7 +1921,7 @@ async def protocol_deep_dive(slug: str, request: Request):
         # Discovery signals
         discovery_signals = []
         try:
-            discovery_signals = fetch_all("""
+            discovery_signals = await fetch_all_async("""
                 SELECT signal_type, severity, details, discovered_at
                 FROM discovery_signals
                 WHERE entity_type = 'protocol' AND entity_id = %s
@@ -1979,37 +1978,37 @@ async def seed_metrics(request: Request):
         from datetime import timezone
 
         # Real-time: today's requests
-        today = fetch_one(
+        today = await fetch_one_async(
             "SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE is_internal = FALSE) as external FROM api_request_log WHERE timestamp >= NOW() - INTERVAL '1 day'"
         )
 
         # 7-day trend from rollup table
-        trend_7d = fetch_all(
+        trend_7d = await fetch_all_async(
             "SELECT date, total_api_requests, external_api_requests, unique_external_ips, mcp_tool_calls, jsonld_requests FROM metrics_daily_rollup ORDER BY date DESC LIMIT 7"
         ) or []
 
         # 30-day totals
-        month = fetch_one(
+        month = await fetch_one_async(
             "SELECT SUM(total_api_requests) as total, SUM(external_api_requests) as external, SUM(mcp_tool_calls) as mcp_tools FROM metrics_daily_rollup WHERE date >= NOW()::date - INTERVAL '30 days'"
         )
 
         # Active API keys
-        active_keys = fetch_one(
+        active_keys = await fetch_one_async(
             "SELECT COUNT(DISTINCT api_key_id) as c FROM api_request_log WHERE timestamp > NOW() - INTERVAL '7 days' AND api_key_id IS NOT NULL"
         )
 
         # MCP tool breakdown (last 7 days)
-        mcp_tools = fetch_all(
+        mcp_tools = await fetch_all_async(
             "SELECT tool_name, COUNT(*) as calls FROM mcp_tool_calls WHERE timestamp > NOW() - INTERVAL '7 days' GROUP BY tool_name ORDER BY calls DESC"
         ) or []
 
         # Oracle keeper publishes (last 7 days)
-        keeper = fetch_all(
+        keeper = await fetch_all_async(
             "SELECT chain, COUNT(*) as publishes, MAX(timestamp) as last_publish FROM keeper_publish_log WHERE timestamp > NOW() - INTERVAL '7 days' GROUP BY chain"
         ) or []
 
         # Top external consumers (by IP, last 7 days)
-        top_consumers = fetch_all(
+        top_consumers = await fetch_all_async(
             """SELECT ip_address, LEFT(user_agent, 80) as ua, COUNT(*) as requests
                FROM api_request_log
                WHERE timestamp > NOW() - INTERVAL '7 days' AND is_internal = FALSE
@@ -2018,7 +2017,7 @@ async def seed_metrics(request: Request):
         ) or []
 
         # Most queried entities
-        top_entities = fetch_all(
+        top_entities = await fetch_all_async(
             """SELECT entity_type, entity_id, COUNT(*) as lookups
                FROM api_request_log
                WHERE timestamp > NOW() - INTERVAL '7 days' AND entity_id IS NOT NULL AND is_internal = FALSE
@@ -2036,25 +2035,25 @@ async def seed_metrics(request: Request):
 
         # Report metrics
         try:
-            report_total = fetch_one("SELECT COUNT(*) as c FROM report_attestations") or {"c": 0}
+            report_total = await fetch_one_async("SELECT COUNT(*) as c FROM report_attestations") or {"c": 0}
         except Exception:
             report_total = {"c": 0}
         try:
-            reports_today = fetch_one("SELECT COUNT(*) as c FROM report_attestations WHERE generated_at > NOW() - INTERVAL '1 day'") or {"c": 0}
+            reports_today = await fetch_one_async("SELECT COUNT(*) as c FROM report_attestations WHERE generated_at > NOW() - INTERVAL '1 day'") or {"c": 0}
         except Exception:
             reports_today = {"c": 0}
         try:
-            templates_used = fetch_all("SELECT template, COUNT(*) as c FROM report_attestations GROUP BY template ORDER BY c DESC") or []
+            templates_used = await fetch_all_async("SELECT template, COUNT(*) as c FROM report_attestations GROUP BY template ORDER BY c DESC") or []
         except Exception:
             templates_used = []
         try:
-            lenses_used = fetch_all("SELECT lens, COUNT(*) as c FROM report_attestations WHERE lens IS NOT NULL AND lens != '' GROUP BY lens ORDER BY c DESC") or []
+            lenses_used = await fetch_all_async("SELECT lens, COUNT(*) as c FROM report_attestations WHERE lens IS NOT NULL AND lens != '' GROUP BY lens ORDER BY c DESC") or []
         except Exception:
             lenses_used = []
 
         # Compliance lens metrics
         try:
-            compliance_by_lens = fetch_all("""
+            compliance_by_lens = await fetch_all_async("""
                 SELECT lens, COUNT(*) as total, COUNT(DISTINCT entity_id) as unique_entities, MAX(generated_at) as last_generated
                 FROM report_attestations WHERE template = 'compliance' AND lens IS NOT NULL AND lens != ''
                 GROUP BY lens ORDER BY total DESC
@@ -2062,11 +2061,11 @@ async def seed_metrics(request: Request):
         except Exception:
             compliance_by_lens = []
         try:
-            compliance_total = fetch_one("SELECT COUNT(*) as c FROM report_attestations WHERE template = 'compliance'") or {"c": 0}
+            compliance_total = await fetch_one_async("SELECT COUNT(*) as c FROM report_attestations WHERE template = 'compliance'") or {"c": 0}
         except Exception:
             compliance_total = {"c": 0}
         try:
-            full_coverage = fetch_one("""
+            full_coverage = await fetch_one_async("""
                 SELECT COUNT(*) as c FROM (
                     SELECT entity_id FROM report_attestations
                     WHERE template = 'compliance' AND lens IN ('SCO60', 'MICA67', 'GENIUS')
@@ -2078,29 +2077,29 @@ async def seed_metrics(request: Request):
 
         # x402 metrics
         try:
-            x402_total = fetch_one("SELECT COUNT(*) as c, COALESCE(SUM(price_usd), 0) as rev FROM payment_log") or {"c": 0, "rev": 0}
+            x402_total = await fetch_one_async("SELECT COUNT(*) as c, COALESCE(SUM(price_usd), 0) as rev FROM payment_log") or {"c": 0, "rev": 0}
         except Exception:
             x402_total = {"c": 0, "rev": 0}
         try:
-            x402_30d = fetch_one("SELECT COUNT(*) as c, COALESCE(SUM(price_usd), 0) as rev FROM payment_log WHERE timestamp > NOW() - INTERVAL '30 days'") or {"c": 0, "rev": 0}
+            x402_30d = await fetch_one_async("SELECT COUNT(*) as c, COALESCE(SUM(price_usd), 0) as rev FROM payment_log WHERE timestamp > NOW() - INTERVAL '30 days'") or {"c": 0, "rev": 0}
         except Exception:
             x402_30d = {"c": 0, "rev": 0}
         try:
-            x402_payers = fetch_one("SELECT COUNT(DISTINCT payer_address) as c FROM payment_log WHERE payer_address IS NOT NULL") or {"c": 0}
+            x402_payers = await fetch_one_async("SELECT COUNT(DISTINCT payer_address) as c FROM payment_log WHERE payer_address IS NOT NULL") or {"c": 0}
         except Exception:
             x402_payers = {"c": 0}
 
         # State attestation metrics
         try:
-            sa_total = fetch_one("SELECT COUNT(*) as c FROM state_attestations") or {"c": 0}
+            sa_total = await fetch_one_async("SELECT COUNT(*) as c FROM state_attestations") or {"c": 0}
         except Exception:
             sa_total = {"c": 0}
         try:
-            sa_domains = fetch_one("SELECT COUNT(DISTINCT domain) as c FROM state_attestations") or {"c": 0}
+            sa_domains = await fetch_one_async("SELECT COUNT(DISTINCT domain) as c FROM state_attestations") or {"c": 0}
         except Exception:
             sa_domains = {"c": 0}
         try:
-            latest_root = fetch_one("SELECT MAX(cycle_timestamp) as ts FROM state_attestations WHERE domain = 'state_root'")
+            latest_root = await fetch_one_async("SELECT MAX(cycle_timestamp) as ts FROM state_attestations WHERE domain = 'state_root'")
         except Exception:
             latest_root = None
         latest_root_age = None
@@ -2112,15 +2111,15 @@ async def seed_metrics(request: Request):
 
         # Coverage
         try:
-            sii_scored = fetch_one("SELECT COUNT(*) as c FROM stablecoins WHERE scoring_enabled = TRUE") or {"c": 0}
+            sii_scored = await fetch_one_async("SELECT COUNT(*) as c FROM stablecoins WHERE scoring_enabled = TRUE") or {"c": 0}
         except Exception:
             sii_scored = {"c": 0}
         try:
-            psi_scored = fetch_one("SELECT COUNT(DISTINCT protocol_slug) as c FROM psi_scores") or {"c": 0}
+            psi_scored = await fetch_one_async("SELECT COUNT(DISTINCT protocol_slug) as c FROM psi_scores") or {"c": 0}
         except Exception:
             psi_scored = {"c": 0}
         try:
-            cda_issuers = fetch_one("SELECT COUNT(DISTINCT asset_symbol) as c FROM cda_vendor_extractions") or {"c": 0}
+            cda_issuers = await fetch_one_async("SELECT COUNT(DISTINCT asset_symbol) as c FROM cda_vendor_extractions") or {"c": 0}
         except Exception:
             cda_issuers = {"c": 0}
 
@@ -2223,7 +2222,7 @@ async def abm_config(request: Request):
 async def abm_list_campaigns(request: Request):
     _check_admin_key(request)
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             "SELECT * FROM abm_campaigns ORDER BY updated_at DESC", None
         )
         campaigns = []
@@ -2245,7 +2244,7 @@ async def abm_list_campaigns(request: Request):
 async def abm_get_campaign(campaign_id: int, request: Request):
     _check_admin_key(request)
     try:
-        campaign = fetch_one("SELECT * FROM abm_campaigns WHERE id = %s", (campaign_id,))
+        campaign = await fetch_one_async("SELECT * FROM abm_campaigns WHERE id = %s", (campaign_id,))
         if not campaign:
             return JSONResponse(status_code=404, content={"error": "Campaign not found"})
         c = dict(campaign)
@@ -2253,10 +2252,10 @@ async def abm_get_campaign(campaign_id: int, request: Request):
             if isinstance(c.get(k), str):
                 c[k] = json.loads(c[k])
 
-        touches = fetch_all(
+        touches = await fetch_all_async(
             "SELECT * FROM abm_drip_touches WHERE campaign_id = %s ORDER BY day, id", (campaign_id,)
         )
-        log = fetch_all(
+        log = await fetch_all_async(
             "SELECT * FROM abm_touch_log WHERE campaign_id = %s ORDER BY created_at DESC", (campaign_id,)
         )
         return {
@@ -2314,7 +2313,7 @@ async def abm_create_campaign(request: Request):
                 logger.warning(f"ABM report pre-generation failed: {re}")
 
         # Insert campaign
-        execute(
+        await execute_async(
             """INSERT INTO abm_campaigns
                (mode, icp_type, org, person, title, stablecoins, lenses, pain_points,
                 entry_piece, state, named_target_id, report_hash)
@@ -2325,7 +2324,7 @@ async def abm_create_campaign(request: Request):
         )
 
         # Fetch the newly created campaign
-        campaign = fetch_one(
+        campaign = await fetch_one_async(
             "SELECT * FROM abm_campaigns WHERE org = %s AND icp_type = %s ORDER BY id DESC LIMIT 1",
             (org, icp_type)
         )
@@ -2337,7 +2336,7 @@ async def abm_create_campaign(request: Request):
         for touch in drip_template:
             subj = touch["subj"].replace("{org}", org).replace("{coin}", first_coin)
             desc = touch.get("desc", "")
-            execute(
+            await execute_async(
                 """INSERT INTO abm_drip_touches
                    (campaign_id, day, channel, subject, description, is_gate)
                    VALUES (%s, %s, %s, %s, %s, %s)""",
@@ -2345,7 +2344,7 @@ async def abm_create_campaign(request: Request):
             )
 
         # Add initial touch log entry
-        execute(
+        await execute_async(
             "INSERT INTO abm_touch_log (campaign_id, note) VALUES (%s, %s)",
             (campaign_id, f"Campaign created — {icp_type} for {org}")
         )
@@ -2366,19 +2365,19 @@ async def abm_update_state(campaign_id: int, request: Request):
         if new_state is None or not isinstance(new_state, int) or new_state < 0 or new_state > 8:
             return JSONResponse(status_code=400, content={"error": "state must be integer 0-8"})
 
-        campaign = fetch_one("SELECT id, state FROM abm_campaigns WHERE id = %s", (campaign_id,))
+        campaign = await fetch_one_async("SELECT id, state FROM abm_campaigns WHERE id = %s", (campaign_id,))
         if not campaign:
             return JSONResponse(status_code=404, content={"error": "Campaign not found"})
 
         old_state = campaign["state"]
-        execute(
+        await execute_async(
             "UPDATE abm_campaigns SET state = %s, updated_at = NOW() WHERE id = %s",
             (new_state, campaign_id)
         )
 
         old_label = ABM_STATE_LABELS.get(old_state, str(old_state))
         new_label = ABM_STATE_LABELS.get(new_state, str(new_state))
-        execute(
+        await execute_async(
             "INSERT INTO abm_touch_log (campaign_id, note) VALUES (%s, %s)",
             (campaign_id, f"State changed: {old_label} -> {new_label}")
         )
@@ -2399,15 +2398,15 @@ async def abm_add_log(campaign_id: int, request: Request):
         if not note:
             return JSONResponse(status_code=400, content={"error": "note is required"})
 
-        campaign = fetch_one("SELECT id FROM abm_campaigns WHERE id = %s", (campaign_id,))
+        campaign = await fetch_one_async("SELECT id FROM abm_campaigns WHERE id = %s", (campaign_id,))
         if not campaign:
             return JSONResponse(status_code=404, content={"error": "Campaign not found"})
 
-        execute(
+        await execute_async(
             "INSERT INTO abm_touch_log (campaign_id, note) VALUES (%s, %s)",
             (campaign_id, note)
         )
-        execute(
+        await execute_async(
             "UPDATE abm_campaigns SET updated_at = NOW() WHERE id = %s",
             (campaign_id,)
         )
@@ -2428,29 +2427,29 @@ async def abm_update_drip(touch_id: int, request: Request):
         if status not in ("pending", "sent", "skipped"):
             return JSONResponse(status_code=400, content={"error": "status must be pending, sent, or skipped"})
 
-        touch = fetch_one("SELECT * FROM abm_drip_touches WHERE id = %s", (touch_id,))
+        touch = await fetch_one_async("SELECT * FROM abm_drip_touches WHERE id = %s", (touch_id,))
         if not touch:
             return JSONResponse(status_code=404, content={"error": "Touch not found"})
 
         sent_at = "NOW()" if status == "sent" else "NULL"
         if response_text is not None:
-            execute(
+            await execute_async(
                 f"UPDATE abm_drip_touches SET status = %s, sent_at = {sent_at}, response = %s WHERE id = %s",
                 (status, response_text, touch_id)
             )
         else:
-            execute(
+            await execute_async(
                 f"UPDATE abm_drip_touches SET status = %s, sent_at = {sent_at} WHERE id = %s",
                 (status, touch_id)
             )
 
         # Log the touch action
         campaign_id = touch["campaign_id"]
-        execute(
+        await execute_async(
             "INSERT INTO abm_touch_log (campaign_id, note) VALUES (%s, %s)",
             (campaign_id, f"Drip touch day {touch['day']} ({touch['channel']}): {status}")
         )
-        execute(
+        await execute_async(
             "UPDATE abm_campaigns SET updated_at = NOW() WHERE id = %s",
             (campaign_id,)
         )
@@ -2465,12 +2464,12 @@ async def abm_update_drip(touch_id: int, request: Request):
 async def abm_delete_campaign(campaign_id: int, request: Request):
     _check_admin_key(request)
     try:
-        campaign = fetch_one("SELECT id, org FROM abm_campaigns WHERE id = %s", (campaign_id,))
+        campaign = await fetch_one_async("SELECT id, org FROM abm_campaigns WHERE id = %s", (campaign_id,))
         if not campaign:
             return JSONResponse(status_code=404, content={"error": "Campaign not found"})
 
         # CASCADE handles drip_touches and touch_log
-        execute("DELETE FROM abm_campaigns WHERE id = %s", (campaign_id,))
+        await execute_async("DELETE FROM abm_campaigns WHERE id = %s", (campaign_id,))
         return {"status": "ok", "deleted": campaign_id}
     except HTTPException:
         raise
@@ -2483,7 +2482,7 @@ async def abm_generate_guide(campaign_id: int, request: Request):
     """Generate a personalized Protocol Integration Guide for an ABM campaign."""
     _check_admin_key(request)
     try:
-        campaign = fetch_one("SELECT * FROM abm_campaigns WHERE id = %s", (campaign_id,))
+        campaign = await fetch_one_async("SELECT * FROM abm_campaigns WHERE id = %s", (campaign_id,))
         if not campaign:
             return JSONResponse(status_code=404, content={"error": "Campaign not found"})
 
@@ -2507,7 +2506,7 @@ async def abm_generate_guide(campaign_id: int, request: Request):
         score_rows = []
         if coins:
             placeholders = ", ".join(["%s"] * len(coins))
-            score_rows = fetch_all(
+            score_rows = await fetch_all_async(
                 f"""SELECT stablecoin_id, overall_score,
                        peg_score, liquidity_score, mint_burn_score,
                        distribution_score, structural_score
@@ -2662,11 +2661,11 @@ async def abm_generate_guide(campaign_id: int, request: Request):
         guide_hash = hashlib.sha256(guide_text.encode()).hexdigest()[:16]
 
         # Store guide hash on campaign
-        execute(
+        await execute_async(
             "UPDATE abm_campaigns SET report_hash = %s, updated_at = NOW() WHERE id = %s",
             (guide_hash, campaign_id)
         )
-        execute(
+        await execute_async(
             "INSERT INTO abm_touch_log (campaign_id, note) VALUES (%s, %s)",
             (campaign_id, f"Integration guide generated (hash: {guide_hash})")
         )
@@ -2709,24 +2708,27 @@ async def fix_internal_traffic(request: Request):
     _check_admin_key(request)
     try:
         from app.database import get_cursor
-        results = {}
-        with get_cursor() as cur:
-            cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE user_agent ILIKE '%ClaudeBot%' AND is_internal = FALSE")
-            results["claudebot"] = cur.rowcount
-            cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE user_agent ILIKE '%python-requests%' AND is_internal = FALSE")
-            results["python_requests"] = cur.rowcount
-            cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE user_agent ILIKE '%httpx%' AND is_internal = FALSE")
-            results["httpx"] = cur.rowcount
-            cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE ip_address LIKE '127.0.0.%%' AND is_internal = FALSE")
-            results["localhost"] = cur.rowcount
+        def _backfill_internal_flags():
+            results = {}
+            with get_cursor() as cur:
+                cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE user_agent ILIKE '%ClaudeBot%' AND is_internal = FALSE")
+                results["claudebot"] = cur.rowcount
+                cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE user_agent ILIKE '%python-requests%' AND is_internal = FALSE")
+                results["python_requests"] = cur.rowcount
+                cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE user_agent ILIKE '%httpx%' AND is_internal = FALSE")
+                results["httpx"] = cur.rowcount
+                cur.execute("UPDATE api_request_log SET is_internal = TRUE WHERE ip_address LIKE '127.0.0.%%' AND is_internal = FALSE")
+                results["localhost"] = cur.rowcount
+            return results
+        results = await asyncio.to_thread(_backfill_internal_flags)
 
         # Query current state
-        summary = fetch_all(
+        summary = await fetch_all_async(
             """SELECT is_internal, COUNT(*) as requests, COUNT(DISTINCT ip_address) as unique_ips
                FROM api_request_log WHERE timestamp > NOW() - INTERVAL '24 hours'
                GROUP BY is_internal"""
         )
-        top_external = fetch_all(
+        top_external = await fetch_all_async(
             """SELECT ip_address, LEFT(user_agent, 80) as ua, COUNT(*) as c
                FROM api_request_log
                WHERE timestamp > NOW() - INTERVAL '24 hours' AND is_internal = FALSE
@@ -2755,7 +2757,7 @@ async def keeper_cycle_start(request: Request):
     body = await request.json() if request.headers.get("content-type") == "application/json" else {}
     trigger = body.get("trigger_reason", "scheduled")
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             "INSERT INTO ops.keeper_cycles (trigger_reason) VALUES (%s) RETURNING id, started_at",
             (trigger,),
         )
@@ -2770,7 +2772,7 @@ async def keeper_cycle_complete(cycle_id: int, request: Request):
     """Record the completion of a keeper cycle with results."""
     body = await request.json()
     try:
-        execute(
+        await execute_async(
             """UPDATE ops.keeper_cycles SET
                 completed_at = NOW(),
                 duration_ms = %s,
@@ -2802,7 +2804,7 @@ async def keeper_cycle_complete(cycle_id: int, request: Request):
 async def keeper_cycles_list():
     """Return last 24h of keeper cycles (for daily digest)."""
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             "SELECT * FROM ops.keeper_cycles WHERE started_at > NOW() - INTERVAL '24 hours' ORDER BY started_at DESC"
         )
         return {"cycles": [dict(r) for r in (rows or [])]}
@@ -2866,7 +2868,7 @@ async def enrichment_status(request: Request):
     """Last enrichment pipeline run results."""
     _check_admin_key(request)
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT * FROM api_usage_hourly
                WHERE hour >= NOW() - INTERVAL '24 hours'
                ORDER BY provider, hour DESC"""
@@ -2948,7 +2950,7 @@ async def data_catalog_endpoint(request: Request):
     """
     _check_admin_key(request)
     try:
-        rows = fetch_all("SELECT * FROM data_catalog ORDER BY data_type")
+        rows = await fetch_all_async("SELECT * FROM data_catalog ORDER BY data_type")
         if not rows:
             # Return a default catalog based on known tables
             return {"catalog": [], "note": "Data catalog not yet populated. Run a scoring cycle first."}
@@ -2983,7 +2985,7 @@ async def playground_compute(request: Request):
     ip = request.client.host if request.client else "unknown"
     ip_hash = _ph.sha256(ip.encode()).hexdigest()
     try:
-        recent = fetch_one(
+        recent = await fetch_one_async(
             "SELECT COUNT(*) as cnt FROM playground_submissions WHERE submitter_ip_hash = %s AND submitted_at > NOW() - INTERVAL '1 hour'",
             (ip_hash,),
         )
@@ -3001,7 +3003,7 @@ async def playground_compute(request: Request):
 
     # Store submission
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             INSERT INTO playground_submissions
                 (submitter_ip_hash, portfolio, computed_cqi, computed_stress, content_hash)
             VALUES (%s, %s, %s, %s, %s)
@@ -3036,7 +3038,7 @@ async def playground_request_report(request: Request):
     if not email or not _re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
         return JSONResponse({"error": "Valid email address required"}, status_code=400)
 
-    sub = fetch_one("SELECT * FROM playground_submissions WHERE submission_id = %s", (submission_id,))
+    sub = await fetch_one_async("SELECT * FROM playground_submissions WHERE submission_id = %s", (submission_id,))
     if not sub:
         return JSONResponse({"error": "Submission not found"}, status_code=404)
     if sub.get("report_requested"):
@@ -3044,7 +3046,7 @@ async def playground_request_report(request: Request):
 
     token = secrets.token_urlsafe(32)
 
-    execute("""
+    await execute_async("""
         UPDATE playground_submissions SET
             report_requested = TRUE,
             submitter_email = %s,
@@ -3078,7 +3080,7 @@ async def playground_request_report(request: Request):
                         ),
                     },
                 )
-            execute("UPDATE playground_submissions SET email_sent_at = NOW() WHERE submission_id = %s", (submission_id,))
+            await execute_async("UPDATE playground_submissions SET email_sent_at = NOW() WHERE submission_id = %s", (submission_id,))
         else:
             logger.warning("RESEND_API_KEY not set — email not sent")
     except Exception as e:
@@ -3104,7 +3106,7 @@ async def playground_submissions(
     sql += " ORDER BY submitted_at DESC LIMIT %s"
     params.append(limit)
 
-    rows = fetch_all(sql, tuple(params))
+    rows = await fetch_all_async(sql, tuple(params))
     return {
         "submissions": [{
             "id": str(r["submission_id"]),
@@ -3153,7 +3155,7 @@ async def track_record_entries(
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         params.append(limit)
 
-        rows = fetch_all(
+        rows = await fetch_all_async(
             f"""SELECT entry_id, entry_type, entity_slug, index_name,
                        trigger_kind, trigger_detail, triggered_at,
                        featured, featured_by, featured_at,
@@ -3168,7 +3170,7 @@ async def track_record_entries(
         entries = []
         for row in (rows or []):
             entry = dict(row)
-            followups = fetch_all(
+            followups = await fetch_all_async(
                 "SELECT checkpoint, outcome_category FROM track_record_followups WHERE entry_id = %s",
                 (str(row["entry_id"]),),
             )
@@ -3186,7 +3188,7 @@ async def track_record_entry_detail(entry_id: str, request: Request):
     """Single entry with full detail + all followups."""
     _check_admin_key(request)
     try:
-        entry = fetch_one(
+        entry = await fetch_one_async(
             "SELECT * FROM track_record_entries WHERE entry_id = %s::uuid",
             (entry_id,),
         )
@@ -3194,7 +3196,7 @@ async def track_record_entry_detail(entry_id: str, request: Request):
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Entry not found")
 
-        followups = fetch_all(
+        followups = await fetch_all_async(
             "SELECT * FROM track_record_followups WHERE entry_id = %s::uuid ORDER BY checkpoint",
             (entry_id,),
         )
@@ -3217,7 +3219,7 @@ async def track_record_feature(entry_id: str, request: Request):
         narrative = body.get("narrative_markdown", "")
         featured_by = body.get("featured_by", "admin")
 
-        execute(
+        await execute_async(
             """UPDATE track_record_entries
                SET featured = TRUE, featured_by = %s, featured_at = NOW(),
                    narrative_markdown = %s
@@ -3250,7 +3252,7 @@ async def track_record_create_manual(request: Request):
         )
 
         import json
-        execute(
+        await execute_async(
             """INSERT INTO track_record_entries
                (entry_type, entity_slug, index_name, trigger_kind,
                 trigger_detail, triggered_at, state_root_at_trigger,
@@ -3281,7 +3283,7 @@ async def track_record_followup_narrative(followup_id: str, request: Request):
     _check_admin_key(request)
     try:
         body = await request.json()
-        execute(
+        await execute_async(
             "UPDATE track_record_followups SET narrative_markdown = %s WHERE followup_id = %s::uuid",
             (body.get("narrative_markdown", ""), followup_id),
         )
@@ -3296,10 +3298,10 @@ async def track_record_summary(request: Request):
     _check_admin_key(request)
     try:
         # Total entries
-        total = fetch_one("SELECT COUNT(*) as cnt FROM track_record_entries")
+        total = await fetch_one_async("SELECT COUNT(*) as cnt FROM track_record_entries")
 
         # By trigger kind in last 30 days
-        by_kind = fetch_all("""
+        by_kind = await fetch_all_async("""
             SELECT trigger_kind, COUNT(*) as cnt
             FROM track_record_entries
             WHERE triggered_at >= NOW() - INTERVAL '30 days'
@@ -3307,7 +3309,7 @@ async def track_record_summary(request: Request):
         """)
 
         # Featured entries
-        featured = fetch_all("""
+        featured = await fetch_all_async("""
             SELECT entry_id, entity_slug, index_name, trigger_kind,
                    narrative_markdown, featured_at
             FROM track_record_entries
@@ -3316,7 +3318,7 @@ async def track_record_summary(request: Request):
         """)
 
         # Pending followups this week
-        pending = fetch_all("""
+        pending = await fetch_all_async("""
             SELECT e.entry_id, e.entity_slug, e.trigger_kind, e.triggered_at,
                    CASE
                      WHEN e.triggered_at <= NOW() - INTERVAL '90 days' THEN '90d'
@@ -3338,7 +3340,7 @@ async def track_record_summary(request: Request):
         """)
 
         # Calibration: outcome distribution
-        calibration = fetch_all("""
+        calibration = await fetch_all_async("""
             SELECT e.trigger_kind, f.outcome_category, COUNT(*) as cnt
             FROM track_record_followups f
             JOIN track_record_entries e ON f.entry_id = e.entry_id
@@ -3368,7 +3370,7 @@ async def track_record_pending_on_chain(request: Request, chain: str = "base"):
     col = f"committed_on_chain_{chain}"
     try:
         from app.track_record import compute_on_chain_entity_id
-        rows = fetch_all(
+        rows = await fetch_all_async(
             f"""SELECT entry_id, entity_slug, trigger_kind, triggered_at,
                        content_hash, baseline_snapshot, trigger_detail
                 FROM track_record_entries
@@ -3403,14 +3405,14 @@ async def track_record_mark_committed(entry_id: str, chain: str, request: Reques
     col_flag = f"committed_on_chain_{chain}"
     col_hash = f"on_chain_tx_hash_{chain}"
     try:
-        existing = fetch_one(
+        existing = await fetch_one_async(
             "SELECT entry_id FROM track_record_entries WHERE entry_id = %s::uuid",
             (entry_id,),
         )
         if not existing:
             return JSONResponse({"error": "entry not found"}, status_code=404)
 
-        execute(
+        await execute_async(
             f"""UPDATE track_record_entries
                 SET {col_flag} = TRUE,
                     {col_hash} = %s,
@@ -3427,7 +3429,7 @@ async def track_record_mark_committed(entry_id: str, chain: str, request: Reques
 async def track_record_on_chain_status(request: Request):
     _check_admin(request)
     try:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT
                 COUNT(*) AS total,
                 COUNT(*) FILTER (WHERE committed_on_chain_base = TRUE) AS committed_base,
@@ -3492,7 +3494,7 @@ async def ops_methodology_pending_on_chain(request: Request, chain: str = "base"
     col = f"committed_on_chain_{chain}"
     try:
         from app.methodology_hashes import compute_on_chain_entity_id
-        rows = fetch_all(
+        rows = await fetch_all_async(
             f"""SELECT methodology_id, content_hash, description, registered_at
                 FROM methodology_hashes
                 WHERE {col} = FALSE
@@ -3537,7 +3539,7 @@ async def ops_methodology_mark_committed(methodology_id: str, chain: str, reques
         if not tx_hash:
             return JSONResponse({"error": "tx_hash required"}, status_code=400)
 
-        existing = fetch_one(
+        existing = await fetch_one_async(
             "SELECT methodology_id FROM methodology_hashes WHERE methodology_id = %s",
             (methodology_id,),
         )
@@ -3546,7 +3548,7 @@ async def ops_methodology_mark_committed(methodology_id: str, chain: str, reques
 
         col_flag = f"committed_on_chain_{chain}"
         col_hash = f"on_chain_tx_hash_{chain}"
-        execute(
+        await execute_async(
             f"""UPDATE methodology_hashes
                 SET {col_flag} = TRUE,
                     {col_hash} = %s,
@@ -3652,12 +3654,12 @@ async def list_disputes(request: Request, status: Optional[str] = None):
     _check_admin_key(request)
     try:
         if status:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 "SELECT * FROM disputes WHERE status = %s ORDER BY created_at DESC",
                 (status,),
             )
         else:
-            rows = fetch_all("SELECT * FROM disputes ORDER BY created_at DESC")
+            rows = await fetch_all_async("SELECT * FROM disputes ORDER BY created_at DESC")
         return {"disputes": [dict(r) for r in rows] if rows else []}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -3672,7 +3674,7 @@ async def disputes_pending_on_chain(request: Request, chain: str = "base"):
     col = f"committed_on_chain_{chain}"
     try:
         from app.disputes import compute_on_chain_entity_id
-        rows = fetch_all(
+        rows = await fetch_all_async(
             f"SELECT * FROM dispute_transitions WHERE {col} = FALSE ORDER BY created_at"
         )
         results = []
@@ -3691,13 +3693,13 @@ async def disputes_pending_on_chain(request: Request, chain: str = "base"):
 async def get_dispute(dispute_id: str, request: Request):
     _check_admin_key(request)
     try:
-        dispute = fetch_one(
+        dispute = await fetch_one_async(
             "SELECT * FROM disputes WHERE dispute_id = %s::uuid", (dispute_id,)
         )
         if not dispute:
             return JSONResponse({"error": "dispute not found"}, status_code=404)
 
-        transitions = fetch_all(
+        transitions = await fetch_all_async(
             "SELECT * FROM dispute_transitions WHERE dispute_id = %s::uuid ORDER BY transition_index",
             (dispute_id,),
         )
@@ -3725,14 +3727,14 @@ async def dispute_transition_mark_committed(transition_id: str, chain: str, requ
     col_flag = f"committed_on_chain_{chain}"
     col_hash = f"on_chain_tx_hash_{chain}"
     try:
-        existing = fetch_one(
+        existing = await fetch_one_async(
             "SELECT transition_id FROM dispute_transitions WHERE transition_id = %s::uuid",
             (transition_id,),
         )
         if not existing:
             return JSONResponse({"error": "transition not found"}, status_code=404)
 
-        execute(
+        await execute_async(
             f"""UPDATE dispute_transitions
                 SET {col_flag} = TRUE,
                     {col_hash} = %s,

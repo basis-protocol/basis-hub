@@ -32,7 +32,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         limit: int = Query(50, ge=1, le=500),
     ):
         """Top wallets by current holdings value (computed from wallet_holdings)."""
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT
                 agg.address,
@@ -85,7 +85,7 @@ def register_wallet_routes(app: FastAPI) -> None:
     @app.get("/api/wallets/riskiest")
     async def wallets_riskiest(limit: int = Query(50, ge=1, le=500)):
         """Wallets with lowest risk scores that currently hold stablecoins."""
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT LOWER(wrs.wallet_address) AS address,
                    (SELECT COALESCE(SUM(value_usd), 0) FROM wallet_graph.wallet_holdings
@@ -139,21 +139,21 @@ def register_wallet_routes(app: FastAPI) -> None:
         """Debug: check wallet_graph schema visibility from this server instance."""
         results = {}
         try:
-            results["db_info"] = fetch_one("SELECT current_database() AS db, current_user AS usr")
+            results["db_info"] = await fetch_one_async("SELECT current_database() AS db, current_user AS usr")
         except Exception as e:
             results["db_info_error"] = str(e)
         try:
-            results["schema_exists"] = fetch_one(
+            results["schema_exists"] = await fetch_one_async(
                 "SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema = 'wallet_graph'"
             )
         except Exception as e:
             results["schema_error"] = str(e)
         try:
-            results["wallet_count"] = fetch_one("SELECT COUNT(*) AS c FROM wallet_graph.wallets")
+            results["wallet_count"] = await fetch_one_async("SELECT COUNT(*) AS c FROM wallet_graph.wallets")
         except Exception as e:
             results["wallet_count_error"] = str(e)
         try:
-            results["migration"] = fetch_one("SELECT name, applied_at FROM migrations WHERE name = '007_wallet_graph'")
+            results["migration"] = await fetch_one_async("SELECT name, applied_at FROM migrations WHERE name = '007_wallet_graph'")
         except Exception as e:
             results["migration_error"] = str(e)
         return results
@@ -161,7 +161,7 @@ def register_wallet_routes(app: FastAPI) -> None:
     @app.get("/api/wallets/stats")
     async def wallets_stats():
         """Aggregate stats for the wallet risk graph."""
-        stats = fetch_one(
+        stats = await fetch_one_async(
             """
             SELECT
                 COUNT(DISTINCT LOWER(address)) AS total_wallets,
@@ -173,7 +173,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             """
         )
         # Compute total value from current holdings, not stale wallets cache
-        holdings_stats = fetch_one(
+        holdings_stats = await fetch_one_async(
             """
             SELECT
                 COALESCE(SUM(value_usd), 0) AS total_value_tracked,
@@ -183,7 +183,7 @@ def register_wallet_routes(app: FastAPI) -> None:
               AND value_usd >= 0.01
             """
         )
-        score_stats = fetch_one(
+        score_stats = await fetch_one_async(
             """
             SELECT
                 COUNT(DISTINCT wrs.wallet_address) AS wallets_scored,
@@ -198,7 +198,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             AND wrs.risk_score IS NOT NULL
             """
         )
-        backlog_stats = fetch_one(
+        backlog_stats = await fetch_one_async(
             """
             SELECT
                 COUNT(*) AS unscored_assets,
@@ -231,13 +231,13 @@ def register_wallet_routes(app: FastAPI) -> None:
         addr = address.strip().lower()
 
         # Try unified cross-chain profile first
-        profile = fetch_one(
+        profile = await fetch_one_async(
             "SELECT * FROM wallet_graph.wallet_profiles WHERE address = %s",
             (addr,),
         )
 
         # Fall back to single-chain lookup
-        wallet = fetch_one(
+        wallet = await fetch_one_async(
             """
             SELECT address, chain, first_seen_at, last_indexed_at, total_stablecoin_value,
                    size_tier, source, is_contract, label
@@ -252,7 +252,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="Wallet not found in index")
 
         # Latest risk score (best chain)
-        risk = fetch_one(
+        risk = await fetch_one_async(
             """
             SELECT risk_score, concentration_hhi,
                    unscored_pct, coverage_quality,
@@ -268,7 +268,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         )
 
         # Latest holdings (all chains), filter dust for display
-        holdings_raw = fetch_all(
+        holdings_raw = await fetch_all_async(
             """
             SELECT token_address, symbol, chain, balance, value_usd,
                    is_scored, sii_score, pct_of_wallet, indexed_at
@@ -314,7 +314,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         limit: int = Query(30, ge=1, le=365),
     ):
         """Daily risk score history for a wallet."""
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT risk_score, concentration_hhi, unscored_pct,
                    coverage_quality, total_stablecoin_value, size_tier, computed_at
@@ -338,7 +338,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         """Top counterparties for a wallet sorted by edge weight. Optional ?chain= filter."""
         addr = address.lower()
         if chain:
-            edges = fetch_all(
+            edges = await fetch_all_async(
                 """
                 SELECT
                     CASE WHEN from_address = %s THEN to_address ELSE from_address END AS counterparty,
@@ -351,7 +351,7 @@ def register_wallet_routes(app: FastAPI) -> None:
                 (addr, addr, addr, chain, limit),
             )
         else:
-            edges = fetch_all(
+            edges = await fetch_all_async(
                 """
                 SELECT
                     CASE WHEN from_address = %s THEN to_address ELSE from_address END AS counterparty,
@@ -366,7 +366,7 @@ def register_wallet_routes(app: FastAPI) -> None:
 
         connections = []
         for edge in edges:
-            cp_info = fetch_one(
+            cp_info = await fetch_one_async(
                 "SELECT total_stablecoin_value, size_tier, label, is_contract FROM wallet_graph.wallets WHERE LOWER(address) = %s",
                 (edge["counterparty"].lower(),),
             )
@@ -384,7 +384,7 @@ def register_wallet_routes(app: FastAPI) -> None:
                 "counterparty_tier": cp_info.get("size_tier") if cp_info else None,
             })
 
-        build = fetch_one(
+        build = await fetch_one_async(
             "SELECT status, last_built_at FROM wallet_graph.edge_build_status WHERE wallet_address = %s",
             (addr,),
         )
@@ -493,7 +493,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         else:
             base_params = (addr, addr, addr, addr, addr, addr, addr, depth, MAX_NODES + 1)
 
-        rows = fetch_all(query, base_params)
+        rows = await fetch_all_async(query, base_params)
 
         truncated = len(rows) > MAX_NODES
         if truncated:
@@ -504,7 +504,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         risk_map = {}
         actor_map = {}
         if node_addrs:
-            risk_rows = fetch_all(
+            risk_rows = await fetch_all_async(
                 """
                 SELECT DISTINCT ON (wallet_address)
                     wallet_address, risk_score
@@ -516,7 +516,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             )
             risk_map = {r["wallet_address"]: r for r in risk_rows}
 
-            actor_rows = fetch_all(
+            actor_rows = await fetch_all_async(
                 """
                 SELECT wallet_address, actor_type, agent_probability
                 FROM wallet_graph.actor_classifications
@@ -574,7 +574,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="Wallet not found in index")
 
         addr = address.lower()
-        top_connections = fetch_all(
+        top_connections = await fetch_all_async(
             """
             SELECT
                 CASE WHEN from_address = %s THEN to_address ELSE from_address END AS counterparty,
@@ -586,7 +586,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             """,
             (addr, addr, addr),
         )
-        edge_count = fetch_one(
+        edge_count = await fetch_one_async(
             "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges WHERE from_address = %s OR to_address = %s",
             (addr, addr),
         )
@@ -663,7 +663,7 @@ def register_wallet_routes(app: FastAPI) -> None:
     @app.get("/api/graph/stats")
     async def graph_stats():
         """Edge graph statistics, build progress, and coverage metrics."""
-        edge_stats = fetch_one(
+        edge_stats = await fetch_one_async(
             """
             SELECT
                 COUNT(*) AS total_edges,
@@ -674,7 +674,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             FROM wallet_graph.wallet_edges
             """
         )
-        build_stats = fetch_one(
+        build_stats = await fetch_one_async(
             """
             SELECT
                 COUNT(*) FILTER (WHERE status = 'complete') AS built,
@@ -682,11 +682,11 @@ def register_wallet_routes(app: FastAPI) -> None:
             FROM wallet_graph.edge_build_status
             """
         )
-        wallets_total_row = fetch_one("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
+        wallets_total_row = await fetch_one_async("SELECT COUNT(DISTINCT LOWER(address)) AS cnt FROM wallet_graph.wallets")
         wallets_total = wallets_total_row["cnt"] if wallets_total_row else 0
 
         # Per-chain breakdown
-        chain_rows = fetch_all(
+        chain_rows = await fetch_all_async(
             """
             SELECT chain, COUNT(*) AS cnt, COALESCE(SUM(total_value_usd), 0) AS value
             FROM wallet_graph.wallet_edges GROUP BY chain ORDER BY cnt DESC
@@ -695,7 +695,7 @@ def register_wallet_routes(app: FastAPI) -> None:
         by_chain = {r["chain"]: {"edges": r["cnt"], "value": float(r["value"])} for r in chain_rows}
 
         # Coverage metrics
-        wallets_with_edges_row = fetch_one(
+        wallets_with_edges_row = await fetch_one_async(
             """
             SELECT COUNT(DISTINCT addr) AS cnt FROM (
                 SELECT from_address AS addr FROM wallet_graph.wallet_edges
@@ -709,23 +709,23 @@ def register_wallet_routes(app: FastAPI) -> None:
         avg_connections = round(total_edges / wallets_with_edges, 2) if wallets_with_edges > 0 else 0
 
         # Recent activity
-        recent_row = fetch_one(
+        recent_row = await fetch_one_async(
             "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges WHERE last_transfer_at > NOW() - INTERVAL '24 hours'"
         )
         edges_last_24h = recent_row["cnt"] if recent_row else 0
 
         # Archive count
         try:
-            archive_row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges_archive")
+            archive_row = await fetch_one_async("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_edges_archive")
             archived = archive_row["cnt"] if archive_row else 0
         except Exception:
             archived = 0
 
         # Profile stats
         try:
-            profile_row = fetch_one("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_profiles")
+            profile_row = await fetch_one_async("SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_profiles")
             profiles_total = profile_row["cnt"] if profile_row else 0
-            multi_row = fetch_one(
+            multi_row = await fetch_one_async(
                 "SELECT COUNT(*) AS cnt FROM wallet_graph.wallet_profiles WHERE jsonb_array_length(chains_active) > 1"
             )
             multi_chain = multi_row["cnt"] if multi_row else 0
@@ -809,7 +809,7 @@ def register_wallet_routes(app: FastAPI) -> None:
 
             # Register wallets
             for addr in depositors:
-                execute(
+                await execute_async(
                     """
                     INSERT INTO wallet_graph.wallets (address, chain, source, label, created_at, updated_at)
                     VALUES (%s, 'solana', 'drift-discovery', 'drift-depositor', NOW(), NOW())
@@ -858,7 +858,7 @@ def register_wallet_routes(app: FastAPI) -> None:
 
         merged = 0
         for addr_info in addresses:
-            execute(
+            await execute_async(
                 """
                 UPDATE wallet_graph.wallets
                 SET label = %s, updated_at = NOW()
@@ -880,7 +880,7 @@ def register_wallet_routes(app: FastAPI) -> None:
     async def wallet_actor(address: str):
         """Actor classification for a single wallet."""
         addr = address.lower()
-        row = fetch_one(
+        row = await fetch_one_async(
             """
             SELECT wallet_address, actor_type, agent_probability, confidence,
                    feature_vector, tx_count_basis, methodology_version,
@@ -896,7 +896,7 @@ def register_wallet_routes(app: FastAPI) -> None:
             result = classify_wallet(addr)
             if not result:
                 raise HTTPException(status_code=404, detail="Insufficient data to classify wallet")
-            row = fetch_one(
+            row = await fetch_one_async(
                 "SELECT * FROM wallet_graph.actor_classifications WHERE wallet_address = %s",
                 (addr,),
             )
@@ -915,7 +915,7 @@ def register_wallet_routes(app: FastAPI) -> None:
     @app.get("/api/actor/stats")
     async def actor_stats():
         """Aggregate actor classification statistics."""
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT actor_type, COUNT(*) AS cnt,
                    AVG(agent_probability) AS avg_prob,
@@ -945,7 +945,7 @@ def register_wallet_routes(app: FastAPI) -> None:
     async def actor_stats_by_symbol(symbol: str):
         """Actor composition for a stablecoin's holder base."""
         sym = symbol.upper()
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT ac.actor_type,
                    COUNT(DISTINCT wh.wallet_address) AS wallets,
@@ -980,7 +980,7 @@ def register_wallet_routes(app: FastAPI) -> None:
     async def actor_population(symbol: str, days: int = Query(default=30, ge=1, le=365)):
         """Time series of actor composition for a stablecoin (compounding dataset)."""
         sym = symbol.upper()
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """
             SELECT
                 public.immutable_date(wh.indexed_at) AS day,

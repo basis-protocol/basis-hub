@@ -488,15 +488,13 @@ async def startup():
         logger.warning(f"Wallet indexer not available: {e}")
     # Clean stale temporal reconstruction cache entries
     try:
-        from app.database import execute as _exec
-        _exec("DELETE FROM temporal_reconstructions WHERE components_available = 0")
+        await execute_async("DELETE FROM temporal_reconstructions WHERE components_available = 0")
         logger.info("Cleared stale temporal reconstruction cache entries")
     except Exception:
         pass
     # Ensure historical_protocol_data table exists on this database
     try:
-        from app.database import execute as _exec2, fetch_one as _fo
-        _exec2("""
+        await execute_async("""
             CREATE TABLE IF NOT EXISTS historical_protocol_data (
                 id SERIAL PRIMARY KEY,
                 protocol_slug VARCHAR(64) NOT NULL,
@@ -513,11 +511,11 @@ async def startup():
                 UNIQUE(protocol_slug, record_date)
             )
         """)
-        _exec2(
+        await execute_async(
             "CREATE INDEX IF NOT EXISTS idx_hist_protocol_slug_date "
             "ON historical_protocol_data(protocol_slug, record_date)"
         )
-        count = _fo("SELECT COUNT(*) as cnt FROM historical_protocol_data")
+        count = await fetch_one_async("SELECT COUNT(*) as cnt FROM historical_protocol_data")
         logger.info(f"historical_protocol_data: {count['cnt']} rows")
     except Exception as e:
         logger.warning(f"historical_protocol_data check failed: {e}")
@@ -1467,7 +1465,7 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
         response.headers["X-Cache"] = "HIT"
         return cached
     pinned = check_methodology_version(methodology_version)
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
         FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
@@ -1568,7 +1566,7 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
     if os.environ.get("HELIUS_API_KEY"):
         data_sources.add("Helius")
     try:
-        cda_count = fetch_one(
+        cda_count = await fetch_one_async(
             "SELECT COUNT(*) as cnt FROM cda_vendor_extractions WHERE extracted_at > NOW() - INTERVAL '7 days'"
         )
         if cda_count and cda_count["cnt"] > 0:
@@ -1600,7 +1598,7 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
 async def get_score_detail(coin: str, methodology_version: Optional[str] = Query(default=None)):
     """Get detailed SII score breakdown for a specific stablecoin."""
     pinned = check_methodology_version(methodology_version)
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract, st.attestation_config, st.regulatory_licenses
         FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
@@ -1609,13 +1607,13 @@ async def get_score_detail(coin: str, methodology_version: Optional[str] = Query
     
     if not row:
         # Check if the stablecoin exists but isn't scored yet
-        exists = fetch_one("SELECT id FROM stablecoins WHERE id = %s", (coin,))
+        exists = await fetch_one_async("SELECT id FROM stablecoins WHERE id = %s", (coin,))
         if exists:
             raise HTTPException(status_code=404, detail=f"Stablecoin '{coin}' exists but has no scores yet")
         raise HTTPException(status_code=404, detail=f"Stablecoin '{coin}' not found")
     
     # Get latest component readings (deduplicated — one per component)
-    components = fetch_all("""
+    components = await fetch_all_async("""
         SELECT DISTINCT ON (component_id)
           component_id, category, raw_value, normalized_score, data_source, collected_at
         FROM component_readings
@@ -1733,7 +1731,7 @@ async def get_score_history(
     days: int = Query(default=90, ge=1, le=365),
 ):
     """Get historical SII scores for a stablecoin."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT score_date, overall_score, grade, peg_score, liquidity_score,
                mint_burn_score, distribution_score, structural_score,
                daily_change, component_count
@@ -1776,7 +1774,7 @@ async def get_recent_scores(
     days: int = Query(default=7, ge=1, le=30),
 ):
     """Lightweight recent score history for trend display (e.g. 7-day sparkline)."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT score_date, overall_score, grade
         FROM score_history
         WHERE stablecoin = %s
@@ -1786,7 +1784,7 @@ async def get_recent_scores(
 
     if not rows:
         # Verify the stablecoin exists
-        exists = fetch_one("SELECT id FROM stablecoins WHERE id = %s", (coin,))
+        exists = await fetch_one_async("SELECT id FROM stablecoins WHERE id = %s", (coin,))
         if not exists:
             raise HTTPException(status_code=404, detail=f"Stablecoin '{coin}' not found")
 
@@ -1963,7 +1961,7 @@ async def compare_scores(
         raise HTTPException(status_code=400, detail="Maximum 10 stablecoins per comparison")
     
     placeholders = ",".join(["%s"] * len(coin_list))
-    rows = fetch_all(f"""
+    rows = await fetch_all_async(f"""
         SELECT s.*, st.name, st.symbol, st.issuer, st.contract AS token_contract
         FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
@@ -2227,7 +2225,7 @@ async def get_events(
     limit: int = Query(default=50, ge=1, le=500),
 ):
     """Get crisis events and annotations timeline."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT id, event_date, event_name, event_type, affected_stablecoins,
                description, severity
         FROM score_events
@@ -2268,7 +2266,7 @@ async def get_deviations(
     
     cg_id = cfg["coingecko_id"]
     
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT event_start, event_end, duration_hours, max_deviation_pct,
                avg_deviation_pct, direction, recovery_complete,
                market_cap_at_start, volume_during_event
@@ -2322,18 +2320,18 @@ async def admin_governance_stats(request: Request):
     _check_admin_key(request)
 
     try:
-        total_docs = fetch_one("SELECT COUNT(*) as count FROM gov_documents")
-        total_coin_mentions = fetch_one("SELECT COUNT(*) as count FROM gov_stablecoin_mentions")
-        total_metric_mentions = fetch_one("SELECT COUNT(*) as count FROM gov_metric_mentions")
+        total_docs = await fetch_one_async("SELECT COUNT(*) as count FROM gov_documents")
+        total_coin_mentions = await fetch_one_async("SELECT COUNT(*) as count FROM gov_stablecoin_mentions")
+        total_metric_mentions = await fetch_one_async("SELECT COUNT(*) as count FROM gov_metric_mentions")
 
-        sources = fetch_all("""
+        sources = await fetch_all_async("""
             SELECT source, COUNT(*) as count
             FROM gov_documents
             GROUP BY source
             ORDER BY count DESC
         """)
 
-        top_coins = fetch_all("""
+        top_coins = await fetch_all_async("""
             SELECT
                 sm.stablecoin,
                 COUNT(*) as count,
@@ -2347,7 +2345,7 @@ async def admin_governance_stats(request: Request):
             LIMIT 15
         """)
 
-        recent_docs = fetch_all("""
+        recent_docs = await fetch_all_async("""
             SELECT
                 d.title, d.source, d.published_at,
                 array_agg(DISTINCT sm.stablecoin) FILTER (WHERE sm.stablecoin IS NOT NULL) as stablecoins_mentioned
@@ -2404,11 +2402,11 @@ async def admin_freshness(request: Request):
     try:
         stablecoins_data = []
         for sid in STABLECOIN_REGISTRY:
-            score_row = fetch_one(
+            score_row = await fetch_one_async(
                 "SELECT computed_at FROM scores WHERE stablecoin_id = %s", (sid,)
             )
 
-            components = fetch_all("""
+            components = await fetch_all_async("""
                 SELECT
                     category,
                     COUNT(*) as count,
@@ -2419,7 +2417,7 @@ async def admin_freshness(request: Request):
                 GROUP BY category
             """, (sid,))
 
-            sources_rows = fetch_all("""
+            sources_rows = await fetch_all_async("""
                 SELECT DISTINCT data_source
                 FROM component_readings
                 WHERE stablecoin_id = %s
@@ -2460,7 +2458,7 @@ async def admin_freshness(request: Request):
                 "sources": [r["data_source"] for r in sources_rows],
             })
 
-        latest_score = fetch_one("SELECT MAX(computed_at) as latest FROM scores")
+        latest_score = await fetch_one_async("SELECT MAX(computed_at) as latest FROM scores")
         last_run = latest_score["latest"] if latest_score else None
         interval_min = int(os.environ.get("COLLECTION_INTERVAL", "60"))
 
@@ -2487,20 +2485,20 @@ async def admin_health(request: Request):
     try:
         db_status = db_health_check()
 
-        scores_result = fetch_one("SELECT COUNT(*) as count FROM scores")
+        scores_result = await fetch_one_async("SELECT COUNT(*) as count FROM scores")
         scored_count = scores_result["count"] if scores_result else 0
 
-        latest_result = fetch_one("SELECT MAX(computed_at) as latest FROM scores")
+        latest_result = await fetch_one_async("SELECT MAX(computed_at) as latest FROM scores")
         latest_score = latest_result["latest"] if latest_result else None
 
-        last_crawl = fetch_one("""
+        last_crawl = await fetch_one_async("""
             SELECT source, completed_at, documents_found, documents_new, errors, status
             FROM gov_crawl_logs
             ORDER BY started_at DESC
             LIMIT 1
         """)
 
-        source_coverage = fetch_all("""
+        source_coverage = await fetch_all_async("""
             SELECT data_source, COUNT(DISTINCT stablecoin_id) as stablecoin_count, COUNT(*) as reading_count
             FROM component_readings
             WHERE collected_at > NOW() - INTERVAL '48 hours'
@@ -2508,19 +2506,19 @@ async def admin_health(request: Request):
             ORDER BY reading_count DESC
         """)
 
-        table_counts = fetch_all("""
+        table_counts = await fetch_all_async("""
             SELECT relname as table_name, n_live_tup as row_count
             FROM pg_stat_user_tables
             WHERE schemaname = 'public'
             ORDER BY n_live_tup DESC
         """)
 
-        stale_count = fetch_one("""
+        stale_count = await fetch_one_async("""
             SELECT COUNT(*) as count FROM component_readings
             WHERE is_stale = TRUE AND collected_at > NOW() - INTERVAL '48 hours'
         """)
 
-        error_count = fetch_one("""
+        error_count = await fetch_one_async("""
             SELECT COUNT(*) as count FROM component_readings
             WHERE error_message IS NOT NULL AND collected_at > NOW() - INTERVAL '48 hours'
         """)
@@ -2573,7 +2571,7 @@ async def admin_content_signals(request: Request):
     _check_admin_key(request)
 
     try:
-        hot_docs = fetch_all("""
+        hot_docs = await fetch_all_async("""
             SELECT
                 d.id, d.title, d.source, d.published_at,
                 COUNT(sm.id) as mention_count,
@@ -2588,7 +2586,7 @@ async def admin_content_signals(request: Request):
         """)
 
         if not hot_docs:
-            hot_docs = fetch_all("""
+            hot_docs = await fetch_all_async("""
                 SELECT
                     d.id, d.title, d.source, d.published_at,
                     COUNT(sm.id) as mention_count,
@@ -2608,7 +2606,7 @@ async def admin_content_signals(request: Request):
             scores_list = []
             for coin_name in coins:
                 coin_id = coin_name.lower()
-                score_row = fetch_one("""
+                score_row = await fetch_one_async("""
                     SELECT overall_score, peg_score, liquidity_score, mint_burn_score,
                            distribution_score, structural_score
                     FROM scores WHERE stablecoin_id = %s
@@ -3013,7 +3011,7 @@ async def generate_api_key(request: Request):
         raise HTTPException(status_code=429, detail="Too many key requests. Max 5 per hour.")
 
     # Check for duplicate active key with same name
-    existing = fetch_one(
+    existing = await fetch_one_async(
         "SELECT id FROM api_keys WHERE name = %s AND is_active = TRUE",
         (name,),
     )
@@ -3021,29 +3019,33 @@ async def generate_api_key(request: Request):
         raise HTTPException(status_code=409, detail="An active key with this name already exists. Choose a different name.")
 
     # Ensure email/tier columns exist (idempotent migration)
-    try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS email VARCHAR(255)")
-                cur.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS tier VARCHAR(20) DEFAULT 'pro'")
-                conn.commit()
-    except Exception:
-        pass  # columns may already exist
+    def _ensure_columns():
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS email VARCHAR(255)")
+                    cur.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS tier VARCHAR(20) DEFAULT 'pro'")
+                    conn.commit()
+        except Exception:
+            pass  # columns may already exist
+    await asyncio.to_thread(_ensure_columns)
 
     # Create key
     key_string = create_api_key(name)
 
     # Store email and tier
-    try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE api_keys SET email = %s, tier = %s WHERE key = %s",
-                    (email, "pro", key_string),
-                )
-                conn.commit()
-    except Exception as e:
-        logger.warning(f"Failed to store email for key: {e}")
+    def _store_email_tier():
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE api_keys SET email = %s, tier = %s WHERE key = %s",
+                        (email, "pro", key_string),
+                    )
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to store email for key: {e}")
+    await asyncio.to_thread(_store_email_tier)
 
     return {
         "api_key": key_string,
@@ -3397,7 +3399,7 @@ async def test_vendors():
 @app.get("/api/cda/issuer-registry")
 async def get_issuer_registry():
     """Return current CDA issuer registry."""
-    rows = fetch_all("SELECT * FROM cda_issuer_registry ORDER BY asset_symbol")
+    rows = await fetch_all_async("SELECT * FROM cda_issuer_registry ORDER BY asset_symbol")
     return {"issuers": rows, "count": len(rows)}
 
 
@@ -3406,12 +3408,12 @@ async def cda_quality():
     """Data quality dashboard — freshness, confidence, and status per issuer."""
     from datetime import datetime, timezone
 
-    issuers = fetch_all(
+    issuers = await fetch_all_async(
         "SELECT * FROM cda_issuer_registry WHERE is_active = TRUE ORDER BY asset_symbol"
     )
 
     # Get latest extraction per asset (prefer PDF over web)
-    latest_extractions = fetch_all("""
+    latest_extractions = await fetch_all_async("""
         SELECT DISTINCT ON (asset_symbol)
             asset_symbol, structured_data, confidence_score, extracted_at,
             extraction_method, source_type
@@ -3497,7 +3499,7 @@ async def cda_quality():
 @app.get("/api/cda/attestations/{asset_symbol}")
 async def cda_attestations(asset_symbol: str):
     """Extraction history for one asset."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """
         SELECT id, source_url, source_type, extraction_method, extraction_vendor,
                confidence_score, structured_data, extraction_warnings, extracted_at
@@ -3617,7 +3619,7 @@ async def seed_cda_registry(key: str = Query(default=None)):
         raise HTTPException(status_code=401, detail="Unauthorized — provide ?key=YOUR_ADMIN_KEY")
     try:
         _seed_cda_issuer_registry()
-        count = fetch_one("SELECT COUNT(*) AS cnt FROM cda_issuer_registry WHERE is_active = TRUE")
+        count = await fetch_one_async("SELECT COUNT(*) AS cnt FROM cda_issuer_registry WHERE is_active = TRUE")
         return {"status": "seeded", "active_issuers": count["cnt"] if count else 0}
     except HTTPException:
         raise
@@ -3629,7 +3631,7 @@ async def seed_cda_registry(key: str = Query(default=None)):
 @app.get("/api/cda/monitors")
 async def get_monitors():
     """List active CDA monitor watches."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         "SELECT * FROM cda_monitors WHERE is_active = TRUE ORDER BY asset_symbol"
     )
     return {"monitors": rows, "count": len(rows)}
@@ -3667,7 +3669,7 @@ async def handle_monitor_alert(request: Request):
     if not monitor_id:
         return {"status": "no_monitor_id"}
 
-    issuer = fetch_one(
+    issuer = await fetch_one_async(
         "SELECT * FROM cda_issuer_registry WHERE parallel_monitor_id = %s",
         (monitor_id,),
     )
@@ -3677,7 +3679,7 @@ async def handle_monitor_alert(request: Request):
         from app.services.cda_collector import collect_single_issuer
         _asyncio.create_task(collect_single_issuer(issuer["asset_symbol"]))
 
-        execute(
+        await execute_async(
             "UPDATE cda_monitors SET last_alert_at = NOW() WHERE parallel_monitor_id = %s",
             (monitor_id,),
         )
@@ -3712,7 +3714,7 @@ async def cda_overview():
 @app.get("/api/cda/issuers")
 async def cda_issuers():
     """List all CDA-tracked issuers with last verification and source update timestamps."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT r.asset_symbol, r.issuer_name, r.transparency_url,
                r.collection_method, r.disclosure_type, r.created_at,
                r.last_successful_collection,
@@ -3994,7 +3996,7 @@ async def cda_issuer_latest(symbol: str):
     import hashlib
     import json as _json
 
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT e.id, e.asset_symbol, e.source_url, e.source_type, e.extraction_method,
                e.extraction_vendor, e.structured_data, e.confidence_score,
                e.extraction_warnings, e.extracted_at,
@@ -4029,7 +4031,7 @@ async def cda_issuer_latest(symbol: str):
     attestation["evidence_hash"] = evidence_hash
 
     # Include source URLs so frontend can show data provenance
-    reg_full = fetch_one(
+    reg_full = await fetch_one_async(
         "SELECT source_urls FROM cda_issuer_registry WHERE UPPER(asset_symbol) = %s",
         (symbol.upper(),)
     )
@@ -4043,13 +4045,13 @@ async def cda_issuer_latest(symbol: str):
 @app.get("/api/cda/issuers/{symbol}/history")
 async def cda_issuer_history(symbol: str, days: int = Query(default=90, ge=1, le=365)):
     """Attestation history for a specific issuer."""
-    reg = fetch_one(
+    reg = await fetch_one_async(
         "SELECT disclosure_type FROM cda_issuer_registry WHERE UPPER(asset_symbol) = %s",
         (symbol.upper(),)
     )
     disc_type = reg.get("disclosure_type", "fiat-reserve") if reg else "fiat-reserve"
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT id, asset_symbol, source_url, source_type, extraction_method,
                extraction_vendor, structured_data, confidence_score,
                extraction_warnings, extracted_at
@@ -4088,7 +4090,7 @@ async def cda_issuer_history(symbol: str, days: int = Query(default=90, ge=1, le
 @app.get("/api/cda/coverage")
 async def cda_coverage():
     """Coverage summary of the CDA evidence layer."""
-    issuers = fetch_all(
+    issuers = await fetch_all_async(
         "SELECT asset_symbol, collection_method, asset_category FROM cda_issuer_registry WHERE is_active = TRUE ORDER BY asset_symbol"
     )
 
@@ -4103,7 +4105,7 @@ async def cda_coverage():
             fiat_covered.append(iss["asset_symbol"])
 
     # Total known fiat-backed from stablecoin registry
-    all_coins = fetch_all("SELECT id, symbol FROM stablecoins")
+    all_coins = await fetch_all_async("SELECT id, symbol FROM stablecoins")
     total_fiat = len(all_coins)
 
     gaps = []
@@ -4113,7 +4115,7 @@ async def cda_coverage():
         if sym not in covered_symbols:
             gaps.append(f"{sym} — not yet in CDA pipeline")
 
-    attestation_count = fetch_one("SELECT COUNT(*) as cnt FROM cda_vendor_extractions")
+    attestation_count = await fetch_one_async("SELECT COUNT(*) as cnt FROM cda_vendor_extractions")
 
     return {
         "fiat_backed": {
@@ -4264,7 +4266,7 @@ async def get_assessment_events(
 
     ordinal = SEVERITY_ORDER.get(severity, 0) if severity else 0
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT * FROM assessment_events
         WHERE severity_ordinal >= %s
         ORDER BY created_at DESC
@@ -4297,7 +4299,7 @@ async def recent_assessments(
     verified: Optional[bool] = Query(default=None),
 ):
     """Recent assessment events with verification status."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT ae.id, ae.wallet_address, ae.wallet_risk_score, ae.severity,
                ae.created_at, ae.inputs_hash,
                iv.inputs_hash AS iv_hash, iv.holdings, iv.stablecoin_scores
@@ -4365,7 +4367,7 @@ async def recent_assessments(
 @app.get("/api/assessments/{assessment_id}/inputs")
 async def get_assessment_inputs(assessment_id: str):
     """Computation attestation: retrieve input hash and summary for an assessment event."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT id, inputs_hash, inputs_summary, content_hash, methodology_version,
                wallet_risk_score, severity, created_at
         FROM assessment_events
@@ -4396,7 +4398,7 @@ async def verify_assessment(assessment_id: str):
     from app.computation_attestation import compute_inputs_hash
 
     # 1. Fetch assessment event
-    ae = fetch_one("""
+    ae = await fetch_one_async("""
         SELECT id, wallet_address, wallet_risk_score, content_hash, inputs_hash,
                methodology_version, severity, created_at
         FROM assessment_events
@@ -4408,7 +4410,7 @@ async def verify_assessment(assessment_id: str):
     stored_score = float(ae["wallet_risk_score"]) if ae.get("wallet_risk_score") else None
 
     # 2. Fetch input vector
-    iv = fetch_one("""
+    iv = await fetch_one_async("""
         SELECT wallet_address, holdings, stablecoin_scores, formula_version, inputs_hash, computed_at
         FROM assessment_input_vectors
         WHERE assessment_id = %s::uuid
@@ -4532,12 +4534,12 @@ async def public_list_disputes(status: Optional[str] = None):
         if status:
             if status == "submitted":
                 return {"disputes": []}
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 "SELECT * FROM disputes WHERE status = %s AND status != 'submitted' ORDER BY created_at DESC",
                 (status,),
             )
         else:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 "SELECT * FROM disputes WHERE status != 'submitted' ORDER BY created_at DESC"
             )
         return {"disputes": [dict(r) for r in rows] if rows else []}
@@ -4549,14 +4551,14 @@ async def public_list_disputes(status: Optional[str] = None):
 async def public_get_dispute(dispute_id: str):
     """Public single-dispute view. Only visible if status != 'submitted'."""
     try:
-        dispute = fetch_one(
+        dispute = await fetch_one_async(
             "SELECT * FROM disputes WHERE dispute_id = %s::uuid AND status != 'submitted'",
             (dispute_id,),
         )
         if not dispute:
             raise HTTPException(status_code=404, detail="Dispute not found or not yet public")
 
-        transitions = fetch_all(
+        transitions = await fetch_all_async(
             "SELECT * FROM dispute_transitions WHERE dispute_id = %s::uuid ORDER BY transition_index",
             (dispute_id,),
         )
@@ -4665,7 +4667,7 @@ async def psi_scores():
     cached = _cache.get("psi_scores", ttl=30)
     if cached:
         return cached
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT DISTINCT ON (protocol_slug)
             id, protocol_slug, protocol_name, overall_score, grade,
             category_scores, component_scores, raw_values,
@@ -4880,7 +4882,7 @@ async def admin_run_protocol_expansion(request: Request):
 @app.get("/api/psi/scores/{slug}/verify")
 async def verify_psi_score(slug: str):
     """Verify the latest PSI score by re-deriving from stored raw values."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT protocol_slug, overall_score, grade, raw_values,
                inputs_hash, formula_version, computed_at
         FROM psi_scores WHERE protocol_slug = %s
@@ -4934,7 +4936,7 @@ async def verify_psi_score(slug: str):
 @app.get("/api/psi/scores/{slug}")
 async def psi_score_detail(slug: str):
     """Detailed PSI breakdown for one protocol."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT id, protocol_slug, protocol_name, overall_score, grade,
                category_scores, component_scores, raw_values,
                formula_version, computed_at,
@@ -5043,7 +5045,7 @@ async def rpi_scores():
     cached = _cache.get("rpi_scores", ttl=60)
     if cached:
         return cached
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT DISTINCT ON (protocol_slug)
             id, protocol_slug, protocol_name, overall_score, grade,
             component_scores, raw_values, inputs_hash,
@@ -5129,7 +5131,7 @@ async def rpi_scores():
 @app.get("/api/rpi/rankings")
 async def rpi_rankings(lens: Optional[str] = Query(default=None)):
     """Protocols ranked by base RPI score (or lensed score if lens= provided)."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT DISTINCT ON (protocol_slug)
             protocol_slug, protocol_name, overall_score, grade,
             component_scores, computed_at
@@ -5197,7 +5199,7 @@ async def rpi_lenses():
 @app.get("/api/rpi/components/{slug}")
 async def rpi_components(slug: str):
     """Base component-level detail for a protocol."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT DISTINCT ON (component_id)
             component_id, component_type, raw_value, normalized_score,
             source_type, data_source, collected_at
@@ -5226,7 +5228,7 @@ async def rpi_components(slug: str):
 @app.get("/api/rpi/history/{slug}")
 async def rpi_history(slug: str, limit: int = Query(default=90)):
     """Base score history for a protocol (live + backfilled). Includes confidence tags."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT h.score_date, h.overall_score, h.component_scores, h.methodology_version,
                d.confidence
         FROM rpi_score_history h
@@ -5295,7 +5297,7 @@ async def rpi_compare(slugs: str = Query(..., description="Comma-separated proto
 
     results = []
     for slug in slug_list:
-        row = fetch_one("""
+        row = await fetch_one_async("""
             SELECT protocol_slug, protocol_name, overall_score, grade,
                    component_scores, raw_values, computed_at
             FROM rpi_scores
@@ -5322,7 +5324,7 @@ async def rpi_compare(slugs: str = Query(..., description="Comma-separated proto
 @app.get("/api/rpi/scores/{slug}")
 async def rpi_score_detail(slug: str, lens: Optional[str] = Query(default=None)):
     """Detailed RPI breakdown for one protocol. Optionally include lens scores."""
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT id, protocol_slug, protocol_name, overall_score, grade,
                component_scores, raw_values, inputs_hash,
                methodology_version, computed_at,
@@ -5482,7 +5484,7 @@ def _build_protocol_treasury(rows_by_slug):
 @app.get("/api/protocols/treasury-exposure")
 async def treasury_exposure():
     """All protocols' stablecoin holdings with SII cross-reference."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT protocol_slug, token_name, token_symbol, chain, usd_value,
                is_stablecoin, sii_score
         FROM protocol_treasury_holdings
@@ -5505,7 +5507,7 @@ async def treasury_exposure():
 @app.get("/api/protocols/{slug}/treasury")
 async def protocol_treasury(slug: str):
     """Single protocol treasury breakdown with SII cross-reference."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT token_name, token_symbol, chain, usd_value, is_stablecoin, sii_score
         FROM protocol_treasury_holdings
         WHERE protocol_slug = %s
@@ -5525,7 +5527,7 @@ async def protocol_treasury(slug: str):
 async def stablecoin_protocol_exposure(symbol: str):
     """Reverse lookup — which protocols hold this stablecoin?"""
     sym_upper = symbol.upper()
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT h.protocol_slug, h.usd_value, h.sii_score,
                p.protocol_name, p.overall_score as psi_score
         FROM protocol_treasury_holdings h
@@ -5542,7 +5544,7 @@ async def stablecoin_protocol_exposure(symbol: str):
     """, (sym_upper,))
 
     # Get SII score for this stablecoin
-    sii_row = fetch_one("""
+    sii_row = await fetch_one_async("""
         SELECT s.overall_score FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
         WHERE UPPER(st.symbol) = %s
@@ -5597,7 +5599,7 @@ async def get_treasury_events(
     params.append(limit)
     where = " AND ".join(conditions)
 
-    rows = fetch_all(f"""
+    rows = await fetch_all_async(f"""
         SELECT te.*, tr.entity_name, tr.entity_type
         FROM wallet_graph.treasury_events te
         LEFT JOIN wallet_graph.treasury_registry tr ON tr.address = te.wallet_address
@@ -5632,7 +5634,7 @@ async def get_treasury_events(
 async def treasury_profile(address: str):
     """Treasury risk profile — extends wallet profile with entity metadata and events."""
     addr_lower = address.lower()
-    registry = fetch_one(
+    registry = await fetch_one_async(
         "SELECT * FROM wallet_graph.treasury_registry WHERE address = %s",
         (addr_lower,)
     )
@@ -5646,7 +5648,7 @@ async def treasury_profile(address: str):
         pass
 
     # Get recent events
-    events = fetch_all("""
+    events = await fetch_all_async("""
         SELECT event_type, event_data, severity, confidence, detected_at
         FROM wallet_graph.treasury_events
         WHERE wallet_address = %s
@@ -5746,7 +5748,7 @@ def _build_collateral_protocol(rows):
 async def protocol_backlog():
     """Protocol discovery backlog — candidates for PSI scoring."""
     try:
-        rows = fetch_all("""
+        rows = await fetch_all_async("""
             SELECT slug, name, category, tvl_usd,
                    stablecoin_exposure_usd, unscored_stablecoin_exposure_usd,
                    unscored_stablecoins,
@@ -5787,7 +5789,7 @@ async def protocol_backlog():
 @app.get("/api/protocols/collateral-exposure")
 async def collateral_exposure():
     """All protocols' stablecoin collateral exposure with SII cross-reference."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT protocol_slug, pool_id, token_symbol, chain, tvl_usd,
                is_stablecoin, is_sii_scored, sii_score, pool_type
         FROM protocol_collateral_exposure
@@ -5845,7 +5847,7 @@ async def collateral_exposure():
 @app.get("/api/protocols/{slug}/collateral-exposure")
 async def protocol_collateral_exposure(slug: str):
     """Single protocol's stablecoin collateral exposure."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT protocol_slug, pool_id, token_symbol, chain, tvl_usd,
                is_stablecoin, is_sii_scored, sii_score, pool_type
         FROM protocol_collateral_exposure
@@ -5864,7 +5866,7 @@ async def protocol_collateral_exposure(slug: str):
 async def stablecoin_collateral_exposure(symbol: str):
     """Reverse lookup — which protocols accept this stablecoin as collateral?"""
     sym_upper = symbol.upper()
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT ce.protocol_slug, ce.tvl_usd, ce.is_sii_scored, ce.sii_score,
                p.protocol_name, p.overall_score as psi_score
         FROM protocol_collateral_exposure ce
@@ -5881,7 +5883,7 @@ async def stablecoin_collateral_exposure(symbol: str):
     """, (sym_upper,))
 
     # Get SII score
-    sii_row = fetch_one("""
+    sii_row = await fetch_one_async("""
         SELECT s.overall_score FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
         WHERE UPPER(st.symbol) = %s
@@ -5924,7 +5926,7 @@ async def stablecoin_collateral_exposure(symbol: str):
 async def protocol_full_exposure(slug: str):
     """Combined treasury holdings + collateral exposure for one protocol."""
     # PSI score
-    psi_row = fetch_one("""
+    psi_row = await fetch_one_async("""
         SELECT protocol_name, overall_score FROM psi_scores
         WHERE protocol_slug = %s ORDER BY computed_at DESC LIMIT 1
     """, (slug,))
@@ -5933,7 +5935,7 @@ async def protocol_full_exposure(slug: str):
     psi_score = round(float(psi_row["overall_score"]), 1) if psi_row.get("overall_score") else None
 
     # Treasury holdings (from session 026)
-    treasury_rows = fetch_all("""
+    treasury_rows = await fetch_all_async("""
         SELECT token_name, token_symbol, chain, usd_value, is_stablecoin, sii_score
         FROM protocol_treasury_holdings
         WHERE protocol_slug = %s AND is_stablecoin = TRUE
@@ -5955,7 +5957,7 @@ async def protocol_full_exposure(slug: str):
         treasury_total += float(r["usd_value"])
 
     # Collateral exposure (from this session)
-    collateral_rows = fetch_all("""
+    collateral_rows = await fetch_all_async("""
         SELECT token_symbol, tvl_usd, is_sii_scored, sii_score
         FROM protocol_collateral_exposure
         WHERE protocol_slug = %s AND is_stablecoin = TRUE
@@ -6036,7 +6038,7 @@ async def protocol_pool_wallets(
     """Wallets in a protocol's stablecoin pool with risk profiles."""
     sym_upper = symbol.upper()
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT pw.wallet_address, pw.pool_contract_address, pw.balance,
                pw.discovered_at, pw.last_seen
         FROM protocol_pool_wallets pw
@@ -6048,7 +6050,7 @@ async def protocol_pool_wallets(
     if not rows:
         raise HTTPException(status_code=404, detail=f"No pool wallets for {slug}/{sym_upper}")
 
-    total_row = fetch_one("""
+    total_row = await fetch_one_async("""
         SELECT COUNT(*) AS total
         FROM protocol_pool_wallets
         WHERE protocol_slug = %s AND UPPER(stablecoin_symbol) = %s
@@ -6057,7 +6059,7 @@ async def protocol_pool_wallets(
 
     # Batch-fetch risk scores for returned wallets
     addrs = [r["wallet_address"] for r in rows]
-    risk_rows = fetch_all("""
+    risk_rows = await fetch_all_async("""
         SELECT DISTINCT ON (wallet_address)
             wallet_address, risk_score, risk_grade, concentration_hhi
         FROM wallet_graph.wallet_risk_scores
@@ -6142,7 +6144,7 @@ async def circle7_scores(index_id: str):
     if index_id not in valid_indices:
         raise HTTPException(status_code=404, detail=f"Unknown index: {index_id}")
 
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT DISTINCT ON (entity_slug)
             entity_slug, entity_name, overall_score,
             category_scores, component_scores, confidence, confidence_tag,
@@ -6240,7 +6242,7 @@ async def circle7_score_detail(index_id: str, entity_slug: str):
     if index_id not in valid_indices:
         raise HTTPException(status_code=404, detail=f"Unknown index: {index_id}")
 
-    row = fetch_one("""
+    row = await fetch_one_async("""
         SELECT entity_slug, entity_name, overall_score,
                category_scores, component_scores, raw_values,
                formula_version, inputs_hash, confidence, confidence_tag,
@@ -6456,7 +6458,7 @@ async def query_schema():
 async def pulse_latest():
     """Latest daily pulse — full risk surface snapshot."""
     import hashlib
-    row = fetch_one("SELECT * FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1")
+    row = await fetch_one_async("SELECT * FROM daily_pulses ORDER BY pulse_date DESC LIMIT 1")
     if not row:
         raise HTTPException(status_code=404, detail="No pulse data available yet. Run the scoring cycle first.")
     summary = row.get("summary", {})
@@ -6476,7 +6478,7 @@ async def pulse_latest():
 @app.get("/api/pulse/history")
 async def pulse_history(days: int = Query(default=30, ge=1, le=365)):
     """List of recent pulse dates with page URLs (not full summaries)."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         "SELECT pulse_date, created_at, page_url FROM daily_pulses ORDER BY pulse_date DESC LIMIT %s",
         (days,),
     )
@@ -6500,7 +6502,7 @@ async def pulse_by_date(date_str: str):
     import re
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
-    row = fetch_one("SELECT * FROM daily_pulses WHERE pulse_date = %s", (date_str,))
+    row = await fetch_one_async("SELECT * FROM daily_pulses WHERE pulse_date = %s", (date_str,))
     if not row:
         raise HTTPException(status_code=404, detail=f"No pulse found for {date_str}")
     summary = row.get("summary", {})
@@ -6600,7 +6602,7 @@ async def cqi_contagion(
         raise HTTPException(status_code=404, detail=cqi["error"])
 
     # Get top 50 pool wallets by balance
-    pool_wallets = fetch_all("""
+    pool_wallets = await fetch_all_async("""
         SELECT wallet_address, balance
         FROM protocol_pool_wallets
         WHERE protocol_slug = %s AND UPPER(stablecoin_symbol) = %s
@@ -6628,7 +6630,7 @@ async def cqi_contagion(
 
     # Contagion traversal — depth-2 CTE across all pool wallets in one query
     MAX_NODES = 500
-    contagion_rows = fetch_all("""
+    contagion_rows = await fetch_all_async("""
         WITH RECURSIVE contagion_path AS (
             SELECT
                 CASE WHEN e.from_address = ANY(%s) THEN e.to_address ELSE e.from_address END AS node,
@@ -6667,7 +6669,7 @@ async def cqi_contagion(
     connected_addrs = [r["address"] for r in contagion_rows]
     risk_map = {}
     if connected_addrs:
-        risk_rows = fetch_all("""
+        risk_rows = await fetch_all_async("""
             SELECT DISTINCT ON (wallet_address)
                 wallet_address, risk_score, risk_grade
             FROM wallet_graph.wallet_risk_scores
@@ -6862,7 +6864,7 @@ async def admin_blockscout_comparison(request: Request):
 @app.get("/api/ops/reports/recent")
 async def ops_recent_reports(request: Request):
     _check_admin_key(request)
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT entity_type, entity_id, template, lens, lens_version,
                report_hash, methodology_version, generated_at
         FROM report_attestations
@@ -6891,25 +6893,27 @@ async def log_keeper_publish(request: Request):
     """Log a keeper publish event. Called by the keeper after each on-chain update."""
     _check_admin_key(request)
     body = await request.json()
-    try:
-        from app.database import get_conn
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO keeper_publish_log (chain, scores_published, gas_used, tx_hash, success, error_message)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (
-                    body.get("chain", "unknown"),
-                    body.get("scores_published", 0),
-                    body.get("gas_used"),
-                    body.get("tx_hash"),
-                    body.get("success", True),
-                    body.get("error_message"),
-                ))
-            conn.commit()
-        return {"status": "logged"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    def _log_publish():
+        try:
+            from app.database import get_conn
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO keeper_publish_log (chain, scores_published, gas_used, tx_hash, success, error_message)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (
+                        body.get("chain", "unknown"),
+                        body.get("scores_published", 0),
+                        body.get("gas_used"),
+                        body.get("tx_hash"),
+                        body.get("success", True),
+                        body.get("error_message"),
+                    ))
+                conn.commit()
+            return {"status": "logged"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return await asyncio.to_thread(_log_publish)
 
 
 # =============================================================================
@@ -7584,7 +7588,7 @@ def _render_proof_html(identifier: str, surface: str) -> str:
 @app.get("/api/discovery/latest")
 async def get_discovery_latest():
     """Top 20 signals from last 7 days by novelty_score."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT id, signal_type, domain, title, description, entities,
                novelty_score, direction, magnitude, baseline, detail,
                methodology_version, detected_at, acknowledged, published
@@ -7599,7 +7603,7 @@ async def get_discovery_latest():
 @app.get("/api/discovery/domain/{domain}")
 async def get_discovery_by_domain(domain: str):
     """Signals for a specific domain."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT id, signal_type, domain, title, description, entities,
                novelty_score, direction, magnitude, baseline, detail,
                methodology_version, detected_at, acknowledged, published
@@ -7615,7 +7619,7 @@ async def get_discovery_by_domain(domain: str):
 @app.get("/api/discovery/unacknowledged")
 async def get_discovery_unacknowledged():
     """Signals not yet reviewed."""
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT id, signal_type, domain, title, description, entities,
                novelty_score, direction, magnitude, baseline, detail,
                methodology_version, detected_at
@@ -7634,7 +7638,7 @@ async def acknowledge_discovery_signal(signal_id: int, key: str = Query(default=
     if not admin_key or not key or not hmac.compare_digest(key, admin_key):
         raise HTTPException(status_code=401, detail="Unauthorized — provide ?key=YOUR_ADMIN_KEY")
     try:
-        execute("""
+        await execute_async("""
             UPDATE discovery_signals SET acknowledged = TRUE WHERE id = %s
         """, (signal_id,))
         return {"status": "acknowledged", "id": signal_id}
@@ -7673,7 +7677,7 @@ async def get_yield_data(protocol: str = Query(default=None)):
 async def get_governance_data(protocol: str, days: int = Query(default=90)):
     """Governance proposals and voter participation for a protocol."""
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT proposal_id, title, state, author, created_at,
                       votes_for, votes_against, votes_abstain, voter_count,
                       quorum_reached, source
@@ -7692,7 +7696,7 @@ async def get_bridge_flows(bridge_id: str = Query(default=None)):
     """Directional bridge flow volumes."""
     try:
         if bridge_id:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT bridge_name, source_chain, dest_chain, volume_usd,
                           tvl_usd, period, snapshot_at
                    FROM bridge_flows
@@ -7702,7 +7706,7 @@ async def get_bridge_flows(bridge_id: str = Query(default=None)):
                 (bridge_id,),
             )
         else:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT bridge_id, bridge_name, source_chain, dest_chain,
                           SUM(volume_usd) as total_volume
                    FROM bridge_flows
@@ -7721,7 +7725,7 @@ async def get_exchange_data(exchange_id: str = Query(default=None)):
     """Exchange trust scores, volumes, and stablecoin pair data."""
     try:
         if exchange_id:
-            row = fetch_one(
+            row = await fetch_one_async(
                 """SELECT * FROM exchange_snapshots
                    WHERE exchange_id = %s
                    ORDER BY snapshot_at DESC LIMIT 1""",
@@ -7729,7 +7733,7 @@ async def get_exchange_data(exchange_id: str = Query(default=None)):
             )
             return row or {"error": "not_found"}
         else:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT exchange_id, name, trust_score, trade_volume_24h_usd,
                           year_established, trading_pairs, snapshot_at
                    FROM exchange_snapshots
@@ -7745,7 +7749,7 @@ async def get_exchange_data(exchange_id: str = Query(default=None)):
 async def get_correlations(matrix_type: str = Query(default="sii_30d")):
     """Cross-entity correlation matrices."""
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             """SELECT matrix_type, window_days, entity_ids, matrix_data, computed_at
                FROM correlation_matrices
                WHERE matrix_type = %s
@@ -7761,7 +7765,7 @@ async def get_correlations(matrix_type: str = Query(default="sii_30d")):
 async def get_volatility(asset_id: str):
     """Realized volatility and drawdown metrics for an asset."""
     try:
-        row = fetch_one(
+        row = await fetch_one_async(
             """SELECT * FROM volatility_surfaces
                WHERE asset_id = %s
                ORDER BY computed_at DESC LIMIT 1""",
@@ -7776,7 +7780,7 @@ async def get_volatility(asset_id: str):
 async def get_peg_5m(stablecoin_id: str, hours: int = Query(default=24)):
     """5-minute peg resolution data for a stablecoin."""
     try:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT price, timestamp, deviation_bps
                FROM peg_snapshots_5m
                WHERE stablecoin_id = %s
@@ -7793,7 +7797,7 @@ async def get_peg_5m(stablecoin_id: str, hours: int = Query(default=24)):
 async def get_data_catalog():
     """Every data type in the universal data layer with freshness and coverage."""
     try:
-        rows = fetch_all("SELECT * FROM data_catalog ORDER BY data_type")
+        rows = await fetch_all_async("SELECT * FROM data_catalog ORDER BY data_type")
         return {"catalog": [dict(r) for r in rows] if rows else []}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -7832,14 +7836,14 @@ async def get_incidents(entity_id: str = Query(default=None), limit: int = Query
     """Structured incident history."""
     try:
         if entity_id:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT * FROM incident_events
                    WHERE entity_id = %s
                    ORDER BY started_at DESC LIMIT %s""",
                 (entity_id, limit),
             )
         else:
-            rows = fetch_all(
+            rows = await fetch_all_async(
                 """SELECT * FROM incident_events
                    ORDER BY created_at DESC LIMIT %s""",
                 (limit,),
@@ -7875,7 +7879,7 @@ async def drift_exploit_analysis():
 
     # 1. Assessment event
     try:
-        event_row = fetch_one("""
+        event_row = await fetch_one_async("""
             SELECT * FROM assessment_events
             WHERE wallet_address = 'protocol:drift'
             ORDER BY created_at DESC LIMIT 1
@@ -7894,7 +7898,7 @@ async def drift_exploit_analysis():
         pass
 
     # 2. Drift PSI score
-    psi_row = fetch_one("""
+    psi_row = await fetch_one_async("""
         SELECT protocol_slug, protocol_name, overall_score, grade,
                category_scores, component_scores, raw_values, formula_version, computed_at
         FROM psi_scores WHERE protocol_slug = 'drift'
@@ -7902,7 +7906,7 @@ async def drift_exploit_analysis():
     """)
     if psi_row:
         # Count rank
-        all_protocols = fetch_all("""
+        all_protocols = await fetch_all_async("""
             SELECT DISTINCT ON (protocol_slug) protocol_slug, overall_score
             FROM psi_scores ORDER BY protocol_slug, computed_at DESC
         """)
@@ -7930,7 +7934,7 @@ async def drift_exploit_analysis():
 
     # 3. Collateral exposure
     try:
-        exposure_rows = fetch_all("""
+        exposure_rows = await fetch_all_async("""
             SELECT token_symbol, tvl_usd, is_sii_scored, sii_score, pool_type
             FROM protocol_collateral_exposure
             WHERE protocol_slug = 'drift'
@@ -8142,7 +8146,7 @@ async def list_report_lenses():
 @app.get("/api/reports/sbt/{token_id}")
 async def sbt_metadata(token_id: int):
     """ERC-721 metadata for a Basis Rating SBT."""
-    row = fetch_one(
+    row = await fetch_one_async(
         "SELECT entity_type, entity_id, score, grade, confidence, report_hash, method_version FROM sbt_tokens WHERE token_id = %s",
         (token_id,),
     )
@@ -8231,7 +8235,7 @@ async def engagement_by_hash(entity_type: str, entity_id: str, report_hash: str)
             raise HTTPException(status_code=400, detail=f"Invalid entity_type: {entity_type}. Use stablecoin, protocol, or wallet.")
 
         # Try to look up the attestation record for this hash
-        row = fetch_one(
+        row = await fetch_one_async(
             "SELECT entity_type, entity_id, generated_at FROM report_attestations WHERE report_hash = %s",
             (report_hash,),
         )
@@ -8282,11 +8286,10 @@ async def list_all_lenses():
 async def get_lens_detail(lens_id: str):
     """Get full lens config including criteria."""
     from app.lenses import load_lens_from_db, load_lens, _compute_content_hash
-    from app.database import fetch_one as _lf1
 
     # Try DB first for full metadata
     try:
-        row = _lf1(
+        row = await fetch_one_async(
             "SELECT * FROM lens_configs WHERE lens_id = %s", (lens_id,)
         )
     except Exception:
@@ -8335,7 +8338,6 @@ async def get_lens_detail(lens_id: str):
 async def create_lens(request: Request):
     """Create a custom regulatory lens."""
     from app.lenses import _compute_content_hash
-    from app.database import fetch_one as _lf2
 
     body = await request.json()
 
@@ -8379,7 +8381,7 @@ async def create_lens(request: Request):
     content_hash = _compute_content_hash(criteria)
 
     try:
-        row = _lf2(
+        row = await fetch_one_async(
             """INSERT INTO lens_configs (lens_id, name, version, author, description, criteria, content_hash)
                VALUES (%s, %s, %s, %s, %s, %s, %s)
                RETURNING id, lens_id, name, version, author, description, content_hash, created_at""",
@@ -8427,7 +8429,7 @@ async def test_lens(lens_id: str):
         raise HTTPException(status_code=404, detail=f"Lens '{lens_id}' not found")
 
     # Get all scored stablecoins
-    rows = fetch_all("""
+    rows = await fetch_all_async("""
         SELECT s.stablecoin_id, st.name, st.symbol
         FROM scores s
         JOIN stablecoins st ON st.id = s.stablecoin_id
@@ -8479,7 +8481,7 @@ async def test_lens(lens_id: str):
 async def state_root_latest():
     """Latest state root — all attestation hashes across all domains."""
     import json as _json
-    pulse = fetch_one("""
+    pulse = await fetch_one_async("""
         SELECT summary, pulse_date FROM daily_pulses
         ORDER BY pulse_date DESC LIMIT 1
     """)
@@ -8578,8 +8580,7 @@ async def provenance_register(request: Request):
 
     _src = _normalize_source_domain(body["source_domain"], body.get("source_endpoint", ""))
 
-    from app.database import fetch_one as _prov_fetch
-    row = _prov_fetch(
+    row = await fetch_one_async(
         """INSERT INTO provenance_proofs
            (source_domain, source_endpoint, response_hash, attestation_hash,
             proof_url, attestor_pubkey, proved_at, cycle_hour)
@@ -8607,8 +8608,7 @@ async def provenance_register_static(request: Request):
 
     _src = _normalize_source_domain(body["source_domain"], body.get("source_endpoint", ""))
 
-    from app.database import fetch_one as _prov_fetch
-    row = _prov_fetch(
+    row = await fetch_one_async(
         """INSERT INTO provenance_proofs
            (source_domain, source_endpoint, response_hash, attestation_hash,
             proof_url, attestor_pubkey, proved_at, cycle_hour)
@@ -8634,28 +8634,31 @@ async def provenance_register_batch(request: Request):
     required = ["source_domain", "source_endpoint", "response_hash",
                 "attestation_hash", "proof_url", "attestor_pubkey",
                 "proved_at", "cycle_hour"]
-    registered = []
-    from app.database import get_cursor as _prov_cursor
-    with _prov_cursor(dict_cursor=True) as cur:
-        for proof in proofs:
-            missing = [f for f in required if f not in proof]
-            if missing:
-                continue
-            _psrc = _normalize_source_domain(proof["source_domain"], proof.get("source_endpoint", ""))
-            cur.execute(
-                """INSERT INTO provenance_proofs
-                   (source_domain, source_endpoint, response_hash, attestation_hash,
-                    proof_url, attestor_pubkey, proved_at, cycle_hour)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                   RETURNING id""",
-                (_psrc, proof["source_endpoint"],
-                 proof["response_hash"], proof["attestation_hash"],
-                 proof["proof_url"], proof["attestor_pubkey"],
-                 proof["proved_at"], proof["cycle_hour"]),
-            )
-            row = cur.fetchone()
-            if row:
-                registered.append(row["id"])
+    def _register_batch():
+        from app.database import get_cursor
+        registered = []
+        with get_cursor(dict_cursor=True) as cur:
+            for proof in proofs:
+                missing = [f for f in required if f not in proof]
+                if missing:
+                    continue
+                _psrc = _normalize_source_domain(proof["source_domain"], proof.get("source_endpoint", ""))
+                cur.execute(
+                    """INSERT INTO provenance_proofs
+                       (source_domain, source_endpoint, response_hash, attestation_hash,
+                        proof_url, attestor_pubkey, proved_at, cycle_hour)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                       RETURNING id""",
+                    (_psrc, proof["source_endpoint"],
+                     proof["response_hash"], proof["attestation_hash"],
+                     proof["proof_url"], proof["attestor_pubkey"],
+                     proof["proved_at"], proof["cycle_hour"]),
+                )
+                row = cur.fetchone()
+                if row:
+                    registered.append(row["id"])
+        return registered
+    registered = await asyncio.to_thread(_register_batch)
 
     return {
         "status": "registered",
@@ -8666,11 +8669,10 @@ async def provenance_register_batch(request: Request):
 
 @app.get("/api/provenance/latest")
 async def provenance_latest():
-    from app.database import fetch_all as _prov_all, fetch_one as _prov_one
-    cycle = _prov_one("SELECT MAX(cycle_hour) AS ch FROM provenance_proofs")
+    cycle = await fetch_one_async("SELECT MAX(cycle_hour) AS ch FROM provenance_proofs")
     if not cycle or not cycle.get("ch"):
         return {"proofs": [], "cycle_hour": None, "count": 0}
-    rows = _prov_all(
+    rows = await fetch_all_async(
         "SELECT * FROM provenance_proofs WHERE cycle_hour = %s ORDER BY id",
         (cycle["ch"],),
     )
@@ -8683,8 +8685,7 @@ async def provenance_latest():
 
 @app.get("/api/provenance/{domain}/{date}")
 async def provenance_by_domain_date(domain: str, date: str):
-    from app.database import fetch_all as _prov_all
-    rows = _prov_all(
+    rows = await fetch_all_async(
         """SELECT * FROM provenance_proofs
            WHERE source_domain = %s AND proved_at::date = %s::date
            ORDER BY proved_at""",
@@ -8700,8 +8701,7 @@ async def provenance_by_domain_date(domain: str, date: str):
 
 @app.get("/api/provenance/verify/{attestation_hash}")
 async def provenance_verify(attestation_hash: str):
-    from app.database import fetch_one as _prov_one
-    row = _prov_one(
+    row = await fetch_one_async(
         "SELECT * FROM provenance_proofs WHERE attestation_hash = %s",
         (attestation_hash,),
     )
@@ -8715,16 +8715,15 @@ async def provenance_verify(attestation_hash: str):
 
 @app.get("/api/provenance/summary")
 async def provenance_summary():
-    from app.database import fetch_one as _prov_one, fetch_all as _prov_all
-    total = _prov_one("SELECT COUNT(*) AS n FROM provenance_proofs")
-    sources = _prov_all("SELECT DISTINCT source_domain FROM provenance_proofs ORDER BY 1")
-    date_range = _prov_one(
+    total = await fetch_one_async("SELECT COUNT(*) AS n FROM provenance_proofs")
+    sources = await fetch_all_async("SELECT DISTINCT source_domain FROM provenance_proofs ORDER BY 1")
+    date_range = await fetch_one_async(
         "SELECT MIN(proved_at) AS first, MAX(proved_at) AS last FROM provenance_proofs"
     )
-    today = _prov_one(
+    today = await fetch_one_async(
         "SELECT COUNT(*) AS n FROM provenance_proofs WHERE proved_at::date = CURRENT_DATE"
     )
-    this_hour = _prov_one(
+    this_hour = await fetch_one_async(
         "SELECT COUNT(*) AS n FROM provenance_proofs WHERE proved_at > NOW() - INTERVAL '1 hour'"
     )
     return {
@@ -8741,8 +8740,7 @@ async def provenance_summary():
 
 @app.get("/api/provenance/cda-sources")
 async def provenance_cda_sources():
-    from app.database import fetch_all as _prov_all
-    rows = _prov_all(
+    rows = await fetch_all_async(
         "SELECT asset_symbol, issuer, source_url, content_type, discovered_at FROM cda_source_urls WHERE active = TRUE ORDER BY discovered_at DESC"
     )
     return {
@@ -8766,7 +8764,7 @@ async def provenance_attestor_pubkey():
 @app.get("/api/provenance/sources")
 async def provenance_sources_list():
     """List all registered provenance sources with health status."""
-    rows = fetch_all("SELECT * FROM provenance_sources ORDER BY entity, component")
+    rows = await fetch_all_async("SELECT * FROM provenance_sources ORDER BY entity, component")
     return {
         "sources": [dict(r) for r in (rows or [])],
         "count": len(rows or []),
@@ -8782,7 +8780,7 @@ async def provenance_health_alert(request: Request):
     if not source_id or not event:
         raise HTTPException(status_code=400, detail="source_id and event are required")
 
-    execute(
+    await execute_async(
         """INSERT INTO provenance_health_alerts
            (source_id, event, old_url, redirect_url, details)
            VALUES (%s, %s, %s, %s, %s)""",
@@ -8848,13 +8846,13 @@ async def provenance_sources_for_cycle():
 @app.get("/api/provenance/health")
 async def provenance_health():
     """Current provenance source health — active/disabled counts + recent alerts."""
-    sources = fetch_all("SELECT * FROM provenance_sources ORDER BY entity, component")
+    sources = await fetch_all_async("SELECT * FROM provenance_sources ORDER BY entity, component")
     sources = sources or []
 
     active = [s for s in sources if s.get("enabled")]
     disabled = [s for s in sources if not s.get("enabled")]
 
-    recent_alerts = fetch_all("""
+    recent_alerts = await fetch_all_async("""
         SELECT * FROM provenance_health_alerts
         WHERE created_at > NOW() - INTERVAL '7 days'
         ORDER BY created_at DESC
@@ -8862,7 +8860,7 @@ async def provenance_health():
     """) or []
 
     # Check proof freshness — flag if no proofs registered in >2 hours
-    latest_proof = fetch_one(
+    latest_proof = await fetch_one_async(
         "SELECT MAX(proved_at) AS latest FROM provenance_proofs"
     )
     proof_age_hours = None
@@ -8922,21 +8920,21 @@ async def contract_upgrade_history(
 ):
     """Upgrade history for scored contracts."""
     if entity_type and entity_id:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT * FROM contract_upgrade_history
                WHERE entity_type = %s AND entity_id = %s
                ORDER BY upgrade_detected_at DESC LIMIT %s""",
             (entity_type, entity_id, limit),
         )
     elif entity_type:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT * FROM contract_upgrade_history
                WHERE entity_type = %s
                ORDER BY upgrade_detected_at DESC LIMIT %s""",
             (entity_type, limit),
         )
     else:
-        rows = fetch_all(
+        rows = await fetch_all_async(
             """SELECT * FROM contract_upgrade_history
                ORDER BY upgrade_detected_at DESC LIMIT %s""",
             (limit,),
@@ -8947,7 +8945,7 @@ async def contract_upgrade_history(
 @app.get("/api/contract-upgrades/recent")
 async def contract_upgrades_recent():
     """All contract upgrades in the last 30 days."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT * FROM contract_upgrade_history
            WHERE upgrade_detected_at > NOW() - INTERVAL '30 days'
            ORDER BY upgrade_detected_at DESC"""
@@ -8958,7 +8956,7 @@ async def contract_upgrades_recent():
 @app.get("/api/stablecoins/{symbol}/contract-upgrades")
 async def stablecoin_contract_upgrades(symbol: str):
     """Contract upgrade history for a specific stablecoin."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT * FROM contract_upgrade_history
            WHERE entity_type = 'stablecoin' AND LOWER(entity_symbol) = LOWER(%s)
            ORDER BY upgrade_detected_at DESC""",
@@ -8970,7 +8968,7 @@ async def stablecoin_contract_upgrades(symbol: str):
 @app.get("/api/protocols/{slug}/contract-upgrades")
 async def protocol_contract_upgrades(slug: str):
     """Contract upgrade history for a specific protocol."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT * FROM contract_upgrade_history
            WHERE entity_type = 'protocol' AND LOWER(entity_symbol) = LOWER(%s)
            ORDER BY upgrade_detected_at DESC""",
@@ -9006,7 +9004,7 @@ async def contagion_events_list(
     where = " AND ".join(conditions)
     params.append(limit)
 
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT id, event_type, source_entity_type, source_entity_id,
                    source_entity_symbol, trigger_metric, trigger_value_before,
                    trigger_value_after, severity, propagation_summary,
@@ -9022,7 +9020,7 @@ async def contagion_events_list(
 @app.get("/api/contagion-events/{event_id}")
 async def contagion_event_detail(event_id: int):
     """Full contagion event record including graph state snapshot."""
-    row = fetch_one(
+    row = await fetch_one_async(
         "SELECT * FROM contagion_events WHERE id = %s",
         (event_id,),
     )
@@ -9034,7 +9032,7 @@ async def contagion_event_detail(event_id: int):
 @app.get("/api/stablecoins/{symbol}/contagion-events")
 async def stablecoin_contagion_events(symbol: str):
     """Contagion events where this stablecoin was the source."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT id, event_type, trigger_metric, trigger_value_before,
                   trigger_value_after, severity, propagation_summary,
                   detected_at, content_hash
@@ -9049,7 +9047,7 @@ async def stablecoin_contagion_events(symbol: str):
 @app.get("/api/protocols/{slug}/contagion-events")
 async def protocol_contagion_events(slug: str):
     """Contagion events where this protocol was the source."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT id, event_type, trigger_metric, trigger_value_before,
                   trigger_value_after, severity, propagation_summary,
                   detected_at, content_hash
@@ -9066,13 +9064,13 @@ async def protocol_contagion_events(slug: str):
 @app.get("/api/sanctions/summary")
 async def sanctions_summary():
     """Summary of sanctions screening status."""
-    today_count = fetch_one(
+    today_count = await fetch_one_async(
         "SELECT COUNT(*) AS cnt FROM sanctions_screening_results WHERE screened_at::date = CURRENT_DATE"
     )
-    match_count = fetch_one(
+    match_count = await fetch_one_async(
         "SELECT COUNT(*) AS cnt FROM sanctions_screening_results WHERE is_match = TRUE"
     )
-    last_screened = fetch_one(
+    last_screened = await fetch_one_async(
         "SELECT MAX(screened_at) AS latest FROM sanctions_screening_results"
     )
     return {
@@ -9085,7 +9083,7 @@ async def sanctions_summary():
 @app.get("/api/sanctions/matches")
 async def sanctions_matches():
     """All historical sanctions matches."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT * FROM sanctions_screening_results
            WHERE is_match = TRUE
            ORDER BY screened_at DESC"""
@@ -9096,7 +9094,7 @@ async def sanctions_matches():
 @app.get("/api/stablecoins/{symbol}/sanctions")
 async def stablecoin_sanctions(symbol: str):
     """Screening history for this stablecoin's issuers."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT * FROM sanctions_screening_results
            WHERE LOWER(entity_symbol) = LOWER(%s)
            ORDER BY screened_at DESC""",
@@ -9110,15 +9108,15 @@ async def stablecoin_sanctions(symbol: str):
 @app.get("/api/enforcement/summary")
 async def enforcement_summary():
     """Summary of enforcement record collection."""
-    entity_counts = fetch_all(
+    entity_counts = await fetch_all_async(
         """SELECT entity_symbol, COUNT(*) AS cnt
            FROM enforcement_records
            GROUP BY entity_symbol ORDER BY cnt DESC"""
     )
-    unreviewed = fetch_one(
+    unreviewed = await fetch_one_async(
         "SELECT COUNT(*) AS cnt FROM enforcement_records WHERE is_relevant IS NULL"
     )
-    last_scan = fetch_one(
+    last_scan = await fetch_one_async(
         "SELECT MAX(discovered_at) AS latest FROM enforcement_records"
     )
     return {
@@ -9146,7 +9144,7 @@ async def enforcement_records_list(
         params.append(record_type)
 
     where = " AND ".join(conditions)
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT id, entity_type, entity_symbol, search_term, record_source,
                    case_name, case_date, court, docket_number, record_type,
                    summary, case_url, absolute_url,
@@ -9163,7 +9161,7 @@ async def enforcement_records_list(
 @app.get("/api/stablecoins/{symbol}/enforcement")
 async def stablecoin_enforcement(symbol: str):
     """All enforcement records for this stablecoin's issuer."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT id, entity_type, search_term, record_source, case_name,
                   case_date, court, docket_number, record_type, summary,
                   case_url, absolute_url,
@@ -9182,7 +9180,7 @@ async def stablecoin_enforcement(symbol: str):
 @app.get("/api/parent-company/{symbol}/financials")
 async def parent_company_financials(symbol: str):
     """Financial history for all parent companies of this stablecoin."""
-    companies = fetch_all(
+    companies = await fetch_all_async(
         """SELECT pcr.company_name, pcr.sec_cik, pcr.relationship_type,
                   pcf.fiscal_period, pcf.fiscal_year, pcf.period_end_date,
                   pcf.total_assets_usd, pcf.total_liabilities_usd,
@@ -9201,7 +9199,7 @@ async def parent_company_financials(symbol: str):
 @app.get("/api/parent-company/summary")
 async def parent_company_summary():
     """List all tracked parent companies with latest period data."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT pcr.company_name, pcr.sec_cik, pcr.entity_symbol,
                   pcr.relationship_type,
                   pcf.fiscal_period, pcf.fiscal_year, pcf.period_end_date,
@@ -9242,7 +9240,7 @@ async def governance_proposals_list(
     where = " AND ".join(conditions)
     params.append(limit)
 
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT id, protocol_slug, proposal_id, proposal_source,
                    title, author_address, author_ens, state,
                    vote_start, vote_end, scores_total, scores_for,
@@ -9259,7 +9257,7 @@ async def governance_proposals_list(
 @app.get("/api/governance/proposals/{proposal_id}")
 async def governance_proposal_detail(proposal_id: str):
     """Full governance proposal including body text."""
-    row = fetch_one(
+    row = await fetch_one_async(
         "SELECT * FROM governance_proposals WHERE proposal_id = %s",
         (proposal_id,),
     )
@@ -9271,7 +9269,7 @@ async def governance_proposal_detail(proposal_id: str):
 @app.get("/api/protocols/{slug}/governance/proposals")
 async def protocol_governance_proposals(slug: str):
     """All governance proposals for a specific protocol."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT id, proposal_id, proposal_source, title,
                   author_address, state, vote_start, vote_end,
                   scores_total, scores_for, scores_against, scores_abstain,
@@ -9287,7 +9285,7 @@ async def protocol_governance_proposals(slug: str):
 @app.get("/api/governance/edits")
 async def governance_edits():
     """Proposals where the body was edited after initial capture."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT id, protocol_slug, proposal_id, proposal_source,
                   title, state, first_capture_body_hash, body_hash,
                   captured_at
@@ -9315,7 +9313,7 @@ async def contract_dependencies_list(
         params.append(chain)
 
     where = " AND ".join(conditions)
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT source_contract, source_chain,
                    depends_on_address, depends_on_chain,
                    depends_on_label, depends_on_type,
@@ -9336,7 +9334,7 @@ async def contract_dependencies_history(
     days: int = Query(default=90, ge=1, le=3650),
 ):
     """Daily dependency graph snapshots over time."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT snapshot_date, dependency_count,
                   dependency_addresses, dependency_hashes, content_hash
            FROM dependency_graph_snapshots
@@ -9351,7 +9349,7 @@ async def contract_dependencies_history(
 @app.get("/api/contract-dependencies/reverse/{address}")
 async def contract_dependencies_reverse(address: str):
     """All entities that depend on a given contract address (exploit propagation query)."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT entity_type, entity_slug, source_contract, source_chain,
                   depends_on_type, call_type, detected_via,
                   first_seen_at, last_confirmed_at, removed_at
@@ -9366,7 +9364,7 @@ async def contract_dependencies_reverse(address: str):
 @app.get("/api/contract-dependencies/changes")
 async def contract_dependencies_changes():
     """New and removed dependencies in the last 30 days."""
-    new_deps = fetch_all(
+    new_deps = await fetch_all_async(
         """SELECT entity_type, entity_slug, source_contract,
                   depends_on_address, depends_on_chain,
                   depends_on_label, depends_on_type,
@@ -9375,7 +9373,7 @@ async def contract_dependencies_changes():
            WHERE first_seen_at > NOW() - INTERVAL '30 days'
            ORDER BY first_seen_at DESC"""
     )
-    removed_deps = fetch_all(
+    removed_deps = await fetch_all_async(
         """SELECT entity_type, entity_slug, source_contract,
                   depends_on_address, depends_on_chain,
                   depends_on_label, depends_on_type,
@@ -9416,7 +9414,7 @@ async def parameter_change_history(
     where = " AND ".join(conditions)
     params.append(limit)
 
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT id, parameter_name, parameter_key, asset_symbol,
                    previous_value, new_value, value_unit,
                    change_magnitude, change_direction, changed_at,
@@ -9433,7 +9431,7 @@ async def parameter_change_history(
 @app.get("/api/parameters/{slug}/current")
 async def parameter_current_values(slug: str):
     """Current parameter values for all watched parameters."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT parameter_name, parameter_key, asset_symbol,
                   current_value, current_value_raw, value_unit,
                   last_updated_at, first_seen_at
@@ -9451,7 +9449,7 @@ async def parameter_snapshots(
     days: int = Query(default=90, ge=1, le=3650),
 ):
     """Daily parameter snapshots over time."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT snapshot_date, parameters, parameter_count, content_hash
            FROM protocol_parameter_snapshots
            WHERE protocol_slug = %s
@@ -9479,7 +9477,7 @@ async def parameter_changes_all(
     where = " AND ".join(conditions)
     params.append(limit)
 
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT protocol_slug, parameter_name, asset_symbol,
                    previous_value, new_value, value_unit,
                    change_magnitude, change_direction, changed_at,
@@ -9496,7 +9494,7 @@ async def parameter_changes_all(
 @app.get("/api/parameters/{slug}/context")
 async def parameter_context_analysis(slug: str):
     """Change context analysis: reactive vs proactive ratio over time."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT change_context, COUNT(*) AS cnt
            FROM protocol_parameter_changes
            WHERE protocol_slug = %s AND change_context IS NOT NULL
@@ -9509,7 +9507,7 @@ async def parameter_context_analysis(slug: str):
     proactive = context_counts.get("proactive", 0)
     total = reactive + proactive + context_counts.get("unknown", 0)
 
-    avg_lag = fetch_one(
+    avg_lag = await fetch_one_async(
         """SELECT AVG(hours_since_last_sii_change) AS avg_lag
            FROM protocol_parameter_changes
            WHERE protocol_slug = %s AND change_context = 'reactive'
@@ -9533,7 +9531,7 @@ async def parameter_context_analysis(slug: str):
 @app.get("/api/concentration/{symbol}/latest")
 async def concentration_latest(symbol: str):
     """Most recent concentration snapshot with top clusters."""
-    snapshot = fetch_one(
+    snapshot = await fetch_one_async(
         """SELECT * FROM concentration_snapshots
            WHERE UPPER(stablecoin_symbol) = UPPER(%s)
            ORDER BY snapshot_date DESC LIMIT 1""",
@@ -9542,7 +9540,7 @@ async def concentration_latest(symbol: str):
     if not snapshot:
         raise HTTPException(status_code=404, detail="No concentration data for this stablecoin")
 
-    clusters = fetch_all(
+    clusters = await fetch_all_async(
         """SELECT cluster_id, seed_wallet, member_count,
                   total_balance_usd, pct_of_supply, cluster_type, actor_labels
            FROM holder_clusters
@@ -9561,7 +9559,7 @@ async def concentration_history(
     days: int = Query(default=90, ge=1, le=3650),
 ):
     """Concentration snapshots over time with nominal and clustered metrics."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT snapshot_date, nominal_gini, clustered_gini,
                   nominal_top10_pct, clustered_top10_pct,
                   nominal_top50_pct, clustered_top50_pct,
@@ -9580,7 +9578,7 @@ async def concentration_history(
 @app.get("/api/concentration/{symbol}/clusters/{snapshot_date}")
 async def concentration_clusters(symbol: str, snapshot_date: str):
     """All clusters for a stablecoin on a specific date."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT cluster_id, seed_wallet, member_wallets, member_count,
                   total_balance_usd, pct_of_supply, cluster_type, actor_labels
            FROM holder_clusters
@@ -9594,7 +9592,7 @@ async def concentration_clusters(symbol: str, snapshot_date: str):
 @app.get("/api/concentration/divergence")
 async def concentration_divergence():
     """All stablecoins sorted by divergence_score for most recent snapshot."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT DISTINCT ON (stablecoin_symbol)
                   stablecoin_symbol, snapshot_date,
                   nominal_gini, clustered_gini, divergence_score,
@@ -9610,7 +9608,7 @@ async def concentration_divergence():
 @app.get("/api/concentration/changes")
 async def concentration_changes():
     """Stablecoins where clustered_gini changed >0.02 in the last 7 days."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """WITH recent AS (
                SELECT stablecoin_symbol, snapshot_date, clustered_gini,
                       LAG(clustered_gini) OVER (
@@ -9652,7 +9650,7 @@ async def oracle_readings_latest(
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(limit)
 
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT DISTINCT ON (oracle_address)
                    oracle_address, oracle_name, oracle_provider, chain,
                    asset_symbol, oracle_price, cex_price,
@@ -9674,7 +9672,7 @@ async def oracle_reading_history(
     limit: int = Query(default=200, ge=1, le=2000),
 ):
     """Reading history for a specific oracle."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT oracle_price, cex_price, deviation_pct, deviation_abs,
                   latency_seconds, round_id, answer_timestamp,
                   is_stress_event, recorded_at
@@ -9717,7 +9715,7 @@ async def oracle_stress_events_list(
         conditions.append("event_end IS NULL")
 
     where = " AND ".join(conditions)
-    rows = fetch_all(
+    rows = await fetch_all_async(
         f"""SELECT * FROM oracle_stress_events
             WHERE {where}
             ORDER BY event_start DESC""",
@@ -9729,7 +9727,7 @@ async def oracle_stress_events_list(
 @app.get("/api/oracle/stress-events/active")
 async def oracle_stress_events_active():
     """All currently open stress events."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT * FROM oracle_stress_events
            WHERE event_end IS NULL
            ORDER BY event_start DESC"""
@@ -9748,7 +9746,7 @@ async def oracle_stress_event_triptych(event_id: int):
     - post_stress: readings in the 72 hours after event_end. Empty if the
       event is still open.
     """
-    event = fetch_one(
+    event = await fetch_one_async(
         "SELECT * FROM oracle_stress_events WHERE id = %s",
         (event_id,),
     )
@@ -9760,7 +9758,7 @@ async def oracle_stress_event_triptych(event_id: int):
         "deviation_pct, latency_seconds, is_stress_event"
     )
 
-    pre_rows = fetch_all(
+    pre_rows = await fetch_all_async(
         f"""SELECT {reading_cols}
             FROM oracle_price_readings
             WHERE pre_stress_event_id = %s
@@ -9768,7 +9766,7 @@ async def oracle_stress_event_triptych(event_id: int):
         (event_id,),
     ) or []
 
-    during_rows = fetch_all(
+    during_rows = await fetch_all_async(
         f"""SELECT {reading_cols}
             FROM oracle_price_readings
             WHERE is_stress_event = TRUE
@@ -9783,7 +9781,7 @@ async def oracle_stress_event_triptych(event_id: int):
     ) or []
 
     if event.get("event_end"):
-        post_rows = fetch_all(
+        post_rows = await fetch_all_async(
             f"""SELECT {reading_cols}
                 FROM oracle_price_readings
                 WHERE oracle_address = %s
@@ -9817,7 +9815,7 @@ async def oracle_deviation_history(
     hours: int = Query(default=168, ge=1, le=720),
 ):
     """Deviation time series for an asset across all its oracles."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT oracle_address, oracle_name, oracle_provider,
                   deviation_pct, latency_seconds, recorded_at
            FROM oracle_price_readings
@@ -9832,7 +9830,7 @@ async def oracle_deviation_history(
 @app.get("/api/oracle/divergence")
 async def oracle_divergence():
     """Current deviation between oracle and CEX for all active oracles, sorted by abs deviation."""
-    rows = fetch_all(
+    rows = await fetch_all_async(
         """SELECT DISTINCT ON (oracle_address)
                   oracle_address, oracle_name, oracle_provider, chain,
                   asset_symbol, oracle_price, cex_price,
