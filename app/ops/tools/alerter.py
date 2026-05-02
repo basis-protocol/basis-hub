@@ -56,6 +56,35 @@ async def _increment_daily_count():
         pass
 
 
+async def _claim_daily_slot(cap: int) -> bool:
+    """Atomically check cap and reserve a send slot in one statement.
+
+    Returns True if a slot was claimed (under cap, count incremented),
+    False if cap was already reached. Replaces the check-then-act
+    pattern of `_get_daily_count` + `_increment_daily_count` which
+    raced under concurrent send_alert calls (caused cap to be exceeded
+    by 1+ — observed 21/20 in production logs).
+    """
+    try:
+        row = await fetch_one_async(
+            """
+            INSERT INTO alert_rate_limit (day, count, last_sent_at)
+            VALUES (CURRENT_DATE, 1, NOW())
+            ON CONFLICT (day) DO UPDATE SET
+                count = alert_rate_limit.count + 1,
+                last_sent_at = NOW()
+            WHERE alert_rate_limit.count < %s
+            RETURNING count
+            """,
+            (cap,),
+        )
+        return row is not None
+    except Exception:
+        # If the atomic claim errors, fall back to allowing the send
+        # (best-effort) so transient DB issues don't silence alerts.
+        return True
+
+
 async def _get_active_channels():
     """Load enabled alert channels from ops_alert_config."""
     try:
@@ -74,11 +103,11 @@ async def send_alert(alert_type: str, message: str, context: dict = None, severi
         logger.warning(f"[alerter] deduplicated: {alert_type}")
         return False
 
-    # Daily cap
-    daily_count = await _get_daily_count()
+    # Daily cap — atomic claim to avoid the check-then-act race that
+    # let count exceed cap under concurrent calls.
     cap = DAILY_CAP_CRITICAL if severity == "critical" else DAILY_CAP_NORMAL
-    if daily_count >= cap:
-        logger.warning(f"[alerter] daily cap reached ({daily_count}/{cap}), dropping {severity}: {alert_type}")
+    if not await _claim_daily_slot(cap):
+        logger.warning(f"[alerter] daily cap reached (>={cap}), dropping {severity}: {alert_type}")
         return False
 
     channels = await _get_active_channels()
@@ -97,10 +126,6 @@ async def send_alert(alert_type: str, message: str, context: dict = None, severi
                 sent_any = True
         except Exception as e:
             logger.error(f"Alert send failed ({ch['channel']}): {e}")
-
-    # Track daily count
-    if sent_any:
-        await _increment_daily_count()
 
     # Always log the alert
     try:
