@@ -133,19 +133,36 @@ see 2.4), publish any rows where `on_chain_tx_hash IS NULL`.
 
 ### 2.4 Hub-side admin endpoints
 
-These exist or need to be added for the keeper to fetch pending
-work:
+All six endpoints exist in production and live under the `/api/ops`
+prefix on `app/ops/routes.py` (the runbook's earlier `/api/admin`
+namespace is a separate router that does NOT include these routes).
 
-- `GET /api/admin/track-record/pending` — exists.
-- `POST /api/admin/track-record/{id}/mark-committed` — exists.
-- `GET /api/admin/disputes/pending-commits` — exists.
-- `POST /api/admin/disputes/commit/{id}/published` — exists.
-- `GET /api/admin/methodology/pending` — **needs adding**. Returns
-  rows from `methodology_hashes` where `on_chain_tx_hash IS NULL`.
-- `POST /api/admin/methodology/{id}/mark-committed` — **needs adding**.
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/api/ops/track-record/pending-on-chain?chain=base\|arbitrum` | Pending track-record entries |
+| POST | `/api/ops/track-record/entries/{entry_id}/committed/{chain}` | Mark committed |
+| GET  | `/api/ops/disputes/pending-on-chain?chain=base\|arbitrum` | Pending dispute transitions |
+| POST | `/api/ops/disputes/transitions/{transition_id}/committed/{chain}` | Mark committed |
+| GET  | `/api/ops/methodology/pending-on-chain?chain=base\|arbitrum` | Pending methodology hashes |
+| POST | `/api/ops/methodology/{methodology_id}/committed/{chain}` | Mark committed |
 
-The methodology admin endpoints are ~30 lines each, mirror the
-track-record pattern, and live in `app/ops/routes.py`.
+**Auth.** All routes call `_check_admin_key(request)`, which reads
+either the `x-admin-key` request header OR the `?key=` query
+parameter, compared against the `ADMIN_KEY` env var via
+`hmac.compare_digest`. There is no Bearer-token path.
+
+**Mark-committed body shape** (POST endpoints): `chain` is a URL
+**path** parameter, not a body field. Body is JSON `{ "tx_hash": "0x..." }`.
+The endpoint sets `on_chain_tx_hash_<chain>`, flips
+`committed_on_chain_<chain>` to TRUE, and `COALESCE`s `committed_at`
+with `NOW()`.
+
+**GET response shape**: each row in the returned list includes the
+underlying table columns plus `entity_id_bytes32` (computed via the
+adapter in `app/track_record.py` / `app/disputes.py` /
+`app/methodology_hashes.py`, which delegate to `app/oracle_keys.py`).
+JSONB columns (`baseline_snapshot`, `trigger_detail`,
+`transition_payload`) are decoded to objects.
 
 ---
 

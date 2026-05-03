@@ -3363,7 +3363,7 @@ async def track_record_summary(request: Request):
 
 @router.get("/track-record/pending-on-chain")
 async def track_record_pending_on_chain(request: Request, chain: str = "base"):
-    _check_admin(request)
+    _check_admin_key(request)
     if chain not in ("base", "arbitrum"):
         return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
 
@@ -3393,7 +3393,7 @@ async def track_record_pending_on_chain(request: Request, chain: str = "base"):
 
 @router.post("/track-record/entries/{entry_id}/committed/{chain}")
 async def track_record_mark_committed(entry_id: str, chain: str, request: Request):
-    _check_admin(request)
+    _check_admin_key(request)
     if chain not in ("base", "arbitrum"):
         return JSONResponse({"error": "chain must be 'base' or 'arbitrum'"}, status_code=400)
 
@@ -3427,7 +3427,7 @@ async def track_record_mark_committed(entry_id: str, chain: str, request: Reques
 
 @router.get("/track-record/on-chain-status")
 async def track_record_on_chain_status(request: Request):
-    _check_admin(request)
+    _check_admin_key(request)
     try:
         row = await fetch_one_async("""
             SELECT
