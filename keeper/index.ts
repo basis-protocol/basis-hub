@@ -15,6 +15,12 @@ import { sendAlert, checkStaleness } from "./alerter.js";
 import { TOKEN_ADDRESSES } from "./converter.js";
 import { fetchOnChainScores, computeUpdates, type ApiScore } from "./differ.js";
 import { publishUpdates, publishPsiScores, publishReportHashes, publishStateRoot, sleep, type ReportHashUpdate, type PsiScoreUpdate } from "./publisher.js";
+import {
+  runCompanionStep,
+  trackRecordStepArgs,
+  disputeStepArgs,
+  methodologyStepArgs,
+} from "./companions_cycle.js";
 
 // Hub API response envelope
 interface HubScoresResponse {
@@ -310,6 +316,48 @@ async function runCycle(
     }
   } catch (err) {
     logger.warn("State root publishing failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 8/9/10. Bucket A Companion commits — track-record, dispute, methodology.
+  // Each runs on Base and Arbitrum in parallel, batch size 50, lens-tagged.
+  // See docs/oracle_option_c_keeper_runbook.md §2.3.
+  const adminKey = process.env.ADMIN_KEY ?? "";
+  if (!adminKey) {
+    logger.warn("ADMIN_KEY not set — skipping Companion steps 8/9/10");
+  } else {
+    const bothChains = (mkArgs: (chainKey: "base" | "arbitrum") => any) =>
+      Promise.all([
+        runCompanionStep(mkArgs("base")),
+        runCompanionStep(mkArgs("arbitrum")),
+      ]);
+
+    const baseCommonArgs = (chainKey: "base" | "arbitrum") => ({
+      apiUrl: config.apiUrl,
+      adminKey,
+      chainKey,
+      oracleAddress: chainKey === "base"
+        ? config.chains.base.oracleAddress
+        : config.chains.arbitrum.oracleAddress,
+      provider: chainKey === "base" ? providerBase : providerArb,
+      wallet:   chainKey === "base" ? walletBase   : walletArb,
+      config,
+    });
+
+    try {
+      await bothChains((chainKey) => trackRecordStepArgs(baseCommonArgs(chainKey)));
+    } catch (err) {
+      logger.error("[step 8] track-record cycle failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      await bothChains((chainKey) => disputeStepArgs(baseCommonArgs(chainKey)));
+    } catch (err) {
+      logger.error("[step 9] dispute cycle failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      await bothChains((chainKey) => methodologyStepArgs(baseCommonArgs(chainKey)));
+    } catch (err) {
+      logger.error("[step 10] methodology cycle failed", { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   const cycleDuration = Date.now() - cycleStart;
