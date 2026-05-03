@@ -74,6 +74,31 @@ def validate_api_key(key_string: str) -> Optional[int]:
     return result
 
 
+async def validate_api_key_async(key_string: str) -> Optional[int]:
+    """Async version of validate_api_key for use in async middleware."""
+    if not key_string:
+        return None
+
+    now = _time.time()
+    cached = _key_cache.get(key_string)
+    if cached is not None and (now - cached[1]) < _KEY_CACHE_TTL:
+        return cached[0]
+
+    try:
+        from app.database import fetch_one_async
+        row = await fetch_one_async(
+            "SELECT id FROM api_keys WHERE key = %s AND is_active = TRUE",
+            (key_string,)
+        )
+        result = row["id"] if row else None
+    except Exception as e:
+        logger.debug(f"validate_api_key_async error: {e}")
+        result = None
+
+    _key_cache[key_string] = (result, now)
+    return result
+
+
 def create_api_key(name: str) -> str:
     """Generates a new random API key, stores it, and returns the raw string."""
     from app.database import get_conn
