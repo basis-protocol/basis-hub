@@ -51,19 +51,15 @@ def _compute_content_hash(entity_slug: str, trigger_kind: str,
 
 
 def compute_on_chain_entity_id(entry: dict) -> str:
-    """Compute deterministic bytes32 entityId for on-chain anchoring via publishReportHash.
-
-    keccak256 of canonical {entity_slug, trigger_kind, triggered_at}.
-    No sha256 fallback — Solidity uses keccak256, silent divergence would
-    publish unverifiable entityIds.
+    """Thin adapter to app.oracle_keys.track_record_entity_id.
+    See docs/oracle_option_c_routing.md §11 Q2 for the byte spec.
     """
-    from eth_hash.auto import keccak
-    canonical = json.dumps({
-        "entity_slug": entry.get("entity_slug", ""),
-        "trigger_kind": entry.get("trigger_kind", ""),
-        "triggered_at": str(entry.get("triggered_at", "")),
-    }, sort_keys=True, separators=(",", ":"))
-    return "0x" + keccak(canonical.encode()).hex()
+    from app.oracle_keys import track_record_entity_id
+    return track_record_entity_id(
+        entry.get("entity_slug", ""),
+        entry.get("trigger_kind", ""),
+        entry.get("triggered_at", 0),
+    )
 
 
 def _get_entity_baseline(entity_slug: str, index_name: str) -> dict:

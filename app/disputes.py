@@ -39,19 +39,15 @@ def _compute_transition_hash(dispute_id: str, transition_index: int, payload: di
 
 
 def compute_on_chain_entity_id(transition: dict) -> str:
-    """Compute deterministic bytes32 entityId for on-chain anchoring.
-
-    keccak256 of canonical {dispute_id, transition_index, transition_kind}.
-    Returns 0x-prefixed hex string. No sha256 fallback — Solidity uses
-    keccak256, silent divergence would publish unverifiable entityIds.
+    """Thin adapter to app.oracle_keys.dispute_entity_id.
+    See docs/oracle_option_c_routing.md §11 Q2 for the byte spec.
     """
-    from eth_hash.auto import keccak
-    canonical = json.dumps({
-        "dispute_id": str(transition.get("dispute_id", "")),
-        "transition_index": transition.get("transition_index", 0),
-        "transition_kind": transition.get("transition_kind", ""),
-    }, sort_keys=True, separators=(",", ":"))
-    return "0x" + keccak(canonical.encode()).hex()
+    from app.oracle_keys import dispute_entity_id
+    return dispute_entity_id(
+        str(transition.get("dispute_id", "")),
+        transition.get("transition_kind", ""),
+        int(transition.get("transition_index", 0)),
+    )
 
 
 def submit_dispute(entity_slug: str, submitter_identifier: str, submitter_type: str,

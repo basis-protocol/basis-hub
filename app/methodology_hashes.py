@@ -58,12 +58,8 @@ def list_methodologies() -> list[dict]:
 
 
 def compute_on_chain_entity_id(methodology: dict) -> str:
-    """Deterministic bytes32 entityId for on-chain anchoring via publishReportHash.
-
-    Solidity uses keccak256; the on-chain oracle expects this exact digest.
-    Don't add a sha256 fallback here — silent divergence from Solidity would
-    publish unverifiable entityIds.
+    """Thin adapter to app.oracle_keys.methodology_entity_id.
+    See docs/oracle_option_c_routing.md §11 Q2 for the byte spec.
     """
-    from eth_hash.auto import keccak
-    canonical = methodology.get("methodology_id", "")
-    return "0x" + keccak(canonical.encode()).hex()
+    from app.oracle_keys import methodology_entity_id
+    return methodology_entity_id(methodology.get("methodology_id", ""))
