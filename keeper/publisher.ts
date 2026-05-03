@@ -3,6 +3,11 @@ import { logger } from "./logger.js";
 import { sendAlert } from "./alerter.js";
 import type { ScoreUpdate } from "./differ.js";
 import type { KeeperConfig } from "./config.js";
+import {
+  trackRecordEntityId,
+  disputeEntityId,
+  methodologyEntityId,
+} from "./optionC_keys.js";
 
 const ORACLE_ABI = [
   "function batchUpdateScores(address[] calldata tokens, uint16[] calldata scores, bytes2[] calldata grades, uint48[] calldata timestamps, uint16[] calldata versions) external",
@@ -10,6 +15,12 @@ const ORACLE_ABI = [
   "function isStale(address token, uint256 maxAge) external view returns (bool)",
   "function publishReportHash(bytes32 entityId, bytes32 reportHash, bytes4 lensId) external",
   "function publishStateRoot(bytes32 stateRoot) external",
+  // Read-only accessor used by Companion helpers (track-record, dispute,
+  // methodology) for the off-chain write-once collision guard. The
+  // deployed bytecode does not enforce write-once on publishReportHash;
+  // the keeper refuses to overwrite an entityId whose stored
+  // reportHash differs from the new one. See runbook §2.1, §2.2.
+  "function getReportHash(bytes32 entityId) external view returns (bytes32, bytes4, uint48)",
   "function reportTimestamps(bytes32 entityId) external view returns (uint48)",
   "function stateRootTimestamp() external view returns (uint48)",
   // Read-only PSI accessor — used by scripts/diagnose_psi_state.ts to
@@ -507,6 +518,256 @@ export async function publishStateRoot(
     return false;
   }
 }
+
+// ============================================================
+// Companion helpers — Bucket A commits via publishReportHash + lens
+// See docs/oracle_option_c_routing.md §11 Q3 for lens scheme,
+// docs/oracle_option_c_keeper_runbook.md §2.2 for behavior contract,
+// keeper/optionC_keys.ts for entityId computation.
+// ============================================================
+
+// Lens discriminators — runbook §11 Q3.
+export const LENS_TRACK_RECORD = "0x00000100";
+export const LENS_DISPUTE      = "0x00000200";
+export const LENS_METHODOLOGY  = "0x00000300";
+
+// Row shapes returned by the hub's pending-on-chain endpoints. Only
+// the fields the keeper consumes are typed; other columns flow
+// through opaquely.
+export interface TrackRecordRow {
+  entry_id: string;
+  entity_slug: string;
+  trigger_kind: string;
+  triggered_at: number | string | Date;
+  content_hash: string;          // sha256 hex (no 0x prefix as stored)
+}
+export interface DisputeTransitionRow {
+  transition_id: string;
+  dispute_id: string;
+  transition_kind: string;
+  transition_index: number;
+  content_hash: string;
+}
+export interface MethodologyRow {
+  methodology_id: string;
+  content_hash: string;
+}
+
+/**
+ * Coerce a 64-hex-char content_hash (with or without 0x prefix) to a
+ * canonical 0x-prefixed lowercase bytes32 hex string. Throws on shape
+ * mismatch — better to fail loudly than publish a malformed reportHash.
+ */
+function toBytes32Hex(s: string): string {
+  if (!s) throw new Error("empty content_hash");
+  const stripped = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
+  if (stripped.length !== 64) {
+    throw new Error(`content_hash must be 32 bytes hex (got ${stripped.length} chars): ${s}`);
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(stripped)) {
+    throw new Error(`content_hash not valid hex: ${s}`);
+  }
+  return "0x" + stripped.toLowerCase();
+}
+
+/**
+ * Minimal interface the Companion machinery needs from a Contract.
+ * Tests construct a fake of this shape; production passes a real
+ * `ethers.Contract` (which implements it).
+ *
+ * `publishReportHash` is typed as a callable with an `estimateGas`
+ * property — the structural shape of an ethers v6 contract method —
+ * which lets fakes mock both the call and the gas estimator without
+ * pulling in ethers-specific generics.
+ */
+export interface CompanionOracleLike {
+  getReportHash(entityId: string): Promise<readonly [string, string, bigint]>;
+  publishReportHash: ((...args: any[]) => Promise<any>) & {
+    estimateGas: (...args: any[]) => Promise<bigint>;
+  };
+}
+
+/**
+ * Shared core: write-once collision guard + dry-run logging + tx send.
+ * Returns the published tx hash on success, the existing hash on
+ * idempotent no-op, or null on any non-fatal skip path (collision,
+ * gas-estimate failure, dry run, getReportHash failure).
+ *
+ * Exported via `__test__` for unit tests; not exported at the public
+ * API surface — callers use the three domain-specific wrappers below.
+ */
+async function runCompanion(
+  oracle: CompanionOracleLike,
+  entityId: string,
+  reportHash: string,
+  lensId: string,
+  domain: string,
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  chainKey: string,
+  config: KeeperConfig,
+): Promise<string | null> {
+  // Off-chain write-once guard.
+  let existingHash: string;
+  try {
+    const result = await oracle.getReportHash(entityId);
+    existingHash = result[0];
+  } catch (err) {
+    logger.warn(`[${domain}] getReportHash failed — skipping`, {
+      chain: chainKey,
+      entityId: entityId.slice(0, 18),
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+
+  if (existingHash !== ethers.ZeroHash) {
+    if (existingHash.toLowerCase() === reportHash.toLowerCase()) {
+      logger.info(`[${domain}] entityId already anchored with same hash — idempotent skip`, {
+        chain: chainKey,
+        entityId: entityId.slice(0, 18),
+      });
+      return existingHash;
+    }
+    logger.warn(`[${domain}] entityId collision: existing hash differs — refusing overwrite`, {
+      chain: chainKey,
+      entityId: entityId.slice(0, 18),
+      existingHash,
+      newHash: reportHash,
+    });
+    return null;
+  }
+
+  if (config.dryRun) {
+    logger.info(`DRY RUN — would publish ${domain}`, {
+      chain: chainKey,
+      entityId,
+      reportHash,
+      lens: lensId,
+    });
+    return null;
+  }
+
+  // Estimate gas + send. Mirrors publishReportHashes (line 393-417)
+  // structured-diagnostics block so revert reasons surface cleanly.
+  let gasLimit: bigint;
+  try {
+    const est = await oracle.publishReportHash.estimateGas(entityId, reportHash, lensId);
+    gasLimit = (est * 120n) / 100n;
+  } catch (estErr) {
+    const e = estErr as any;
+    logger.warn(`[${domain}] gas estimate failed — skipping`, {
+      chain: chainKey,
+      entityId: entityId.slice(0, 18),
+      lensId,
+      message: e?.message,
+      code: e?.code,
+      reason: e?.reason,
+      shortMessage: e?.shortMessage,
+      data: e?.data,
+    });
+    return null;
+  }
+
+  try {
+    const nonce = await nonceManager.getCurrentNonce(provider, wallet.address, chainKey);
+    const tx = await (oracle.publishReportHash as ethers.ContractMethod)(
+      entityId, reportHash, lensId,
+      { nonce, gasLimit },
+    );
+    await tx.wait(1);
+    logger.info(`[${domain}] published`, {
+      chain: chainKey,
+      entityId: entityId.slice(0, 18),
+      txHash: tx.hash,
+      lens: lensId,
+    });
+    return tx.hash;
+  } catch (err) {
+    logger.warn(`[${domain}] tx send failed`, {
+      chain: chainKey,
+      entityId: entityId.slice(0, 18),
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/** Pure: compute (entityId, reportHash, lensId) for a track-record row. */
+function trackRecordPublishArgs(entry: TrackRecordRow) {
+  return {
+    entityId: trackRecordEntityId(entry.entity_slug, entry.trigger_kind, entry.triggered_at),
+    reportHash: toBytes32Hex(entry.content_hash),
+    lensId: LENS_TRACK_RECORD,
+  };
+}
+/** Pure: compute (entityId, reportHash, lensId) for a dispute transition row. */
+function disputePublishArgs(t: DisputeTransitionRow) {
+  return {
+    entityId: disputeEntityId(t.dispute_id, t.transition_kind, t.transition_index),
+    reportHash: toBytes32Hex(t.content_hash),
+    lensId: LENS_DISPUTE,
+  };
+}
+/** Pure: compute (entityId, reportHash, lensId) for a methodology row. */
+function methodologyPublishArgs(m: MethodologyRow) {
+  return {
+    entityId: methodologyEntityId(m.methodology_id),
+    reportHash: toBytes32Hex(m.content_hash),
+    lensId: LENS_METHODOLOGY,
+  };
+}
+
+export async function publishTrackRecordCompanion(
+  entry: TrackRecordRow,
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  oracleAddress: string,
+  chainKey: string,
+  config: KeeperConfig,
+): Promise<string | null> {
+  const { entityId, reportHash, lensId } = trackRecordPublishArgs(entry);
+  const oracle = new ethers.Contract(oracleAddress, ORACLE_ABI, wallet) as unknown as CompanionOracleLike;
+  return runCompanion(oracle, entityId, reportHash, lensId,
+    "track_record", provider, wallet, chainKey, config);
+}
+
+export async function publishDisputeCompanion(
+  transition: DisputeTransitionRow,
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  oracleAddress: string,
+  chainKey: string,
+  config: KeeperConfig,
+): Promise<string | null> {
+  const { entityId, reportHash, lensId } = disputePublishArgs(transition);
+  const oracle = new ethers.Contract(oracleAddress, ORACLE_ABI, wallet) as unknown as CompanionOracleLike;
+  return runCompanion(oracle, entityId, reportHash, lensId,
+    "dispute", provider, wallet, chainKey, config);
+}
+
+export async function publishMethodologyCompanion(
+  methodology: MethodologyRow,
+  provider: ethers.JsonRpcProvider,
+  wallet: ethers.Wallet,
+  oracleAddress: string,
+  chainKey: string,
+  config: KeeperConfig,
+): Promise<string | null> {
+  const { entityId, reportHash, lensId } = methodologyPublishArgs(methodology);
+  const oracle = new ethers.Contract(oracleAddress, ORACLE_ABI, wallet) as unknown as CompanionOracleLike;
+  return runCompanion(oracle, entityId, reportHash, lensId,
+    "methodology", provider, wallet, chainKey, config);
+}
+
+// Internal helpers exported for tests only.
+export const __companionsTest__ = {
+  runCompanion,
+  toBytes32Hex,
+  trackRecordPublishArgs,
+  disputePublishArgs,
+  methodologyPublishArgs,
+};
 
 // ============================================================
 // Helpers
