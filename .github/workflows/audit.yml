@@ -21,7 +21,13 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - name: Install Python deps
-        run: pip install pytest "eth-hash[pycryptodome]>=0.7.0" psycopg2-binary
+        # Install the full prod requirements + the test-only deps
+        # (pytest, requests) that aren't declared there. Defense in
+        # depth: any future top-level import in tests/conftest.py is
+        # covered without recreating the May-3 ImportError.
+        run: |
+          pip install -r requirements.txt
+          pip install pytest requests
       - name: Python entityId golden vectors
         run: pytest tests/test_oracle_keys.py -v
       - uses: actions/setup-node@v4

@@ -2,7 +2,11 @@
 
 import os
 import pytest
-import requests
+
+# `requests` is lazy-imported inside the fixture that uses it. Module-
+# level import would force every pytest invocation (including unit-only
+# suites like test_oracle_keys.py) to require `requests` installed —
+# which broke the oracle-keys-parity CI job on May 3, 2026.
 
 
 BASE_URL_DEFAULT = "http://localhost:5000"
@@ -17,6 +21,7 @@ def base_url():
 @pytest.fixture(scope="session")
 def session():
     """Reusable requests session with connection pooling."""
+    import requests
     s = requests.Session()
     s.headers.update({"Accept": "application/json"})
     return s
