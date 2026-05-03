@@ -3110,18 +3110,6 @@ export default function App() {
   const mobile = useIsMobile();
   const integrity = useIntegrity();
 
-  if (error && !scores) {
-    return (
-      <div style={{ minHeight: "100vh", background: T.paper, fontFamily: T.mono, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ textAlign: "center", color: T.inkMid, padding: 24 }}>
-          <div style={{ fontSize: 14, marginBottom: 4 }}>Basis Protocol</div>
-          <div style={{ fontSize: 11, color: T.inkFaint, marginBottom: 12 }}>{error}</div>
-          <button onClick={() => window.location.reload()} style={{ padding: "6px 16px", border: `1px solid ${T.ink}`, background: "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>Retry</button>
-        </div>
-      </div>
-    );
-  }
-
   const handleSelect = useCallback((coinId) => {
     setSelectedCoin(coinId);
     setView("detail");
@@ -3139,6 +3127,18 @@ export default function App() {
     if (v !== "witness-detail") setWitnessSymbol(null);
     window.scrollTo(0, 0);
   }, []);
+
+  if (error && !scores) {
+    return (
+      <div style={{ minHeight: "100vh", background: T.paper, fontFamily: T.mono, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center", color: T.inkMid, padding: 24 }}>
+          <div style={{ fontSize: 14, marginBottom: 4 }}>Basis Protocol</div>
+          <div style={{ fontSize: 11, color: T.inkFaint, marginBottom: 12 }}>{error}</div>
+          <button onClick={() => window.location.reload()} style={{ padding: "6px 16px", border: `1px solid ${T.ink}`, background: "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: 12 }}>Retry</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: T.paper, color: T.ink, fontFamily: T.sans }}>
