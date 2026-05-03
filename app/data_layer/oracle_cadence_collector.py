@@ -90,6 +90,12 @@ async def _sample_oracles(client: httpx.AsyncClient) -> dict:
     global _consecutive_errors
 
     oracles = await fetch_all_async("SELECT * FROM oracle_registry WHERE is_active = TRUE")
+    logger.error(
+        f"[oracle_cadence DIAG] fetch_all_async returned: "
+        f"type={type(oracles).__name__}, "
+        f"len={len(oracles) if oracles is not None else 'N/A'}, "
+        f"value={oracles!r}"
+    )
     if not oracles:
         return {"oracles": 0}
 
