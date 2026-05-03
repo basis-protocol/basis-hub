@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Query
 from fastapi.responses import JSONResponse
 from typing import Optional
 
-from app.database import fetch_one, fetch_all, execute
+from app.database import fetch_one, fetch_all, execute, fetch_one_async, fetch_all_async, execute_async
 
 logger = logging.getLogger(__name__)
 

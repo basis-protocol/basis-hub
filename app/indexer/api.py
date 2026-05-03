@@ -15,7 +15,7 @@ from typing import Optional
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 
-from app.database import execute, fetch_all, fetch_one
+from app.database import execute, fetch_all, fetch_one, fetch_one_async, fetch_all_async, execute_async
 from app.indexer.backlog import get_backlog, get_backlog_detail
 from app.indexer.pipeline import get_coverage_diagnostic
 from app.specs.methodology_versions import WALLET_METHODOLOGY_VERSIONS

@@ -27,6 +27,7 @@ from app.config import STABLECOIN_REGISTRY, CORS_ORIGINS
 from app.database import (
     init_pool, close_pool, health_check as db_health_check,
     fetch_one, fetch_all,
+    fetch_one_async, fetch_all_async, execute_async,
 )
 from app.scoring import (
     SII_V1_WEIGHTS, STRUCTURAL_SUBWEIGHTS, FORMULA_VERSION,
