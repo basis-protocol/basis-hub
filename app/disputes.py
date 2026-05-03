@@ -41,21 +41,17 @@ def _compute_transition_hash(dispute_id: str, transition_index: int, payload: di
 def compute_on_chain_entity_id(transition: dict) -> str:
     """Compute deterministic bytes32 entityId for on-chain anchoring.
 
-    Uses keccak256 (with sha256 fallback) of canonical
-    {dispute_id, transition_index, transition_kind}.
-    Returns 0x-prefixed hex string.
+    keccak256 of canonical {dispute_id, transition_index, transition_kind}.
+    Returns 0x-prefixed hex string. No sha256 fallback — Solidity uses
+    keccak256, silent divergence would publish unverifiable entityIds.
     """
+    from eth_hash.auto import keccak
     canonical = json.dumps({
         "dispute_id": str(transition.get("dispute_id", "")),
         "transition_index": transition.get("transition_index", 0),
         "transition_kind": transition.get("transition_kind", ""),
     }, sort_keys=True, separators=(",", ":"))
-    try:
-        import sha3
-        h = sha3.keccak_256(canonical.encode()).hexdigest()
-    except ImportError:
-        h = hashlib.sha256(canonical.encode()).hexdigest()
-    return "0x" + h
+    return "0x" + keccak(canonical.encode()).hex()
 
 
 def submit_dispute(entity_slug: str, submitter_identifier: str, submitter_type: str,

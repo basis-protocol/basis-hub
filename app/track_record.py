@@ -51,18 +51,19 @@ def _compute_content_hash(entity_slug: str, trigger_kind: str,
 
 
 def compute_on_chain_entity_id(entry: dict) -> str:
-    """Compute deterministic bytes32 entityId for on-chain anchoring via publishReportHash."""
+    """Compute deterministic bytes32 entityId for on-chain anchoring via publishReportHash.
+
+    keccak256 of canonical {entity_slug, trigger_kind, triggered_at}.
+    No sha256 fallback — Solidity uses keccak256, silent divergence would
+    publish unverifiable entityIds.
+    """
+    from eth_hash.auto import keccak
     canonical = json.dumps({
         "entity_slug": entry.get("entity_slug", ""),
         "trigger_kind": entry.get("trigger_kind", ""),
         "triggered_at": str(entry.get("triggered_at", "")),
     }, sort_keys=True, separators=(",", ":"))
-    try:
-        import sha3
-        h = sha3.keccak_256(canonical.encode()).hexdigest()
-    except ImportError:
-        h = hashlib.sha256(canonical.encode()).hexdigest()
-    return "0x" + h
+    return "0x" + keccak(canonical.encode()).hex()
 
 
 def _get_entity_baseline(entity_slug: str, index_name: str) -> dict:

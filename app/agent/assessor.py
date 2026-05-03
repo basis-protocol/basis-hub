@@ -16,12 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 def _keccak256_hex(data: bytes) -> str:
-    """Compute keccak256 hash. Falls back to sha256 if pysha3 not available."""
-    try:
-        import sha3
-        return "0x" + sha3.keccak_256(data).hexdigest()
-    except ImportError:
-        return "0x" + hashlib.sha256(data).hexdigest()
+    """Compute keccak256 hash. No sha256 fallback — content_hash on
+    assessment_events feeds the on-chain anchoring path; silent
+    divergence from Solidity would publish unverifiable hashes.
+    """
+    from eth_hash.auto import keccak
+    return "0x" + keccak(data).hex()
 
 
 async def _get_sii_scores() -> dict:
