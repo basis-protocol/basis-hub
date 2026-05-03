@@ -105,6 +105,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
+@app.exception_handler(Exception)
+async def _debug_exception_handler(request: Request, exc: Exception):
+    import traceback
+    logger.error(
+        "Unhandled exception on %s %s:\n%s",
+        request.method, request.url.path, traceback.format_exc(),
+    )
+    from starlette.responses import JSONResponse
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -142,7 +156,7 @@ async def rate_limit_and_track(request: Request, call_next):
         return await call_next(request)
 
     from app.rate_limiter import rate_limiter, PUBLIC_RATE_LIMIT, KEYED_RATE_LIMIT
-    from app.usage_tracker import validate_api_key, hash_api_key, log_request
+    from app.usage_tracker import validate_api_key_async, hash_api_key, log_request
 
     query_key = request.query_params.get("apikey")
     header_key = request.headers.get("x-api-key")
@@ -151,7 +165,11 @@ async def rate_limit_and_track(request: Request, call_next):
 
     # Try query param first; if invalid or absent, fall back to header
     for candidate in filter(None, [query_key, header_key]):
-        api_key_id = validate_api_key(candidate)
+        try:
+            api_key_id = await validate_api_key_async(candidate)
+        except Exception:
+            logger.debug("validate_api_key failed for candidate, treating as anonymous")
+            api_key_id = None
         api_key_hash = hash_api_key(candidate)
         if api_key_id:
             break
