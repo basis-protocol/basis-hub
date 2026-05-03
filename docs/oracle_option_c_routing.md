@@ -363,42 +363,92 @@ entityId silently replaces prior content. Consequences for the scheme:
    disputes, it must uniquely identify the `(disputeId, transition)`
    pair. For methodology, it must uniquely identify the versioned
    methodology ID.
-2. Authoritative entityId schemes (this supersedes Section 2):
+2. Authoritative entityId schemes (this supersedes Section 2; further
+   amended on 2026-05-03 — see §12 supersession log for what changed
+   and why):
 
    ```
    // Track-record event
-   entityId = keccak256(abi.encodePacked(
-       "basis:track_record:v1",
-       eventType,              // bytes4
-       entity_slug_bytes,      // variable-length ASCII bytes
-       uint64(eventTimestamp)  // Unix seconds
-   ))
+   entityId = keccak256(
+       "basis:track_record:v1"                        // domain (UTF-8 literal)
+       || bytes4(keccak256(utf8(trigger_kind)))       // eventType: function-selector style
+       || utf8(entity_slug)                           // variable-length UTF-8
+       || uint64_be(triggered_at_unix_seconds)        // 8 big-endian bytes
+   )
    reportHash = sha256(canonical_event_payload)
 
    // Dispute transition
-   entityId = keccak256(abi.encodePacked(
-       "basis:dispute:v1",
-       disputeId,              // bytes32 = keccak256("dispute:{db_id}")
-       transitionKind          // bytes4: "SUBM" | "CTRE" | "RSLV"
-   ))
+   entityId = keccak256(
+       "basis:dispute:v1"                             // domain (UTF-8 literal)
+       || keccak256(utf8(f"dispute:{dispute_id}"))    // disputeId, bytes32
+       || bytes4(keccak256(utf8(transition_kind)))    // transitionKind selector
+       || uint64_be(transition_index)                 // 8 big-endian bytes
+   )
    reportHash = sha256(canonical_transition_payload)
 
    // Methodology document
-   entityId = keccak256(abi.encodePacked(
-       "basis:methodology:v1",
-       methodologyId_bytes     // e.g. "track_record_outcomes_v1"
-   ))
+   entityId = keccak256(
+       "basis:methodology:v1"                         // domain (UTF-8 literal)
+       || utf8(methodology_id)                        // raw UTF-8, no normalization
+   )
    reportHash = sha256(canonical_methodology_doc)
    ```
 
-3. Collision analysis. The three domain strings are literal-distinct
-   and shorter than any real SII symbol preimage is longer than
-   (real SII `entityId = keccak256(symbol)`, with `symbol` ≤ ~8 bytes
-   of ASCII). Domain-string length alone guarantees preimage
-   separation across types. Within a type, the unique-fields tuple
-   is the natural key: if two legitimate commits share one, they are
-   by definition the same commit.
-4. Write-once is therefore enforced by two layers:
+   Concatenation is byte-string concatenation (Solidity
+   `abi.encodePacked` semantics: no length prefixes, no padding for
+   variable-length fields). All field values are taken from the
+   underlying Postgres row; canonicalization rules below.
+
+3. **Encoding rules.** These pin the four points where prior versions
+   of this spec were under-specified or implementation-divergent:
+
+   - **Domain strings.** UTF-8 literal bytes, exposed as named
+     constants in both Python (`app/oracle_keys.py`) and TypeScript
+     (`keeper/optionC_keys.ts`). Exact values:
+     - `"basis:track_record:v1"` (21 bytes)
+     - `"basis:dispute:v1"`      (16 bytes)
+     - `"basis:methodology:v1"`  (20 bytes)
+     Any change to these strings is a v2 domain prefix and a new
+     entityId space — never edit in place.
+
+   - **`trigger_kind` and `transition_kind` → bytes4 selector.**
+     `bytes4(keccak256(utf8(field_value)))`. This is Solidity's
+     function-selector idiom. Two reasons over ASCII tags:
+     (i) deterministic from the field value with no governance
+     (no need to coin 4-letter mnemonics when migration 086-style
+     CHECK-constraint extensions add new values), (ii) collision
+     space is 2^32 (~4.3B) which is effectively unbounded for the
+     ≤ 16 enumerated values across both fields.
+
+   - **`methodology_id` encoding.** Raw UTF-8 bytes of the string
+     value. No normalization (no NFC/NFD), no whitespace trimming,
+     no case folding. The `methodology_hashes.methodology_id` column
+     is the canonical form.
+
+   - **`triggered_at` and `transition_index` integer encoding.**
+     `uint64`, big-endian, 8 bytes. `triggered_at` is Unix seconds
+     (TIMESTAMPTZ → integer epoch seconds; sub-second precision is
+     dropped — events at the same second on the same entity with
+     the same trigger_kind collide, which is the correct behavior
+     because such events are by definition the same event).
+
+   - **Variable-length safety.** `entity_slug` is the only
+     variable-length field in any preimage. In each preimage it is
+     positioned between fixed-size fields (4-byte selector before,
+     8-byte uint64 after) so its byte boundary is unambiguous on
+     decode-without-length. Any future addition of a second
+     variable-length field would break this property and require
+     a v2 domain prefix (`"basis:track_record:v2"`).
+
+4. Collision analysis. The three domain strings are literal-distinct
+   and longer than any real SII symbol preimage (real SII
+   `entityId = keccak256(symbol)`, with `symbol` ≤ ~8 bytes of ASCII).
+   Domain-string length alone guarantees preimage separation across
+   types. Within a type, the unique-fields tuple is the natural key:
+   if two legitimate commits share one, they are by definition the
+   same commit.
+
+5. Write-once is therefore enforced by two layers:
    - **Natural-key uniqueness** in `entityId` (collisions mean the
      same event, so overwriting with the same `reportHash` is a
      no-op from the reviewer's perspective).
@@ -406,6 +456,52 @@ entityId silently replaces prior content. Consequences for the scheme:
      refuses to re-publish with a different `reportHash`. Code in
      Section 5.
    On-chain enforcement is still absent; see Section 9.
+
+6. **Worked examples (golden vectors).** The 15 vectors below are the
+   canonical reference for any implementation. They are computed once
+   and committed to the repo; both `app/oracle_keys.py` and
+   `keeper/optionC_keys.ts` MUST reproduce these exact hex outputs
+   for the given inputs. CI must fail if any implementation diverges.
+
+   **Track-record (5 vectors):**
+
+   | Label | entity_slug | trigger_kind | triggered_at (Unix) | entityId |
+   |---|---|---|---|---|
+   | SVB/USDC depeg | `usdc` | `divergence` | 1678512300 (2023-03-11T05:25:00Z) | `0xd043880c659392fb6a7d471906f334fce5175fb349ca646cb270033f81dbba4c` |
+   | UST/Luna crash onset | `ust` | `score_change` | 1652101200 (2022-05-09T13:00:00Z) | `0xebec7c4db4b8829ebb71d739359e3a0be621299deeb954f75e64548016ae084d` |
+   | Curve Vyper exploit | `crv` | `oracle_stress` | 1690740000 (2023-07-30T18:00:00Z) | `0xbbb5472d3bcb0906d53330293dc900df8f1bf505b04bc9bffa7942381e892b03` |
+   | Aave AIP example | `aave` | `governance_edit` | 1705320000 (2024-01-15T12:00:00Z) | `0xe474c4470d3eea8922304ed797a0d1b6c231862342677936f23a8d6e3cfc91d6` |
+   | Manual annotation example | `usdc` | `manual` | 1717200000 (2024-06-01T00:00:00Z) | `0x30990a9abf8eb7db4d1c37b45166e2eb0bc63abd8ceb43afed573c7e906b5214` |
+
+   **Dispute (5 vectors):**
+
+   | Label | dispute_id | transition_kind | transition_index | entityId |
+   |---|---|---|---|---|
+   | First submission of dispute A | `11111111-1111-1111-1111-111111111111` | `submission` | 0 | `0x5f3101799bb86014467421ea710b260116b6353a9dc45a979d15192edf776cd8` |
+   | Counter-evidence on dispute A | `11111111-1111-1111-1111-111111111111` | `counter_evidence` | 1 | `0x3bee10e649f5a9bc04d378f72e6ec30dfda83ce06029450f57da8e51c0b4e896` |
+   | Second counter on dispute B | `22222222-2222-2222-2222-222222222222` | `counter_evidence` | 2 | `0x676a80fa5314e7a7dc5ac1dcec2d885578a7bb00da201f1e76f9a680f9171ddd` |
+   | Resolution of dispute B | `22222222-2222-2222-2222-222222222222` | `resolution` | 3 | `0xa1dbd58ba6057a7cad80b6bd0a1e236eb4e8c71125fabc78321a8e383ae2beb1` |
+   | Single-step resolution of dispute C | `33333333-3333-3333-3333-333333333333` | `resolution` | 0 | `0x1f88e98cecba8eca0fdf0b8544b63939e164c4de36155cf84daf2672cc6a91a6` |
+
+   **Methodology (5 vectors):**
+
+   | Label | methodology_id | entityId |
+   |---|---|---|
+   | Track-record outcome rules | `track_record_outcomes_v1` | `0x8d7a8614d708a3399625a87d7d9f965ef9984a1c146af431893ed25604c178e4` |
+   | Track-record trigger rules | `track_record_rules_v1` | `0xa0512a0a496ec744725bd982f34ce0c86dbf843d10ec883fb7efd0c4cdb1e062` |
+   | SII v1.0.0 component weights | `sii_component_weights_v1` | `0x86abdde739fd982beb63081091f1c6d3265326cbc7f964f9562b1f3ce4d45efa` |
+   | Confidence tier codes | `confidence_tier_codes_v1` | `0x430ee6d78a1a550d99d89a95d8c48780ac89d0e231c5520febdd065617566fc3` |
+   | Lens discriminator registry (Q3 anchor) | `lens_registry_v1` | `0x54ab550521b1ed07db401b7931e85b9123033df6fbf195c91fe35b8e47474cf2` |
+
+   Selected selector values (cross-reference for human readers):
+   - `bytes4(keccak("divergence"))` = `0x3069f3de`
+   - `bytes4(keccak("score_change"))` = `0x5f6549a4`
+   - `bytes4(keccak("oracle_stress"))` = `0x9664031f`
+   - `bytes4(keccak("governance_edit"))` = `0x03b79820`
+   - `bytes4(keccak("manual"))` = `0x69b1d250`
+   - `bytes4(keccak("submission"))` = `0xbcdedd46`
+   - `bytes4(keccak("counter_evidence"))` = `0x69be9fef`
+   - `bytes4(keccak("resolution"))` = `0x00f8c066`
 
 ### Q3 — Lens byte scheme and the registry
 
@@ -549,3 +645,20 @@ recomputing the keccak.
 - Section 5 keeper pseudo-code is **SUPERSEDED** by the Task 3
   runbook (to be written next) which uses the numeric-range lens
   scheme and the updated entityId preimages.
+- Section 11 Q2 byte spec was **AMENDED on 2026-05-03** to
+  (i) replace ad-hoc bytes4 mnemonics with `bytes4(keccak256(utf8(.)))`
+  for both `trigger_kind` and `transition_kind`; (ii) add
+  `uint64(transition_index)` to the dispute preimage so the entityId
+  matches the schema's `UNIQUE(dispute_id, transition_index)` natural
+  key; (iii) pin the four under-specified points (domain string
+  encoding, methodology_id encoding, integer encoding, variable-length
+  safety) as explicit encoding rules; (iv) add 15 worked examples as
+  golden vectors. Prior byte spec was internally inconsistent with
+  prose intent ("uniquely identify the (disputeId, transition) pair"
+  vs preimage missing transition_index) and with the DB schema. No
+  on-chain anchors had shipped under the prior scheme; no migration
+  needed. The pre-amendment Python `compute_on_chain_entity_id`
+  implementations in `app/track_record.py`, `app/disputes.py`, and
+  `app/methodology_hashes.py` were also wrong vs the prior spec
+  (used JSON-canonical preimages, missing domain prefix); they are
+  rewritten to match the amended spec in PR-2.
