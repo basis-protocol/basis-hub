@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical entityId golden vectors for Oracle Option C entityId scheme. Mirrors docs/oracle_option_c_routing.md §11 Q2 worked examples table. Single source for tests/test_oracle_keys.py (Python) and keeper/optionC_keys.test.ts (TypeScript). Any change here MUST also update the spec doc tables (and vice versa). Computed by app/oracle_keys.py and verified against keeper/optionC_keys.ts; CI fails if either implementation diverges.",
+  "_comment": "Machine-readable canonical for Oracle Option C entityId golden vectors. The spec doc tables in docs/oracle_option_c_routing.md §11 Q2 are the human-readable duplication of these values; this JSON is what tests load. Note the schema field `expected_entity_id` is the machine-readable column name; the doc tables use `entityId` as the human-readable header for the same value. Loaded by tests/test_oracle_keys.py (Python) and keeper/optionC_keys.test.ts (TypeScript). Any change here MUST also update the spec doc tables (and vice versa). CI fails if either implementation diverges from these hexes.",
   "_spec_version": "2026-05-03 amendment to §11 Q2",
   "track_record": [
     {

@@ -9,3 +9,24 @@ jobs:
         with: { python-version: "3.11" }
       - name: Audit await-in-args bug pattern
         run: python3 scripts/audit_await_in_args.py --quiet
+
+  oracle-keys-parity:
+    # Asserts both Python (app/oracle_keys.py) and TypeScript
+    # (keeper/optionC_keys.ts) implementations of the entityId scheme
+    # match docs/oracle_option_c_golden_vectors.json byte-for-byte.
+    # Fails on any divergence — the gate the runbook §3 calls for.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install Python deps
+        run: pip install pytest "eth-hash[pycryptodome]>=0.7.0" psycopg2-binary
+      - name: Python entityId golden vectors
+        run: pytest tests/test_oracle_keys.py -v
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Install Node deps
+        run: npm install --no-audit --no-fund
+      - name: TypeScript entityId golden vectors
+        run: npm run test:keeper
