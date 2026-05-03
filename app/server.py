@@ -1478,88 +1478,94 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
 
     results = []
     for row in rows:
-        # V7.3 confidence fields — prefer the stored columns (populated by
-        # the scorer on write). Fall back to legacy synthesis for rows that
-        # predate migration 084 / the one-shot backfill.
-        stored_populated = row.get("components_populated")
-        if stored_populated is not None:
-            comp_populated = int(stored_populated)
-            comp_total = int(row.get("components_total") or SII_COMPONENTS_TOTAL)
-            coverage = float(row.get("component_coverage") or (
-                round(comp_populated / max(comp_total, 1), 4)
-            ))
-            missing = row.get("missing_categories") or []
-            if isinstance(missing, str):
-                import json as _j
-                try:
-                    missing = _j.loads(missing)
-                except Exception:
-                    missing = []
-            conf_level = row.get("confidence")
-            conf_tag = row.get("confidence_tag")
-            if not conf_level:
+        if row.get("overall_score") is None:
+            continue
+        try:
+            # V7.3 confidence fields — prefer the stored columns (populated by
+            # the scorer on write). Fall back to legacy synthesis for rows that
+            # predate migration 084 / the one-shot backfill.
+            stored_populated = row.get("components_populated")
+            if stored_populated is not None:
+                comp_populated = int(stored_populated)
+                comp_total = int(row.get("components_total") or SII_COMPONENTS_TOTAL)
+                coverage = float(row.get("component_coverage") or (
+                    round(comp_populated / max(comp_total, 1), 4)
+                ))
+                missing = row.get("missing_categories") or []
+                if isinstance(missing, str):
+                    import json as _j
+                    try:
+                        missing = _j.loads(missing)
+                    except Exception:
+                        missing = []
+                conf_level = row.get("confidence")
+                conf_tag = row.get("confidence_tag")
+                if not conf_level:
+                    _c = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
+                    conf_level, conf_tag = _c["confidence"], _c["tag"]
+            else:
+                # Legacy fallback — row was written before migration 084.
+                sii_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
+                               "distribution": "distribution_score", "structural": "structural_score"}
+                missing = [cat for cat, col in sii_cat_map.items() if not row.get(col)]
+                comp_populated = row.get("component_count") or 0
+                comp_total = SII_COMPONENTS_TOTAL
+                coverage = round(comp_populated / max(comp_total, 1), 4)
                 _c = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
                 conf_level, conf_tag = _c["confidence"], _c["tag"]
-        else:
-            # Legacy fallback — row was written before migration 084.
-            sii_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
-                           "distribution": "distribution_score", "structural": "structural_score"}
-            missing = [cat for cat, col in sii_cat_map.items() if not row.get(col)]
-            comp_populated = row.get("component_count") or 0
-            comp_total = SII_COMPONENTS_TOTAL
-            coverage = round(comp_populated / max(comp_total, 1), 4)
-            _c = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
-            conf_level, conf_tag = _c["confidence"], _c["tag"]
 
-        comp_count = comp_populated
+            comp_count = comp_populated
 
-        # Aggregation envelope (columns from migration 084; populated by the
-        # SII v1.1.0 wiring). Historical rows return None.
-        eff_weights = _parse_jsonb(row.get("effective_category_weights"))
-        agg_params = _parse_jsonb(row.get("aggregation_params"))
-        results.append({
-            "id": row["stablecoin_id"],
-            "name": row["name"],
-            "symbol": row["symbol"],
-            "issuer": row["issuer"],
-            "token_contract": row.get("token_contract"),
-            "score": float(row["overall_score"]),
-            "grade": _tag_to_code(conf_tag),
-            "confidence": conf_level,
-            "confidence_tag": conf_tag,
-            "missing_categories": missing,
-            "component_coverage": coverage,
-            "components_populated": comp_populated,
-            "components_total": comp_total,
-            "price": float(row["current_price"]) if row.get("current_price") else None,
-            "market_cap": row.get("market_cap"),
-            "volume_24h": row.get("volume_24h"),
-            "daily_change": float(row["daily_change"]) if row.get("daily_change") else None,
-            "weekly_change": float(row["weekly_change"]) if row.get("weekly_change") else None,
-            "categories": {
-                "peg": float(row["peg_score"]) if row.get("peg_score") else None,
-                "liquidity": float(row["liquidity_score"]) if row.get("liquidity_score") else None,
-                "flows": float(row["mint_burn_score"]) if row.get("mint_burn_score") else None,
-                "distribution": float(row["distribution_score"]) if row.get("distribution_score") else None,
-                "structural": float(row["structural_score"]) if row.get("structural_score") else None,
-            },
-            "structural_breakdown": {
-                "reserves": float(row["reserves_score"]) if row.get("reserves_score") else None,
-                "contract": float(row["contract_score"]) if row.get("contract_score") else None,
-                "oracle": float(row["oracle_score"]) if row.get("oracle_score") else None,
-                "governance": float(row["governance_score"]) if row.get("governance_score") else None,
-                "network": float(row["network_score"]) if row.get("network_score") else None,
-            },
-            "component_count": comp_count,
-            "formula_version": row.get("formula_version"),
-            "aggregation_method": row.get("aggregation_method"),
-            "aggregation_params": agg_params,
-            "aggregation_formula_version": row.get("aggregation_formula_version"),
-            "effective_category_weights": eff_weights,
-            "coverage": float(row["coverage"]) if row.get("coverage") is not None else None,
-            "withheld": bool(row.get("withheld")) if row.get("withheld") is not None else False,
-            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
-        })
+            # Aggregation envelope (columns from migration 084; populated by the
+            # SII v1.1.0 wiring). Historical rows return None.
+            eff_weights = _parse_jsonb(row.get("effective_category_weights"))
+            agg_params = _parse_jsonb(row.get("aggregation_params"))
+            results.append({
+                "id": row["stablecoin_id"],
+                "name": row["name"],
+                "symbol": row["symbol"],
+                "issuer": row["issuer"],
+                "token_contract": row.get("token_contract"),
+                "score": float(row["overall_score"]),
+                "grade": _tag_to_code(conf_tag),
+                "confidence": conf_level,
+                "confidence_tag": conf_tag,
+                "missing_categories": missing,
+                "component_coverage": coverage,
+                "components_populated": comp_populated,
+                "components_total": comp_total,
+                "price": float(row["current_price"]) if row.get("current_price") else None,
+                "market_cap": row.get("market_cap"),
+                "volume_24h": row.get("volume_24h"),
+                "daily_change": float(row["daily_change"]) if row.get("daily_change") else None,
+                "weekly_change": float(row["weekly_change"]) if row.get("weekly_change") else None,
+                "categories": {
+                    "peg": float(row["peg_score"]) if row.get("peg_score") else None,
+                    "liquidity": float(row["liquidity_score"]) if row.get("liquidity_score") else None,
+                    "flows": float(row["mint_burn_score"]) if row.get("mint_burn_score") else None,
+                    "distribution": float(row["distribution_score"]) if row.get("distribution_score") else None,
+                    "structural": float(row["structural_score"]) if row.get("structural_score") else None,
+                },
+                "structural_breakdown": {
+                    "reserves": float(row["reserves_score"]) if row.get("reserves_score") else None,
+                    "contract": float(row["contract_score"]) if row.get("contract_score") else None,
+                    "oracle": float(row["oracle_score"]) if row.get("oracle_score") else None,
+                    "governance": float(row["governance_score"]) if row.get("governance_score") else None,
+                    "network": float(row["network_score"]) if row.get("network_score") else None,
+                },
+                "component_count": comp_count,
+                "formula_version": row.get("formula_version"),
+                "aggregation_method": row.get("aggregation_method"),
+                "aggregation_params": agg_params,
+                "aggregation_formula_version": row.get("aggregation_formula_version"),
+                "effective_category_weights": eff_weights,
+                "coverage": float(row["coverage"]) if row.get("coverage") is not None else None,
+                "withheld": bool(row.get("withheld")) if row.get("withheld") is not None else False,
+                "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            })
+        except Exception:
+            logger.exception("Failed to build score row for stablecoin_id=%s", row.get("stablecoin_id"))
+            continue
     
     # Count active data sources
     data_sources = {"CoinGecko", "DeFiLlama", "Etherscan/Blockscout", "Snapshot"}
