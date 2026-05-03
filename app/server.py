@@ -1316,50 +1316,56 @@ async def get_scores(response: Response, methodology_version: Optional[str] = Qu
 
     results = []
     for row in rows:
-        comp_count = row.get("component_count") or 0
-        coverage = round(comp_count / max(SII_COMPONENTS_TOTAL, 1), 2)
-        # Determine missing categories from null category scores
-        sii_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
-                       "distribution": "distribution_score", "structural": "structural_score"}
-        missing = [cat for cat, col in sii_cat_map.items() if not row.get(col)]
-        conf = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
+        try:
+            if row.get("overall_score") is None:
+                continue
+            comp_count = row.get("component_count") or 0
+            coverage = round(comp_count / max(SII_COMPONENTS_TOTAL, 1), 2)
+            # Determine missing categories from null category scores
+            sii_cat_map = {"peg": "peg_score", "liquidity": "liquidity_score", "flows": "mint_burn_score",
+                           "distribution": "distribution_score", "structural": "structural_score"}
+            missing = [cat for cat, col in sii_cat_map.items() if not row.get(col)]
+            conf = compute_confidence_tag(5 - len(missing), 5, coverage, missing)
 
-        results.append({
-            "id": row["stablecoin_id"],
-            "name": row["name"],
-            "symbol": row["symbol"],
-            "issuer": row["issuer"],
-            "token_contract": row.get("token_contract"),
-            "score": float(row["overall_score"]),
-            "confidence": conf["confidence"],
-            "confidence_tag": conf["tag"],
-            "missing_categories": conf["missing_categories"],
-            "component_coverage": coverage,
-            "components_populated": comp_count,
-            "components_total": SII_COMPONENTS_TOTAL,
-            "price": float(row["current_price"]) if row.get("current_price") else None,
-            "market_cap": row.get("market_cap"),
-            "volume_24h": row.get("volume_24h"),
-            "daily_change": float(row["daily_change"]) if row.get("daily_change") else None,
-            "weekly_change": float(row["weekly_change"]) if row.get("weekly_change") else None,
-            "categories": {
-                "peg": float(row["peg_score"]) if row.get("peg_score") else None,
-                "liquidity": float(row["liquidity_score"]) if row.get("liquidity_score") else None,
-                "flows": float(row["mint_burn_score"]) if row.get("mint_burn_score") else None,
-                "distribution": float(row["distribution_score"]) if row.get("distribution_score") else None,
-                "structural": float(row["structural_score"]) if row.get("structural_score") else None,
-            },
-            "structural_breakdown": {
-                "reserves": float(row["reserves_score"]) if row.get("reserves_score") else None,
-                "contract": float(row["contract_score"]) if row.get("contract_score") else None,
-                "oracle": float(row["oracle_score"]) if row.get("oracle_score") else None,
-                "governance": float(row["governance_score"]) if row.get("governance_score") else None,
-                "network": float(row["network_score"]) if row.get("network_score") else None,
-            },
-            "component_count": comp_count,
-            "formula_version": row.get("formula_version"),
-            "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
-        })
+            results.append({
+                "id": row["stablecoin_id"],
+                "name": row["name"],
+                "symbol": row["symbol"],
+                "issuer": row["issuer"],
+                "token_contract": row.get("token_contract"),
+                "score": float(row["overall_score"]),
+                "confidence": conf["confidence"],
+                "confidence_tag": conf["tag"],
+                "missing_categories": conf["missing_categories"],
+                "component_coverage": coverage,
+                "components_populated": comp_count,
+                "components_total": SII_COMPONENTS_TOTAL,
+                "price": float(row["current_price"]) if row.get("current_price") else None,
+                "market_cap": row.get("market_cap"),
+                "volume_24h": row.get("volume_24h"),
+                "daily_change": float(row["daily_change"]) if row.get("daily_change") else None,
+                "weekly_change": float(row["weekly_change"]) if row.get("weekly_change") else None,
+                "categories": {
+                    "peg": float(row["peg_score"]) if row.get("peg_score") else None,
+                    "liquidity": float(row["liquidity_score"]) if row.get("liquidity_score") else None,
+                    "flows": float(row["mint_burn_score"]) if row.get("mint_burn_score") else None,
+                    "distribution": float(row["distribution_score"]) if row.get("distribution_score") else None,
+                    "structural": float(row["structural_score"]) if row.get("structural_score") else None,
+                },
+                "structural_breakdown": {
+                    "reserves": float(row["reserves_score"]) if row.get("reserves_score") else None,
+                    "contract": float(row["contract_score"]) if row.get("contract_score") else None,
+                    "oracle": float(row["oracle_score"]) if row.get("oracle_score") else None,
+                    "governance": float(row["governance_score"]) if row.get("governance_score") else None,
+                    "network": float(row["network_score"]) if row.get("network_score") else None,
+                },
+                "component_count": comp_count,
+                "formula_version": row.get("formula_version"),
+                "computed_at": row["computed_at"].isoformat() if row.get("computed_at") else None,
+            })
+        except Exception:
+            logger.exception("Failed to build score row for stablecoin_id=%s", row.get("stablecoin_id"))
+            continue
     
     # Count active data sources
     data_sources = {"CoinGecko", "DeFiLlama", "Etherscan/Blockscout", "Snapshot"}
